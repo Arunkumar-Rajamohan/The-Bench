@@ -1,0 +1,12 @@
+{
+  "name": "the-bench",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A friendly space for people between jobs.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

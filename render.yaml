@@ -1,0 +1,19 @@
+# Render blueprint: free web service. The database lives on Turso (also free),
+# because Render's free tier wipes local files on every restart.
+services:
+  - type: web
+    name: the-bench
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.15.1
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

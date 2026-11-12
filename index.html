@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Bench — a clubhouse for the between-jobs crowd</title>
+  <meta name="description" content="A friendly space for people between jobs: community, job tracking, interview prep and daily routines.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <a class="brand" href="#/home">
+        <span class="brand-mark" aria-hidden="true">🪑</span>
+        <span>
+          <strong>The Bench</strong>
+          <small>Everyone sits here sometimes</small>
+        </span>
+      </a>
+      <nav id="nav" aria-label="Main">
+        <a href="#/home" data-view="home"><span aria-hidden="true">🏠</span><b>Home</b></a>
+        <a href="#/feed" data-view="feed"><span aria-hidden="true">💬</span><b>Feed</b></a>
+        <a href="#/jobs" data-view="jobs"><span aria-hidden="true">🔎</span><b>Jobs</b></a>
+        <a href="#/tracker" data-view="tracker"><span aria-hidden="true">📋</span><b>Tracker</b></a>
+        <a href="#/prep" data-view="prep"><span aria-hidden="true">🎤</span><b>Prep</b></a>
+        <a href="#/routine" data-view="routine"><span aria-hidden="true">🔥</span><b>Routine</b></a>
+      </nav>
+      <p class="side-note">Your tracker, routine and resume are private to your account. Posts are visible to all members.</p>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <div id="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -111,8 +111,17 @@ if (TURSO_URL) {
   };
 }
 
+// Columns added after launch. ADD COLUMN fails once the column exists, which is fine.
+const MIGRATIONS = [
+  'ALTER TABLE users ADD COLUMN recovery TEXT'
+];
+
 async function initDb() {
   for (const sql of SCHEMA) await exec(sql);
+  for (const sql of MIGRATIONS) {
+    try { await exec(sql); }
+    catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  }
   await exec('DELETE FROM sessions WHERE expires < ?', [Date.now()]);
 }
 
@@ -124,10 +133,14 @@ const stmt = (sql) => ({
 
 const q = {
   userByName: stmt('SELECT * FROM users WHERE username = ?'),
-  addUser: stmt('INSERT INTO users (username, name, pass, salt, created) VALUES (?, ?, ?, ?, ?)'),
+  userById: stmt('SELECT * FROM users WHERE id = ?'),
+  addUser: stmt('INSERT INTO users (username, name, pass, salt, recovery, created) VALUES (?, ?, ?, ?, ?, ?)'),
   addSession: stmt('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)'),
-  session: stmt('SELECT u.id, u.username, u.name, u.data FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
+  session: stmt('SELECT u.id, u.username, u.name, u.data, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
   dropSession: stmt('DELETE FROM sessions WHERE token_hash = ?'),
+  dropUserSessions: stmt('DELETE FROM sessions WHERE user_id = ?'),
+  setRecovery: stmt('UPDATE users SET recovery = ? WHERE id = ?'),
+  setPassword: stmt('UPDATE users SET pass = ?, salt = ?, recovery = ? WHERE id = ?'),
   saveData: stmt('UPDATE users SET data = ? WHERE id = ?'),
   posts: stmt('SELECT p.id, p.tag, p.text, p.created, p.user_id, u.name, u.username FROM posts p JOIN users u ON u.id = p.user_id ORDER BY p.id DESC LIMIT 100'),
   replies: stmt('SELECT r.post_id, r.text, r.created, u.name FROM replies r JOIN users u ON u.id = r.user_id WHERE r.post_id >= ? ORDER BY r.id'),
@@ -195,6 +208,36 @@ async function hashPassword(password, salt) {
   return (await scrypt(password, salt, 64)).toString('hex');
 }
 
+const DUMMY_SALT = '00000000000000000000000000000000';
+
+// True when `password` matches user `u`. Hashes even when `u` is missing, so timing does not reveal usernames.
+async function checkPassword(u, password) {
+  const pw = typeof password === 'string' ? password.slice(0, 200) : '';
+  const hash = await hashPassword(pw, u ? u.salt : DUMMY_SALT);
+  return !!u && crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(u.pass, 'hex'));
+}
+
+function newPassword(v) {
+  if (typeof v !== 'string' || v.length < 8) throw new HttpError(400, 'Password needs at least 8 characters.');
+  if (v.length > 200) throw new HttpError(400, 'Password is too long.');
+  return v;
+}
+
+// Recovery codes: 16 characters from a 32-letter alphabet (80 random bits), shown as XXXX-XXXX-XXXX-XXXX.
+// No 0, O, 1 or I, which are easy to mix up. Only a hash is stored, and each code works once.
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 symbols, so every byte maps evenly
+function makeRecoveryCode() {
+  const bytes = crypto.randomBytes(16);
+  let s = '';
+  for (let i = 0; i < 16; i++) s += CODE_ALPHABET[bytes[i] & 31];
+  return s.match(/.{4}/g).join('-');
+}
+function recoveryHash(code) {
+  // Ignore case, spaces and dashes; read a typed I or 1 as the L it must have been.
+  const norm = String(code || '').slice(0, 64).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/[I1]/g, 'L');
+  return sha('recovery:' + norm);
+}
+
 function cookie(token, maxAge) {
   return 'sid=' + token + '; HttpOnly; SameSite=Lax; Path=/; Max-Age=' + maxAge + (PROD ? '; Secure' : '');
 }
@@ -215,7 +258,9 @@ async function currentUser(req) {
   return t ? await q.session.get(sha(t), Date.now()) : undefined;
 }
 
-function publicUser(u) { return { username: u.username, name: u.name }; }
+function publicUser(u) {
+  return { username: u.username, name: u.name, hasRecovery: !!(u.recovery || u.has_recovery) };
+}
 function parseData(s) { try { return JSON.parse(s); } catch (e) { return {}; } }
 
 // Simple in-memory rate limiter: `max` hits per `windowMs` per key.
@@ -255,29 +300,48 @@ async function api(req, res, route) {
     const username = text(b.username, 20, 'Username').toLowerCase();
     if (!/^[a-z0-9_]{3,20}$/.test(username)) throw new HttpError(400, 'Username: 3–20 letters, numbers or underscores.');
     const name = text(b.name, 24, 'Name');
-    if (typeof b.password !== 'string' || b.password.length < 8) throw new HttpError(400, 'Password needs at least 8 characters.');
-    if (b.password.length > 200) throw new HttpError(400, 'Password is too long.');
+    const password = newPassword(b.password);
     if (await q.userByName.get(username)) throw new HttpError(409, 'That username is taken.');
     const salt = crypto.randomBytes(16).toString('hex');
-    const pass = await hashPassword(b.password, salt);
+    const pass = await hashPassword(password, salt);
+    const recoveryCode = makeRecoveryCode();
     let info;
-    try { info = await q.addUser.run(username, name, pass, salt, Date.now()); }
+    try { info = await q.addUser.run(username, name, pass, salt, recoveryHash(recoveryCode), Date.now()); }
     catch (e) { throw new HttpError(409, 'That username is taken.'); }
-    return send(res, 201, { user: { username, name }, data: {} }, { 'Set-Cookie': await startSession(info.lastId) });
+    return send(res, 201, { user: { username, name, hasRecovery: true }, data: {}, recoveryCode },
+      { 'Set-Cookie': await startSession(info.lastId) });
   }
 
   if (method === 'POST' && route === '/login') {
     limit('auth:' + ip, 20, 10 * 60000);
     const b = await readBody(req);
     const username = String(b.username || '').trim().toLowerCase();
-    const password = typeof b.password === 'string' ? b.password.slice(0, 200) : '';
     limit('auth:user:' + username.slice(0, 20), 10, 10 * 60000); // per account, whatever the IP
     const u = await q.userByName.get(username);
-    // Hash even when the user does not exist, so timing does not reveal usernames.
-    const hash = await hashPassword(password, u ? u.salt : '00000000000000000000000000000000');
-    const ok = !!u && crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(u.pass, 'hex'));
-    if (!ok) throw new HttpError(401, 'Wrong username or password.');
+    if (!(await checkPassword(u, b.password))) throw new HttpError(401, 'Wrong username or password.');
     return send(res, 200, { user: publicUser(u), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
+  }
+
+  // Forgot password: username + one-time recovery code -> new password.
+  // Signs out every other device and hands back a fresh code, since the old one is now used up.
+  if (method === 'POST' && route === '/reset') {
+    limit('auth:' + ip, 20, 10 * 60000);
+    const b = await readBody(req);
+    const username = String(b.username || '').trim().toLowerCase();
+    limit('reset:user:' + username.slice(0, 20), 5, 60 * 60000); // per account, whatever the IP
+    const password = newPassword(b.password);
+    const u = await q.userByName.get(username);
+    const given = Buffer.from(recoveryHash(b.code), 'hex');
+    const stored = Buffer.from(u && u.recovery ? u.recovery : sha('no-code'), 'hex');
+    if (!u || !u.recovery || !crypto.timingSafeEqual(given, stored)) {
+      throw new HttpError(401, 'That username and recovery code do not match.');
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const recoveryCode = makeRecoveryCode();
+    await q.setPassword.run(await hashPassword(password, salt), salt, recoveryHash(recoveryCode), u.id);
+    await q.dropUserSessions.run(u.id);
+    return send(res, 200, { user: Object.assign(publicUser(u), { hasRecovery: true }), data: parseData(u.data), recoveryCode },
+      { 'Set-Cookie': await startSession(u.id) });
   }
 
   if (method === 'POST' && route === '/logout') {
@@ -292,6 +356,25 @@ async function api(req, res, route) {
 
   if (method === 'GET' && route === '/me') {
     return send(res, 200, { user: publicUser(user), data: parseData(user.data) });
+  }
+
+  // Account changes ask for the current password, so a borrowed logged-in device cannot take over the account.
+  if (method === 'POST' && (route === '/me/recovery' || route === '/me/password')) {
+    limit('account:' + user.id, 10, 10 * 60000);
+    const b = await readBody(req);
+    const full = await q.userById.get(user.id);
+    if (!(await checkPassword(full, b.password))) throw new HttpError(401, 'Your current password is not right.');
+
+    if (route === '/me/recovery') {
+      const recoveryCode = makeRecoveryCode();
+      await q.setRecovery.run(recoveryHash(recoveryCode), user.id);
+      return send(res, 200, { recoveryCode });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    await q.setPassword.run(await hashPassword(newPassword(b.newPassword), salt), salt, full.recovery, user.id);
+    await q.dropUserSessions.run(user.id); // sign out everywhere else, keep this device signed in
+    return send(res, 200, { ok: true }, { 'Set-Cookie': await startSession(user.id) });
   }
 
   if (method === 'PUT' && route === '/me/data') {

@@ -126,7 +126,7 @@
   var S = blank();     // this user's private data
   var posts = [];      // shared feed, from the server
   var ui = {
-    booting: true, authMode: 'login', authError: '', authUser: '', authName: '',
+    booting: true, authMode: 'login', authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
     jobQuery: '', jobMode: 'All', q: Math.floor(Math.random() * QUESTIONS.length),
     timerId: null, timerStart: 0, report: null
   };
@@ -152,7 +152,7 @@
   function signedOut() {
     clearTimeout(saveTimer); saveTimer = null;
     stopTimer();
-    me = null; S = blank(); posts = []; ui.report = null;
+    me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
   }
   var toastTimer = null;
   function toast(msg) {
@@ -184,18 +184,49 @@
   }
 
   function authView() {
-    var signup = ui.authMode === 'signup';
+    var mode = ui.authMode, signup = mode === 'signup', reset = mode === 'reset';
+    var title = signup ? 'Grab a seat' : reset ? 'Reset your password' : 'Welcome back';
+    var button = signup ? 'Create account' : reset ? 'Set new password' : 'Log in';
+    var userField = '<label>Username<input type="text" name="username" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="' + esc(ui.authUser) + '" required></label>';
+    var fields = signup
+      ? '<label>What should we call you?<input type="text" name="name" maxlength="24" autocomplete="nickname" value="' + esc(ui.authName) + '" required></label>' +
+        userField +
+        '<label>Password<input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>' +
+        '<p class="muted small">Username: 3–20 letters, numbers or underscores. Password: at least 8 characters. No email needed: you will get a recovery code instead.</p>'
+      : reset
+      ? userField +
+        '<label>Recovery code<input type="text" name="code" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX" required></label>' +
+        '<label>New password<input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>' +
+        '<p class="muted small">This is the code you saved when you signed up. Each code works once; you will get a new one after resetting.</p>'
+      : userField +
+        '<label>Password<input type="password" name="password" maxlength="200" autocomplete="current-password" required></label>';
+    var links = signup
+      ? '<p class="small">Already have a seat? ' + modeLink('login', 'Log in') + '</p>'
+      : reset
+      ? '<p class="small">Remembered it? ' + modeLink('login', 'Back to log in') + '</p>'
+      : '<p class="small">New here? ' + modeLink('signup', 'Create an account') + '</p>' +
+        '<p class="small">' + modeLink('reset', 'Forgot password?') + '</p>';
     return '<div class="auth"><div class="auth-brand"><span class="brand-mark" aria-hidden="true">🪑</span>' +
       '<h1>The Bench</h1><p class="sub">A clubhouse for the between-jobs crowd. Everyone sits here sometimes.</p></div>' +
-      '<form class="card stack" data-form="auth"><h2>' + (signup ? 'Grab a seat' : 'Welcome back') + '</h2>' +
-      (signup ? '<label>What should we call you?<input type="text" name="name" maxlength="24" autocomplete="nickname" value="' + esc(ui.authName) + '" required></label>' : '') +
-      '<label>Username<input type="text" name="username" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" value="' + esc(ui.authUser) + '" required></label>' +
-      '<label>Password<input type="password" name="password" minlength="' + (signup ? 8 : 1) + '" maxlength="200" autocomplete="' + (signup ? 'new-password' : 'current-password') + '" required></label>' +
-      (signup ? '<p class="muted small">Username: 3–20 letters, numbers or underscores. Password: at least 8 characters. No email needed, so there is no password reset yet. Keep it somewhere safe.</p>' : '') +
+      '<form class="card stack" data-form="auth"><h2>' + title + '</h2>' + fields +
       (ui.authError ? '<p class="err" role="alert">' + esc(ui.authError) + '</p>' : '') +
-      '<button class="btn primary">' + (signup ? 'Create account' : 'Log in') + '</button>' +
-      '<p class="small">' + (signup ? 'Already have a seat?' : 'New here?') + ' <button type="button" class="link big" data-act="auth-mode">' +
-      (signup ? 'Log in' : 'Create an account') + '</button></p></form></div>';
+      '<button class="btn primary">' + button + '</button>' + links + '</form></div>';
+  }
+  function modeLink(mode, label) {
+    return '<button type="button" class="link big" data-act="auth-mode" data-mode="' + mode + '">' + label + '</button>';
+  }
+
+  // Shown once, right after a recovery code is made (sign-up, reset, or from the Account page).
+  function codeView() {
+    return '<div class="auth"><div class="card stack">' +
+      '<h2>🔑 Save your recovery code</h2>' +
+      '<p>If you ever forget your password, this code lets you set a new one. <b>It is shown only this once.</b></p>' +
+      '<p class="code" id="rcode">' + esc(ui.newCode) + '</p>' +
+      '<div class="row"><button class="btn" data-act="copy-code">Copy code</button><span class="muted small" id="copied" role="status"></span></div>' +
+      '<p class="muted small">Write it down, or keep it in a notes app or password manager. Anyone with your username and this code can reset your password, so keep it private.</p>' +
+      '<label class="row small"><input type="checkbox" id="saved"> I have saved my recovery code</label>' +
+      '<button class="btn primary" data-act="code-done" id="codedone" disabled>Continue</button>' +
+      '</div></div>';
   }
 
   function taskList() {
@@ -242,9 +273,27 @@
         '<div class="stat"><b>' + countStage('Interview') + '</b><span>interviews</span></div>' +
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
+        (me.hasRecovery ? '' : '<p class="banner">🔑 <b>Protect your account:</b> get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></p>') +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
-        '<p class="small muted">Signed in as @' + esc(me.username) + ' · <button class="link" data-act="logout">Log out</button></p></div>';
+        '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
+    },
+
+    account: function () {
+      var msg = ui.acctMsg ? '<p class="' + (ui.acctMsg.ok ? 'ok-msg' : 'err') + '" role="status">' + esc(ui.acctMsg.text) + '</p>' : '';
+      return head('Account ⚙️', 'Signed in as @' + esc(me.username) + '.') + msg +
+        '<div class="grid2"><form class="card stack" data-form="recovery"><h2>Recovery code</h2>' +
+        '<p class="small">' + (me.hasRecovery
+          ? 'You have a recovery code. Lost it? Make a new one; the old code stops working.'
+          : '<b>You do not have a recovery code yet.</b> Without one, a forgotten password cannot be reset.') + '</p>' +
+        '<label>Current password<input type="password" name="password" maxlength="200" autocomplete="current-password" required></label>' +
+        '<button class="btn primary">' + (me.hasRecovery ? 'Make a new code' : 'Get my recovery code') + '</button></form>' +
+        '<form class="card stack" data-form="password"><h2>Change password</h2>' +
+        '<label>Current password<input type="password" name="password" maxlength="200" autocomplete="current-password" required></label>' +
+        '<label>New password<input type="password" name="newPassword" minlength="8" maxlength="200" autocomplete="new-password" required></label>' +
+        '<p class="muted small">This signs you out on every other device.</p>' +
+        '<button class="btn">Change password</button></form></div>' +
+        '<p class="small muted" style="margin-top:16px"><a href="#/home">← Back home</a> · <button class="link" data-act="logout">Log out</button></p>';
     },
 
     feed: function () {
@@ -419,6 +468,7 @@
   }
   function enter(j, importOld) {
     me = j.user; S = adopt(j.data); ui.authError = '';
+    if (j.recoveryCode) ui.newCode = j.recoveryCode;
     if (importOld) {
       var old = oldLocal();
       if (old) { S = old; saveTimer = setTimeout(flush, 0); }
@@ -437,9 +487,20 @@
   }
 
   var actions = {
-    'auth-mode': function () {
-      ui.authMode = ui.authMode === 'signup' ? 'login' : 'signup'; ui.authError = '';
+    'auth-mode': function (d) {
+      ui.authMode = d.mode || 'login'; ui.authError = '';
       render(); return false;
+    },
+    'copy-code': function () {
+      var note = document.getElementById('copied');
+      var done = function (ok) { note.textContent = ok ? 'Copied ✓' : 'Copy failed. Select the code and copy it by hand.'; };
+      try { navigator.clipboard.writeText(ui.newCode).then(function () { done(true); }, function () { done(false); }); }
+      catch (e) { done(false); }
+      return false;
+    },
+    'code-done': function () {
+      ui.newCode = '';
+      render(); window.scrollTo(0, 0); return false;
     },
     logout: function () {
       flush().then(function () { return api('POST', '/api/logout'); }).catch(function () {}).then(function () {
@@ -500,15 +561,32 @@
 
   var forms = {
     auth: function (f, form) {
-      var signup = ui.authMode === 'signup';
+      var mode = ui.authMode;
       var body = { username: String(f.get('username')).trim(), password: String(f.get('password')) };
-      if (signup) body.name = String(f.get('name')).trim();
+      if (mode === 'signup') body.name = String(f.get('name')).trim();
+      if (mode === 'reset') body.code = String(f.get('code')).trim();
       ui.authUser = body.username; ui.authName = body.name || '';
       var btn = form.querySelector('button.primary');
       btn.disabled = true;
-      api('POST', signup ? '/api/signup' : '/api/login', body)
-        .then(function (j) { return enter(j, signup); })
+      api('POST', '/api/' + mode, body)
+        .then(function (j) { ui.authMode = 'login'; return enter(j, mode === 'signup'); })
         .catch(function (e) { ui.authError = e.message; })
+        .then(render);
+      return false;
+    },
+    recovery: function (f, form) {
+      form.querySelector('button').disabled = true;
+      api('POST', '/api/me/recovery', { password: String(f.get('password')) })
+        .then(function (j) { me.hasRecovery = true; ui.newCode = j.recoveryCode; ui.acctMsg = { ok: true, text: 'New recovery code made. Your old one no longer works.' }; })
+        .catch(function (e) { if (e.status === 429 || e.status === 401 || e.status === 400) ui.acctMsg = { ok: false, text: e.message }; else fail(e); })
+        .then(render);
+      return false;
+    },
+    password: function (f, form) {
+      form.querySelector('button').disabled = true;
+      api('POST', '/api/me/password', { password: String(f.get('password')), newPassword: String(f.get('newPassword')) })
+        .then(function () { ui.acctMsg = { ok: true, text: 'Password changed. Other devices have been signed out.' }; })
+        .catch(function (e) { if (e.status === 429 || e.status === 401 || e.status === 400) ui.acctMsg = { ok: false, text: e.message }; else fail(e); })
         .then(render);
       return false;
     },
@@ -547,6 +625,8 @@
     document.body.classList.toggle('anon', !me);
     if (ui.booting) { main.innerHTML = '<p class="muted">Pulling up a chair…</p>'; return; }
     if (!me) { main.innerHTML = authView(); return; }
+    document.body.classList.toggle('anon', !!ui.newCode); // hide the nav until the code is saved
+    if (ui.newCode) { main.innerHTML = codeView(); return; }
     var v = currentView();
     main.innerHTML = views[v]();
     document.querySelectorAll('#nav a').forEach(function (a) {
@@ -568,6 +648,9 @@
     e.preventDefault();
     var fn = forms[f.dataset.form];
     if (fn && fn(new FormData(f), f) !== false) { save(); render(); }
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.id === 'saved') document.getElementById('codedone').disabled = !e.target.checked;
   });
   document.addEventListener('input', function (e) {
     if (e.target.id === 'jobq' || e.target.id === 'jobmode') {

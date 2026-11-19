@@ -72,18 +72,8 @@
   }
 
   // ---------- fixed content ----------
-  var JOBS = [
-    { id: 'j1', title: 'Junior Frontend Developer', company: 'Papaya Labs', loc: 'Bengaluru', mode: 'Hybrid', pay: '₹5–8 LPA', tags: ['React', 'CSS'] },
-    { id: 'j2', title: 'Customer Support Associate', company: 'Kettle & Co', loc: 'Anywhere', mode: 'Remote', pay: '₹3–4.5 LPA', tags: ['Chat support', 'English'] },
-    { id: 'j3', title: 'Data Analyst (Fresher)', company: 'Northwind Metrics', loc: 'Chennai', mode: 'On-site', pay: '₹4–6 LPA', tags: ['SQL', 'Excel'] },
-    { id: 'j4', title: 'Content Writer', company: 'Lantern Media', loc: 'Anywhere', mode: 'Remote', pay: '₹25k–40k / month', tags: ['Writing', 'SEO'] },
-    { id: 'j5', title: 'Flutter Developer', company: 'Pocket Garden', loc: 'Hyderabad', mode: 'Hybrid', pay: '₹6–10 LPA', tags: ['Flutter', 'Dart'] },
-    { id: 'j6', title: 'Video Editor', company: 'Blink Studio', loc: 'Mumbai', mode: 'On-site', pay: '₹30k–50k / month', tags: ['Premiere', 'Shorts'] },
-    { id: 'j7', title: 'QA Tester', company: 'Bugnet', loc: 'Pune', mode: 'Hybrid', pay: '₹3.5–5.5 LPA', tags: ['Manual testing', 'Jira'] },
-    { id: 'j8', title: 'Sales Development Rep', company: 'Tallyhop', loc: 'Anywhere', mode: 'Remote', pay: '₹4 LPA + incentives', tags: ['Outbound', 'CRM'] },
-    { id: 'j9', title: 'Python Backend Intern', company: 'Quietbyte', loc: 'Coimbatore', mode: 'On-site', pay: '₹15k / month', tags: ['Python', 'APIs'] },
-    { id: 'j10', title: 'UI/UX Designer', company: 'Mango Tree Apps', loc: 'Anywhere', mode: 'Remote', pay: '₹5–9 LPA', tags: ['Figma', 'Research'] }
-  ];
+  // Live listings come from the server (/api/jobs), which credits and caches Adzuna results.
+  var jobs = { list: [], total: 0, page: 1, what: '', where: '', configured: null, loading: false, error: '', source: null };
 
   var STAGES = ['Wishlist', 'Applied', 'Interview', 'Offer', 'Rejected'];
   var TAGS = ['Win', 'Rant', 'Question', 'Tip'];
@@ -160,7 +150,7 @@
   var posts = [];      // shared feed, from the server
   var ui = {
     booting: true, authMode: 'login', authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
-    jobQuery: '', jobMode: 'All', q: Math.floor(Math.random() * QUESTIONS.length),
+    q: Math.floor(Math.random() * QUESTIONS.length),
     timerId: null, timerStart: 0, report: null
   };
 
@@ -382,13 +372,12 @@
     },
 
     jobs: function () {
-      return head('Jobs', 'Find something, hit Track, and it lands on your board.') +
-        '<div class="stack"><div class="row"><input class="grow" type="search" id="jobq" placeholder="Search title, company or skill" aria-label="Search jobs" value="' + esc(ui.jobQuery) + '">' +
-        '<select class="auto" id="jobmode" aria-label="Work mode">' + ['All', 'Remote', 'Hybrid', 'On-site'].map(function (m) {
-          return '<option' + (m === ui.jobMode ? ' selected' : '') + '>' + m + '</option>';
-        }).join('') + '</select></div>' +
-        '<p class="banner">These are sample listings with made-up companies. Real listings arrive once a jobs source is connected.</p>' +
-        '<div class="grid2" id="joblist">' + jobList() + '</div></div>';
+      return head('Jobs', 'Fresh listings from across India. Found one you like? Hit Track and it lands on your board.') +
+        '<div class="stack"><form class="card job-search" data-form="jobsearch">' +
+        '<label class="grow">Role or keyword<input type="search" name="what" maxlength="60" placeholder="e.g. customer support, React, accountant" value="' + esc(jobs.what) + '"></label>' +
+        '<label class="grow">City <span class="muted">(optional)</span><input type="search" name="where" maxlength="60" placeholder="e.g. Chennai" value="' + esc(jobs.where) + '"></label>' +
+        '<button class="btn primary">Search</button></form>' +
+        '<div id="joblist">' + jobsHtml() + '</div></div>';
     },
 
     tracker: function () {
@@ -397,7 +386,9 @@
         return '<section class="col"><h3><span>' + s + '</span><span class="muted">' + items.length + '</span></h3>' +
           items.map(function (a) {
             var id = esc(a.id);
-            return '<div class="app"><b>' + esc(a.title) + '</b><span class="muted small">' + esc(a.company) + '</span>' +
+            var title = typeof a.url === 'string' && /^https?:\/\//.test(a.url)
+              ? '<a class="plain-link" href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.title) + '</a>' : esc(a.title);
+            return '<div class="app"><b>' + title + '</b><span class="muted small">' + esc(a.company) + '</span>' +
               '<div class="row between"><div class="row">' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="-1" aria-label="Move back"' + (i === 0 ? ' disabled' : '') + '>←</button>' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="1" aria-label="Move forward"' + (i === STAGES.length - 1 ? ' disabled' : '') + '>→</button></div>' +
@@ -460,20 +451,74 @@
     }
   };
 
-  function jobList() {
-    var q = ui.jobQuery.trim().toLowerCase();
-    var list = JOBS.filter(function (j) {
-      if (ui.jobMode !== 'All' && j.mode !== ui.jobMode) return false;
-      return !q || (j.title + ' ' + j.company + ' ' + j.loc + ' ' + j.tags.join(' ')).toLowerCase().indexOf(q) > -1;
-    });
-    if (!list.length) return '<p class="muted">Nothing matches that. Try a different word.</p>';
-    return list.map(function (j) {
-      var tracked = S.apps.some(function (a) { return a.jobId === j.id; });
-      return '<article class="card job"><h3>' + esc(j.title) + '</h3><p class="meta">' + esc(j.company) + ' · ' + esc(j.loc) + ' · ' + esc(j.pay) + '</p>' +
-        '<div class="row between"><div class="row"><span class="pill">' + j.mode + '</span>' +
-        j.tags.map(function (t) { return '<span class="pill">' + esc(t) + '</span>'; }).join('') + '</div>' +
-        '<button class="btn tiny' + (tracked ? ' ghost' : ' primary') + '" data-act="track-job" data-id="' + j.id + '"' + (tracked ? ' disabled' : '') + '>' + (tracked ? 'Tracked ✓' : 'Track') + '</button></div></article>';
-    }).join('');
+  function money(n, currency) {
+    if (currency === 'INR') {
+      if (n >= 1e7) return '₹' + (n / 1e7).toFixed(1).replace(/\.0$/, '') + 'Cr';
+      if (n >= 1e5) return '₹' + (n / 1e5).toFixed(n >= 1e6 ? 0 : 1).replace(/\.0$/, '') + 'L';
+      return '₹' + Math.round(n / 1000) + 'k';
+    }
+    var sym = { GBP: '£', USD: '$' }[currency] || '';
+    return sym + (n >= 1000 ? Math.round(n / 1000) + 'k' : Math.round(n));
+  }
+  function salaryText(sal, currency) {
+    if (!sal) return '';
+    var lo = sal.min, hi = sal.max;
+    if (lo && hi && Math.round(lo) !== Math.round(hi)) return money(lo, currency) + '–' + money(hi, currency).replace(/^[₹£$]/, '') + ' a year';
+    return money(lo || hi, currency) + ' a year';
+  }
+  function jobHtml(j) {
+    var tracked = S.apps.some(function (a) { return a.jobId === j.id; });
+    var src = jobs.source || { name: 'Adzuna', url: 'https://www.adzuna.in' };
+    var meta = [j.company, j.location].filter(Boolean).map(esc).join(' · ');
+    var tags = [j.contract, j.type, j.category].filter(Boolean).map(function (t) { return '<span class="pill">' + esc(t) + '</span>'; }).join('');
+    var sal = salaryText(j.salary, src.currency);
+    return '<article class="card job"><div class="row between job-top"><h3>' + esc(j.title) + '</h3>' +
+      (j.posted ? '<span class="muted small nowrap">' + ago(j.posted) + '</span>' : '') + '</div>' +
+      '<p class="meta">' + meta + (sal ? ' · <b class="salary">' + esc(sal) + '</b>' : '') + '</p>' +
+      (j.snippet ? '<p class="snippet">' + esc(j.snippet) + (j.snippet.length >= 280 ? '…' : '') + '</p>' : '') +
+      '<div class="row between job-foot"><div class="row">' + tags + '</div>' +
+      '<div class="row"><a class="via" href="' + esc(src.url) + '" target="_blank" rel="noopener">Jobs by <b>' + esc(src.name) + '</b></a>' +
+      '<button class="btn tiny' + (tracked ? ' ghost' : '') + '" data-act="track-job" data-id="' + esc(j.id) + '"' + (tracked ? ' disabled' : '') + '>' + (tracked ? 'Tracked' : 'Track') + '</button>' +
+      '<a class="btn tiny primary" href="' + esc(j.url) + '" target="_blank" rel="noopener">View &amp; apply</a></div></div></article>';
+  }
+  function jobsHtml() {
+    if (jobs.configured === false) {
+      return '<div class="card stack"><h2>Live job listings are not switched on yet</h2>' +
+        '<p class="muted">They need a free key from Adzuna, added in the site settings.' + (me && me.isAdmin ? ' As a moderator, see the setup steps you were given (ADZUNA_APP_ID and ADZUNA_APP_KEY).' : ' Check back soon.') + '</p>' +
+        '<p class="muted small">Meanwhile you can add jobs you find elsewhere on your <a href="#/tracker">Tracker</a>.</p></div>';
+    }
+    if (jobs.error && !jobs.list.length) return '<p class="card muted">' + esc(jobs.error) + '</p>';
+    if (jobs.loading && !jobs.list.length) return '<p class="muted">Finding fresh listings…</p>';
+    if (jobs.configured === null) return '<p class="muted">Loading…</p>';
+    if (!jobs.list.length) return '<p class="card muted">No listings match that. Try a broader word, or leave the city empty.</p>';
+    var shown = jobs.list.length, more = shown < jobs.total && jobs.page < 10;
+    return '<p class="muted small results-count">' + (jobs.total > shown ? 'Showing ' + shown + ' of ' + jobs.total.toLocaleString() : shown + ' listing' + (shown === 1 ? '' : 's')) +
+      (jobs.what || jobs.where ? ' for <b>' + esc([jobs.what, jobs.where].filter(Boolean).join(' in ')) + '</b>' : ', newest first') + '</p>' +
+      '<div class="jobs-list">' + jobs.list.map(jobHtml).join('') + '</div>' +
+      (more ? '<div class="row center"><button class="btn" data-act="jobs-more"' + (jobs.loading ? ' disabled' : '') + '>' + (jobs.loading ? 'Loading…' : 'Load more') + '</button></div>' : '') +
+      (jobs.error ? '<p class="err">' + esc(jobs.error) + '</p>' : '');
+  }
+  function renderJobs() { var el = document.getElementById('joblist'); if (el && currentView() === 'jobs') el.innerHTML = jobsHtml(); }
+  function loadJobs(more) {
+    if (jobs.loading) return;
+    jobs.loading = true; jobs.error = '';
+    var page = more ? jobs.page + 1 : 1;
+    if (!more) { jobs.list = []; jobs.total = 0; }
+    renderJobs();
+    var qs = '?page=' + page + (jobs.what ? '&what=' + encodeURIComponent(jobs.what) : '') + (jobs.where ? '&where=' + encodeURIComponent(jobs.where) : '');
+    api('GET', '/api/jobs' + qs).then(function (j) {
+      jobs.configured = !!j.configured;
+      jobs.source = j.source || null;
+      var seen = {};
+      jobs.list.forEach(function (x) { seen[x.id] = true; });
+      jobs.list = jobs.list.concat((j.jobs || []).filter(function (x) { return !seen[x.id]; }));
+      jobs.total = Number(j.total) || jobs.list.length;
+      jobs.page = page;
+    }, function (e) {
+      if (e.status === 401) return fail(e);
+      jobs.error = e.message;
+      if (jobs.configured === null) jobs.configured = true;
+    }).then(function () { jobs.loading = false; renderJobs(); });
   }
 
   // ---------- resume checker (simple rules, runs in the browser) ----------
@@ -733,10 +778,15 @@
       return feedCall(api('DELETE', '/api/posts/' + Number(d.id)));
     },
     'track-job': function (d) {
-      var j = find(JOBS, d.id);
+      var j = find(jobs.list, d.id);
       if (!j || S.apps.some(function (a) { return a.jobId === j.id; })) return false;
-      S.apps.push({ id: uid(), jobId: j.id, title: j.title, company: j.company, stage: 'Wishlist', t: Date.now() });
+      S.apps.push({ id: uid(), jobId: j.id, title: j.title, company: j.company || 'Unknown company', url: j.url, stage: 'Wishlist', t: Date.now() });
+      save();
+      renderJobs();
+      toast('Added to your tracker under Wishlist.');
+      return false;
     },
+    'jobs-more': function () { loadJobs(true); return false; },
     'move-app': function (d) {
       var a = find(S.apps, d.id); if (!a) return;
       var i = STAGES.indexOf(a.stage) + Number(d.dir);
@@ -765,6 +815,12 @@
   };
 
   var forms = {
+    jobsearch: function (f) {
+      jobs.what = String(f.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      jobs.where = String(f.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      loadJobs(false);
+      return false;
+    },
     profile: function (f, form) {
       var btn = form.querySelector('button.primary');
       btn.disabled = true;
@@ -1597,6 +1653,7 @@
       loadFun();
     },
     profile: loadProfile,
+    jobs: function () { if (jobs.configured === null || (!jobs.list.length && !jobs.loading && !jobs.error)) loadJobs(false); },
     'edit-profile': loadEditor,
     people: loadPeople
   };
@@ -1666,11 +1723,7 @@
     }
   });
   document.addEventListener('input', function (e) {
-    if (e.target.id === 'jobq' || e.target.id === 'jobmode') {
-      ui.jobQuery = document.getElementById('jobq').value;
-      ui.jobMode = document.getElementById('jobmode').value;
-      document.getElementById('joblist').innerHTML = jobList();
-    } else if (e.target.id === 'resume') {
+    if (e.target.id === 'resume') {
       S.resume = e.target.value; save();
     } else if (e.target.id === 'peopleq') {
       prof.query = e.target.value;

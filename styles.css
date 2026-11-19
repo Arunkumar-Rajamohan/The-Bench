@@ -524,7 +524,8 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .person-text b { font-weight: 650; }
 .person-role { font: italic 1rem/1.35 var(--serif); color: var(--ink-2); }
 .person .status { margin-top: 4px; }
-.editor label { display: grid; gap: 6px; font-weight: 600; font-size: .86rem; color: var(--ink-2); }
+.editor label { display: block; font-weight: 600; font-size: .86rem; color: var(--ink-2); }
+.editor label > input, .editor label > select, .editor label > textarea, .job-search label > input { display: block; margin-top: 6px; }
 .editor label .muted { font-weight: 400; }
 .editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .editor legend { padding: 0; margin-bottom: 8px; font-weight: 600; font-size: .86rem; color: var(--ink-2); }
@@ -543,6 +544,34 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
   .profile-head { gap: 18px; }
   .avatar.xl { width: 72px; height: 72px; font-size: 2rem; }
   .profile-head .actions { width: 100%; }
+}
+
+
+/* ---------- live jobs ---------- */
+.job-search { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.job-search label { display: block; font-weight: 600; font-size: .86rem; color: var(--ink-2); flex: 1 1 220px; }
+.job-search label .muted { font-weight: 400; }
+.job-search .btn { height: 44px; padding: 0 24px; }
+.results-count { margin-bottom: 12px; }
+.jobs-list { display: grid; gap: 14px; }
+.job .job-top { align-items: baseline; flex-wrap: nowrap; }
+.job .job-top h3 { min-width: 0; }
+.nowrap { white-space: nowrap; }
+.job .salary { color: var(--good); font-weight: 600; white-space: nowrap; }
+.snippet { color: var(--ink-2); font-size: .92rem; line-height: 1.55; margin-bottom: 14px; }
+.job-foot { gap: 10px; }
+.job-foot > .row { gap: 6px; }
+.via {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 116px; height: 23px;
+  font-size: .74rem; color: var(--muted); text-decoration: none; padding: 0 8px; border-radius: 6px;
+}
+.via b { color: var(--ink-2); font-weight: 700; }
+.via:hover { color: var(--accent); background: var(--sunk); }
+.row.center { justify-content: center; margin-top: 18px; }
+@media (max-width: 860px) {
+  .job .job-top { flex-wrap: wrap; }
+  .job-foot { flex-direction: column; align-items: stretch; }
+  .job-foot > .row:last-child { justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

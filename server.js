@@ -644,7 +644,114 @@ async function api(req, res, route) {
   if (await chatApi(req, res, route, user)) return;
   if (await funApi(req, res, route, user)) return;
   if (await profileApi(req, res, route, user)) return;
+  if (await jobsApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
+}
+
+// ---------- job listings (Adzuna) ----------
+// Switched on by setting ADZUNA_APP_ID and ADZUNA_APP_KEY on the host. Results are cached for an hour
+// per search, and a daily cap protects the free quota. Each listing must be credited to Adzuna.
+
+const ADZUNA_ID = (process.env.ADZUNA_APP_ID || '').trim();
+const ADZUNA_KEY = (process.env.ADZUNA_APP_KEY || '').trim();
+const ADZUNA_COUNTRY = (process.env.ADZUNA_COUNTRY || 'in').trim().toLowerCase();
+const ADZUNA_BASE = (process.env.ADZUNA_BASE_URL || 'https://api.adzuna.com').trim().replace(/\/+$/, '');
+const ADZUNA_SITE = { in: 'https://www.adzuna.in', gb: 'https://www.adzuna.co.uk', us: 'https://www.adzuna.com' }[ADZUNA_COUNTRY] || 'https://www.adzuna.com';
+const JOBS_TTL = 60 * 60000;
+const JOBS_DAILY_CAP = Number(process.env.JOBS_DAILY_CAP) || 200;
+const jobsCache = new Map(); // search key -> { t, data }
+const jobsBudget = { day: '', used: 0 };
+if (ADZUNA_ID && !/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(ADZUNA_BASE)) throw new Error('ADZUNA_BASE_URL must use https.');
+
+const ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–',
+  lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', bull: '•', middot: '·', copy: '©', reg: '®', trade: '™', rupee: '₹'
+};
+function plainText(s) {
+  return String(s || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e) => {
+      if (e[0] === '#') { const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ' '; }
+      return ENTITIES[e.toLowerCase()] !== undefined ? ENTITIES[e.toLowerCase()] : m;
+    })
+    .replace(/\s+/g, ' ').trim();
+}
+
+function normaliseJob(r) {
+  const url = typeof r.redirect_url === 'string' && /^https?:\/\//.test(r.redirect_url) ? r.redirect_url : null;
+  if (!url || !r.title) return null;
+  const predicted = String(r.salary_is_predicted) === '1';
+  const min = Number(r.salary_min) || 0, max = Number(r.salary_max) || 0;
+  return {
+    id: 'adz:' + String(r.id || url).slice(0, 40),
+    title: plainText(r.title).slice(0, 140),
+    company: plainText(r.company && r.company.display_name).slice(0, 80),
+    location: plainText(r.location && r.location.display_name).slice(0, 80),
+    posted: Date.parse(r.created) || null,
+    url,
+    salary: !predicted && (min || max) ? { min, max } : null, // estimated salaries need extra Adzuna branding, so skip them
+    contract: r.contract_time === 'part_time' ? 'Part-time' : r.contract_time === 'full_time' ? 'Full-time' : '',
+    type: r.contract_type === 'contract' ? 'Contract' : r.contract_type === 'permanent' ? 'Permanent' : '',
+    category: plainText(r.category && r.category.label).replace(/ Jobs$/, '').slice(0, 60),
+    snippet: plainText(r.description).slice(0, 280)
+  };
+}
+
+async function adzunaSearch(what, where, page) {
+  const key = [what.toLowerCase(), where.toLowerCase(), page].join('|');
+  const hit = jobsCache.get(key);
+  if (hit && Date.now() - hit.t < JOBS_TTL) return hit.data;
+
+  const today = dayKey();
+  if (jobsBudget.day !== today) { jobsBudget.day = today; jobsBudget.used = 0; }
+  if (jobsBudget.used >= JOBS_DAILY_CAP) {
+    if (hit) return hit.data; // an older copy beats nothing
+    throw new HttpError(503, 'Job search has had a busy day and is resting until midnight. Try a search you have run before, or come back tomorrow.');
+  }
+  jobsBudget.used++;
+
+  const params = new URLSearchParams({
+    app_id: ADZUNA_ID, app_key: ADZUNA_KEY, results_per_page: '20', max_days_old: '30',
+    sort_by: what ? 'relevance' : 'date', 'content-type': 'application/json'
+  });
+  if (what) params.set('what', what);
+  if (where) params.set('where', where);
+  let r;
+  try {
+    r = await fetch(ADZUNA_BASE + '/v1/api/jobs/' + encodeURIComponent(ADZUNA_COUNTRY) + '/search/' + page + '?' + params, {
+      headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000)
+    });
+  } catch (e) {
+    if (hit) return hit.data;
+    throw new HttpError(502, 'Could not reach the job listings just now. Try again in a minute.');
+  }
+  if (!r.ok) {
+    console.error('Adzuna responded ' + r.status);
+    if (hit) return hit.data;
+    throw new HttpError(502, 'The job listings service is having trouble right now. Try again later.');
+  }
+  const j = await r.json().catch(() => ({}));
+  const data = {
+    total: Number(j.count) || 0,
+    jobs: (Array.isArray(j.results) ? j.results : []).map(normaliseJob).filter(Boolean)
+  };
+  jobsCache.set(key, { t: Date.now(), data });
+  if (jobsCache.size > 300) jobsCache.delete(jobsCache.keys().next().value); // drop the oldest entry
+  return data;
+}
+
+async function jobsApi(req, res, route, user) {
+  if (req.method !== 'GET' || route !== '/jobs') return false;
+  const configured = !!(ADZUNA_ID && ADZUNA_KEY);
+  if (!configured) { send(res, 200, { configured: false, jobs: [], total: 0 }); return true; }
+  limit('jobs:' + user.id, 30, 60000);
+  const sp = new URL(req.url, 'http://x').searchParams;
+  const what = (sp.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const where = (sp.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const page = Math.min(Math.max(parseInt(sp.get('page'), 10) || 1, 1), 10);
+  const data = await adzunaSearch(what, where, page);
+  send(res, 200, { configured: true, page, total: data.total, jobs: data.jobs, source: { name: 'Adzuna', url: ADZUNA_SITE, currency: { in: 'INR', gb: 'GBP', us: 'USD' }[ADZUNA_COUNTRY] || '' } });
+  return true;
 }
 
 // ---------- profiles ----------

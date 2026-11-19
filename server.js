@@ -149,6 +149,39 @@ const SCHEMA = [
     last_seen INTEGER NOT NULL
   )`,
   'CREATE INDEX IF NOT EXISTS job_alerts_user ON job_alerts(user_id)',
+  // Accountability buddies
+  `CREATE TABLE IF NOT EXISTS buddy_prefs (
+    user_id INTEGER PRIMARY KEY,
+    seeking INTEGER NOT NULL DEFAULT 0,
+    goal TEXT NOT NULL DEFAULT '',
+    updated INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS buddy_requests (
+    id INTEGER PRIMARY KEY,
+    from_id INTEGER NOT NULL,
+    to_id INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS buddy_pairs (
+    id INTEGER PRIMARY KEY,
+    a INTEGER NOT NULL,
+    b INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    ended INTEGER NOT NULL DEFAULT 0,
+    nudge_a TEXT NOT NULL DEFAULT '',
+    nudge_b TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS checkins (
+    user_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    plan TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    cheer TEXT NOT NULL DEFAULT '',
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (user_id, day)
+  )`,
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -345,7 +378,38 @@ const q = {
   addAlert: stmt('INSERT INTO job_alerts (user_id, what, place, remote, field, created, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   delAlert: stmt('DELETE FROM job_alerts WHERE id = ? AND user_id = ?'),
   seenAlert: stmt('UPDATE job_alerts SET last_seen = ? WHERE id = ? AND user_id = ?'),
-  people: stmt(`SELECT u.username, u.name, u.created, p.data FROM users u LEFT JOIN profiles p ON p.user_id = u.id
+  buddyPrefs: stmt('SELECT * FROM buddy_prefs WHERE user_id = ?'),
+  saveBuddyPrefs: stmt(`INSERT INTO buddy_prefs (user_id, seeking, goal, updated) VALUES (?, ?, ?, ?)
+    ON CONFLICT (user_id) DO UPDATE SET seeking = excluded.seeking, goal = excluded.goal, updated = excluded.updated`),
+  stopSeeking: stmt('UPDATE buddy_prefs SET seeking = 0 WHERE user_id = ?'),
+  buddySeekers: stmt(`SELECT u.id, u.username, u.name, bp.goal, pr.data FROM buddy_prefs bp
+      JOIN users u ON u.id = bp.user_id LEFT JOIN profiles pr ON pr.user_id = u.id
+    WHERE bp.seeking = 1 AND u.banned = 0 AND u.id != ?
+      AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+      AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = ?)
+      AND u.id NOT IN (SELECT a FROM buddy_pairs WHERE ended = 0)
+      AND u.id NOT IN (SELECT b FROM buddy_pairs WHERE ended = 0)
+    ORDER BY bp.updated DESC LIMIT 60`),
+  activePair: stmt('SELECT * FROM buddy_pairs WHERE ended = 0 AND (a = ? OR b = ?) ORDER BY id DESC LIMIT 1'),
+  addPair: stmt('INSERT INTO buddy_pairs (a, b, created) VALUES (?, ?, ?)'),
+  endPair: stmt('UPDATE buddy_pairs SET ended = 1 WHERE id = ?'),
+  nudgeA: stmt('UPDATE buddy_pairs SET nudge_a = ? WHERE id = ?'),
+  nudgeB: stmt('UPDATE buddy_pairs SET nudge_b = ? WHERE id = ?'),
+  buddyIncoming: stmt(`SELECT r.id, r.note, r.created, u.username, u.name FROM buddy_requests r JOIN users u ON u.id = r.from_id
+    WHERE r.to_id = ? AND r.status = 'pending' AND u.banned = 0 ORDER BY r.id DESC`),
+  buddyOutgoing: stmt(`SELECT r.id, r.note, r.created, u.username, u.name FROM buddy_requests r JOIN users u ON u.id = r.to_id
+    WHERE r.from_id = ? AND r.status = 'pending' AND u.banned = 0 ORDER BY r.id DESC`),
+  buddyReq: stmt('SELECT * FROM buddy_requests WHERE id = ?'),
+  buddyReqBetween: stmt(`SELECT id FROM buddy_requests WHERE status = 'pending' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))`),
+  addBuddyReq: stmt('INSERT INTO buddy_requests (from_id, to_id, note, created) VALUES (?, ?, ?, ?)'),
+  setBuddyReq: stmt('UPDATE buddy_requests SET status = ? WHERE id = ?'),
+  cancelBuddyReqsFor: stmt(`UPDATE buddy_requests SET status = 'cancelled' WHERE status = 'pending' AND (from_id IN (?, ?) OR to_id IN (?, ?))`),
+  checkin: stmt('SELECT * FROM checkins WHERE user_id = ? AND day = ?'),
+  checkinsSince: stmt('SELECT * FROM checkins WHERE user_id = ? AND day >= ? ORDER BY day'),
+  saveCheckin: stmt(`INSERT INTO checkins (user_id, day, plan, done, updated) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (user_id, day) DO UPDATE SET plan = excluded.plan, done = excluded.done, updated = excluded.updated`),
+  setCheer: stmt('UPDATE checkins SET cheer = ? WHERE user_id = ? AND day = ?'),
+  people: stmt(`SELECT u.username, u.name, u.created, p.data, (SELECT seeking FROM buddy_prefs WHERE user_id = u.id) AS seeking FROM users u LEFT JOIN profiles p ON p.user_id = u.id
     WHERE u.banned = 0 ORDER BY COALESCE(p.updated, 0) DESC, u.id DESC LIMIT 300`)
 };
 
@@ -563,7 +627,7 @@ async function api(req, res, route) {
     const u = await q.userByName.get(username);
     if (!(await checkPassword(u, b.password))) throw new HttpError(401, 'Wrong username or password.');
     if (u.banned) throw new HttpError(403, 'This account has been suspended.');
-    return send(res, 200, { user: Object.assign(publicUser(u), { profileDone: await profileDone(u.id) }), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
+    return send(res, 200, { user: Object.assign(publicUser(u), await profileFlags(u.id)), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
   }
 
   // Forgot password: username + one-time recovery code -> new password.
@@ -600,7 +664,7 @@ async function api(req, res, route) {
   if (!user) throw new HttpError(401, 'Please log in.');
 
   if (method === 'GET' && route === '/me') {
-    return send(res, 200, { user: Object.assign(publicUser(user), { profileDone: await profileDone(user.id) }), data: parseData(user.data) });
+    return send(res, 200, { user: Object.assign(publicUser(user), await profileFlags(user.id)), data: parseData(user.data) });
   }
 
   // Account changes ask for the current password, so a borrowed logged-in device cannot take over the account.
@@ -694,6 +758,7 @@ async function api(req, res, route) {
   if (await funApi(req, res, route, user)) return;
   if (await profileApi(req, res, route, user)) return;
   if (await jobsApi(req, res, route, user)) return;
+  if (await buddyApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
 }
 
@@ -1134,7 +1199,11 @@ function readProfile(row) {
   return p;
 }
 const isEmptyProfile = (p) => !p.headline && !p.bio && !p.location && !p.skills.length && !p.link;
-const profileDone = async (userId) => !isEmptyProfile(readProfile(await q.profile.get(userId)));
+// What the app needs about your own profile when you sign in: whether it is filled in, and your avatar colour.
+async function profileFlags(userId) {
+  const p = readProfile(await q.profile.get(userId));
+  return { profileDone: !isEmptyProfile(p), color: p.color };
+}
 
 async function profileApi(req, res, route, user) {
   const method = req.method;
@@ -1144,7 +1213,7 @@ async function profileApi(req, res, route, user) {
     const people = (await q.people.all()).map((r) => {
       const p = readProfile(r);
       return { username: r.username, name: r.name, joined: r.created, headline: p.headline, location: p.location,
-        status: p.status, color: p.color, skills: p.skills, me: r.username === user.username };
+        status: p.status, color: p.color, skills: p.skills, me: r.username === user.username, seeking: !!r.seeking };
     });
     send(res, 200, { people });
     return true;
@@ -1171,7 +1240,8 @@ async function profileApi(req, res, route, user) {
       send(res, 200, {
         username: u.username, name: u.name, joined: u.created, profile: p, me: u.id === user.id,
         blockedByMe: u.id !== user.id && !!(await q.isBlocked.get(user.id, u.id)),
-        stats: { posts: s.posts, answers: s.answers, solved: s.solved }
+        stats: { posts: s.posts, answers: s.answers, solved: s.solved },
+        buddy: Object.assign(await prefsOf(u.id), { paired: !!(await currentPair(u.id)) })
       });
       return true;
     }
@@ -1492,7 +1562,7 @@ async function chatApi(req, res, route, user) {
   }
   if ((m = /^\/blocks\/([a-z0-9_]{3,20})$/.exec(route)) && (method === 'POST' || method === 'DELETE')) {
     const peer = await peerByName(m[1], user);
-    if (method === 'POST') await q.addBlock.run(user.id, peer.id, Date.now());
+    if (method === 'POST') { await q.addBlock.run(user.id, peer.id, Date.now()); await endPairBetween(user.id, peer.id); }
     else await q.delBlock.run(user.id, peer.id);
     send(res, 200, { ok: true });
     return true;
@@ -1550,6 +1620,226 @@ async function chatApi(req, res, route, user) {
       send(res, 200, { ok: true });
       return true;
     }
+  }
+
+  return false;
+}
+
+// ---------- accountability buddies ----------
+// Opt in, get matched with one buddy, check in daily (plan + done), cheer and nudge each other.
+// Plans are visible only to your buddy. Blocking or a ban ends a pairing.
+
+const BUDDY_CHEERS = ['🙌', '💪', '🔥', '👏'];
+const MAX_OUTGOING_REQUESTS = 3;
+const SILENT_DAYS = 5;
+const dayDiff = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
+
+async function prefsOf(userId) {
+  const p = await q.buddyPrefs.get(userId);
+  return { seeking: !!(p && p.seeking), goal: (p && p.goal) || '' };
+}
+function buddyPeer(pair, userId) { return pair.a === userId ? pair.b : pair.a; }
+function pushBuddy(userId, kind, from) { push(userId, { type: 'buddy', channel: 'buddy', kind, from }); }
+
+// The current pairing, or null. A pairing with a banned member is closed on sight.
+async function currentPair(userId) {
+  const pair = await q.activePair.get(userId, userId);
+  if (!pair) return null;
+  const other = await q.userById.get(buddyPeer(pair, userId));
+  if (!other || other.banned) { await q.endPair.run(pair.id); return null; }
+  return { pair, other };
+}
+
+async function endPairBetween(x, y) {
+  const pair = await q.activePair.get(x, x);
+  if (pair && buddyPeer(pair, x) === y) {
+    await q.endPair.run(pair.id);
+    pushBuddy(y, 'ended', '');
+    pushBuddy(x, 'ended', '');
+  }
+}
+
+function sharedStreak(mine, theirs, today) {
+  const a = new Set(mine.filter((c) => c.plan).map((c) => c.day));
+  const b = new Set(theirs.filter((c) => c.plan).map((c) => c.day));
+  let d = a.has(today) && b.has(today) ? today : shiftDay(today, -1), n = 0;
+  while (a.has(d) && b.has(d)) { n++; d = shiftDay(d, -1); }
+  return n;
+}
+
+function week(checkins, today) {
+  const byDay = Object.fromEntries(checkins.map((c) => [c.day, c]));
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = shiftDay(today, -i), c = byDay[d];
+    out.push({ day: d, planned: !!(c && c.plan), done: !!(c && c.done) });
+  }
+  return out;
+}
+const checkinView = (c) => (c ? { plan: c.plan, done: !!c.done, cheer: c.cheer || '' } : { plan: '', done: false, cheer: '' });
+
+async function buddyState(user) {
+  const today = dayKey();
+  const state = { today, prefs: await prefsOf(user.id), pair: null, incoming: [], outgoing: [] };
+  const cur = await currentPair(user.id);
+  if (cur) {
+    const { pair, other } = cur;
+    const since = shiftDay(today, -90);
+    const mine = await q.checkinsSince.all(user.id, since);
+    const theirs = await q.checkinsSince.all(other.id, since);
+    const prof = readProfile(await q.profile.get(other.id));
+    const lastTheirs = theirs.filter((c) => c.plan).map((c) => c.day).pop();
+    const startDay = dayKey(new Date(pair.created));
+    const silentFor = dayDiff(lastTheirs || startDay, today);
+    const iAmA = pair.a === user.id;
+    state.pair = {
+      id: pair.id, since: pair.created,
+      buddy: { username: other.username, name: other.name, color: prof.color, headline: prof.headline, goal: (await prefsOf(other.id)).goal },
+      me: checkinView(mine.find((c) => c.day === today)),
+      them: checkinView(theirs.find((c) => c.day === today)),
+      myWeek: week(mine, today), theirWeek: week(theirs, today),
+      streak: sharedStreak(mine, theirs, today),
+      silentDays: silentFor, // days since your buddy last checked in (or since you paired)
+      nudgedMe: (iAmA ? pair.nudge_a : pair.nudge_b) === today,
+      nudgedThem: (iAmA ? pair.nudge_b : pair.nudge_a) === today
+    };
+  } else {
+    state.incoming = (await q.buddyIncoming.all(user.id)).map((r) => ({ id: r.id, note: r.note, t: r.created, username: r.username, name: r.name }));
+    state.outgoing = (await q.buddyOutgoing.all(user.id)).map((r) => ({ id: r.id, note: r.note, t: r.created, username: r.username, name: r.name }));
+  }
+  return state;
+}
+
+async function buddyApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+  if (!route.startsWith('/buddy')) return false;
+
+  if (method === 'GET' && route === '/buddy') { send(res, 200, await buddyState(user)); return true; }
+
+  if (method === 'PUT' && route === '/buddy/prefs') {
+    limit('buddyprefs:' + user.id, 30, 10 * 60000);
+    const b = await readBody(req);
+    const goal = line(b.goal, 120, 'Your goal');
+    await q.saveBuddyPrefs.run(user.id, b.seeking ? 1 : 0, goal, Date.now());
+    send(res, 200, await buddyState(user));
+    return true;
+  }
+
+  if (method === 'GET' && route === '/buddy/suggestions') {
+    const me = readProfile(await q.profile.get(user.id));
+    const myGoal = (await prefsOf(user.id)).goal;
+    const words = (t) => new Set(String(t || '').toLowerCase().match(/[a-z]{4,}/g) || []);
+    const mineWords = words(me.headline + ' ' + me.skills.join(' ') + ' ' + myGoal);
+    const rows = await q.buddySeekers.all(user.id, user.id, user.id);
+    const list = rows.map((r) => {
+      const p = readProfile(r);
+      let score = 0;
+      if (me.location && p.location && me.location.toLowerCase() === p.location.toLowerCase()) score += 2;
+      for (const w of words(p.headline + ' ' + p.skills.join(' ') + ' ' + r.goal)) if (mineWords.has(w)) score++;
+      return { username: r.username, name: r.name, goal: r.goal, headline: p.headline, location: p.location, color: p.color, status: p.status, score };
+    }).sort((x, y) => y.score - x.score).slice(0, 12);
+    send(res, 200, { suggestions: list });
+    return true;
+  }
+
+  if (method === 'POST' && route === '/buddy/requests') {
+    limit('buddyreq:' + user.id, 10, 60 * 60000);
+    const b = await readBody(req);
+    const target = await q.userByName.get(String(b.username || '').toLowerCase());
+    if (!target || target.banned || target.id === user.id) throw new HttpError(404, 'That person is not available.');
+    const note = line(b.note, 140, 'Your note');
+    if (await currentPair(user.id)) throw new HttpError(409, 'You already have a buddy. End that pairing first.');
+    if (await currentPair(target.id)) throw new HttpError(409, target.name + ' already has a buddy.');
+    if (!(await prefsOf(target.id)).seeking) throw new HttpError(409, target.name + ' is not looking for a buddy right now.');
+    if ((await q.isBlocked.get(user.id, target.id)) || (await q.isBlocked.get(target.id, user.id))) throw new HttpError(403, 'You cannot send a request to this person.');
+    if (await q.buddyReqBetween.get(user.id, target.id, target.id, user.id)) throw new HttpError(409, 'There is already a request between you two.');
+    if ((await q.buddyOutgoing.all(user.id)).length >= MAX_OUTGOING_REQUESTS) throw new HttpError(429, 'You have ' + MAX_OUTGOING_REQUESTS + ' requests waiting. Give people a little time, or cancel one.');
+    await q.addBuddyReq.run(user.id, target.id, note, Date.now());
+    pushBuddy(target.id, 'request', user.name);
+    send(res, 201, await buddyState(user));
+    return true;
+  }
+
+  if ((m = /^\/buddy\/requests\/(\d{1,15})(\/accept|\/decline)?$/.exec(route))) {
+    const r = await q.buddyReq.get(Number(m[1]));
+    if (!r || r.status !== 'pending' || (r.to_id !== user.id && r.from_id !== user.id)) throw new HttpError(404, 'That request is no longer open.');
+    if (method === 'DELETE' && !m[2]) {
+      if (r.from_id !== user.id) throw new HttpError(403, 'Only the sender can cancel a request.');
+      await q.setBuddyReq.run('cancelled', r.id);
+      send(res, 200, await buddyState(user));
+      return true;
+    }
+    if (method === 'POST' && m[2] && r.to_id === user.id) {
+      const sender = await q.userById.get(r.from_id);
+      if (m[2] === '/decline') {
+        await q.setBuddyReq.run('declined', r.id);
+        if (sender) pushBuddy(sender.id, 'declined', user.name);
+        send(res, 200, await buddyState(user));
+        return true;
+      }
+      if (!sender || sender.banned) { await q.setBuddyReq.run('cancelled', r.id); throw new HttpError(404, 'That person is no longer here.'); }
+      if ((await currentPair(user.id)) || (await currentPair(sender.id))) throw new HttpError(409, 'One of you already has a buddy.');
+      await q.addPair.run(sender.id, user.id, Date.now());
+      await q.setBuddyReq.run('accepted', r.id);
+      await q.cancelBuddyReqsFor.run(user.id, sender.id, user.id, sender.id);
+      await q.stopSeeking.run(user.id);
+      await q.stopSeeking.run(sender.id);
+      pushBuddy(sender.id, 'accepted', user.name);
+      send(res, 200, await buddyState(user));
+      return true;
+    }
+    throw new HttpError(403, 'You cannot do that with this request.');
+  }
+
+  // Everything below needs a current buddy, except checking in (which you can do on your own too).
+  if (method === 'PUT' && route === '/buddy/checkin') {
+    limit('checkin:' + user.id, 60, 10 * 60000);
+    const b = await readBody(req);
+    const today = dayKey();
+    const prev = await q.checkin.get(user.id, today);
+    const plan = b.plan === undefined ? (prev ? prev.plan : '') : line(b.plan, 140, 'Today\'s plan');
+    const done = b.done === undefined ? !!(prev && prev.done) : !!b.done;
+    if (done && !plan) throw new HttpError(400, 'Write today\'s plan first.');
+    await q.saveCheckin.run(user.id, today, plan, done ? 1 : 0, Date.now());
+    const cur = await currentPair(user.id);
+    if (cur) pushBuddy(cur.other.id, done && !(prev && prev.done) ? 'done' : 'checkin', user.name);
+    send(res, 200, await buddyState(user));
+    return true;
+  }
+
+  const cur = await currentPair(user.id);
+  if (!cur) throw new HttpError(404, 'You do not have a buddy right now.');
+  const today = dayKey();
+
+  if (method === 'POST' && route === '/buddy/cheer') {
+    limit('cheer:' + user.id, 30, 10 * 60000);
+    const b = await readBody(req);
+    if (!BUDDY_CHEERS.includes(b.emoji)) throw new HttpError(400, 'Pick one of the cheers.');
+    const theirs = await q.checkin.get(cur.other.id, today);
+    if (!theirs || !theirs.plan) throw new HttpError(409, cur.other.name + ' has not checked in yet today.');
+    await q.setCheer.run(b.emoji, cur.other.id, today);
+    pushBuddy(cur.other.id, 'cheer', user.name);
+    send(res, 200, await buddyState(user));
+    return true;
+  }
+
+  if (method === 'POST' && route === '/buddy/nudge') {
+    const theirs = await q.checkin.get(cur.other.id, today);
+    if (theirs && theirs.plan) throw new HttpError(409, cur.other.name + ' has already checked in today.');
+    const otherIsA = cur.pair.a === cur.other.id;
+    if ((otherIsA ? cur.pair.nudge_a : cur.pair.nudge_b) === today) throw new HttpError(409, 'You already nudged ' + cur.other.name + ' today.');
+    await (otherIsA ? q.nudgeA : q.nudgeB).run(today, cur.pair.id);
+    pushBuddy(cur.other.id, 'nudge', user.name);
+    send(res, 200, await buddyState(user));
+    return true;
+  }
+
+  if (method === 'POST' && route === '/buddy/end') {
+    await q.endPair.run(cur.pair.id);
+    pushBuddy(cur.other.id, 'ended', user.name);
+    send(res, 200, await buddyState(user));
+    return true;
   }
 
   return false;

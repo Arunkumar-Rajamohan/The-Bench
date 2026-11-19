@@ -47,6 +47,9 @@
     pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
     link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
     bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+    buddy: '<circle cx="8" cy="8" r="3"/><circle cx="16.5" cy="8" r="3"/><path d="M2.5 19.5c0-3.1 2.4-5.5 5.5-5.5s5.5 2.4 5.5 5.5"/><path d="M13.6 14.6a5.5 5.5 0 0 1 8.4 4.9"/>',
+    settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>',
+    logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
   function ico(name) {
@@ -181,6 +184,7 @@
     me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
     stopStream(); chat = freshChat(); updateBadge();
     alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
+    buddy.state = null; buddy.suggestions = null; buddy.editing = false;
   }
   var toastTimer = null;
   function toast(msg) {
@@ -304,11 +308,12 @@
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
         (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
+        homeBuddyHtml() +
         alertBanner() +
         '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
-        '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/u/' + esc(me.username) + '">Your profile</a> · <a href="#/people">People</a> · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
+        accountBar() + '</div>';
     },
 
     account: function () {
@@ -346,9 +351,15 @@
         '<div id="editbody"><p class="muted">Loading…</p></div>';
     },
 
+    buddy: function () {
+      return head('Accountability buddy', 'Pair up with one person, share a one-line plan each day, and keep each other going.') +
+        '<div id="buddybody">' + buddyHtml() + '</div>';
+    },
+
     people: function () {
       return head('People', 'Everyone on The Bench. Find someone hunting for the same kind of role, or just say hello.') +
         '<div class="stack"><input type="search" id="peopleq" placeholder="Search by name, role, skill or city" aria-label="Search people" value="' + esc(prof.query) + '">' +
+        '<div class="chips"><button type="button" class="chip' + (prof.buddyOnly ? ' on' : '') + '" data-act="people-buddy" aria-pressed="' + !!prof.buddyOnly + '">' + ico('users') + ' Looking for a buddy</button></div>' +
         '<div class="people-grid" id="peoplelist">' + peopleHtml() + '</div></div>';
     },
 
@@ -442,6 +453,7 @@
           d.toLocaleDateString(undefined, { weekday: 'short' }) + '</div>');
       }
       return head('Routine', 'Job hunting is a job. Tick at least one thing a day to keep the streak alive.') +
+        '<p class="banner">' + ico('users') + '<span>Keep each other going: check in with an <a href="#/buddy">accountability buddy</a>.</span></p>' +
         '<div class="stats"><div class="stat hot"><b>' + streak() + '</b><span>' + ico('flame') + 'Day streak</span></div>' +
         '<div class="stat"><b>' + doneOn(today()).length + '/' + S.routine.tasks.length + '</b><span>done today</span></div></div>' +
         '<div class="grid2"><section class="card"><h2>Today</h2>' + taskList() +
@@ -723,6 +735,7 @@
     }
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     loadAlerts();
+    loadBuddy();
     return loadPosts().catch(fail);
   }
   function oldLocal() {
@@ -918,6 +931,40 @@
       return false;
     },
     'jobs-more': function () { loadJobs(true); return false; },
+    'people-buddy': function () {
+      prof.buddyOnly = !prof.buddyOnly;
+      render();
+      return false;
+    },
+    'buddy-ask': function (d) {
+      var note = window.prompt('Ask ' + d.n + ' to be your accountability buddy.\nAdd a short note? (optional, e.g. what you are working towards)', '');
+      if (note === null) return false;
+      buddyCall('POST', '/api/buddy/requests', { username: d.u, note: note }, 'Request sent to ' + d.n + '.').then(function () {
+        if (currentView() === 'profile') loadProfile();
+      });
+      return false;
+    },
+    'buddy-accept': function (d) { buddyCall('POST', '/api/buddy/requests/' + Number(d.id) + '/accept', {}, 'You are buddies now! Check in below. 🎉'); return false; },
+    'buddy-decline': function (d) { buddyCall('POST', '/api/buddy/requests/' + Number(d.id) + '/decline', {}, 'Request declined.'); return false; },
+    'buddy-cancel': function (d) { buddyCall('DELETE', '/api/buddy/requests/' + Number(d.id), null, 'Request cancelled.').then(loadSuggestions); return false; },
+    'buddy-done': function () {
+      var p = buddy.state && buddy.state.pair;
+      if (!p) return false;
+      buddyCall('PUT', '/api/buddy/checkin', { done: !p.me.done }, p.me.done ? '' : 'Nice work! Your buddy will see it. 🎉').then(function () { if (!p.me.done) confetti(); });
+      return false;
+    },
+    'buddy-edit': function () { buddy.editing = !buddy.editing; renderBuddy(); return false; },
+    'buddy-cheer': function (d) { buddyCall('POST', '/api/buddy/cheer', { emoji: d.e }, 'Cheer sent ' + d.e); return false; },
+    'buddy-nudge': function () { buddyCall('POST', '/api/buddy/nudge', {}, 'Nudge sent 👋'); return false; },
+    'buddy-end': function (d) {
+      var p = buddy.state && buddy.state.pair;
+      if (!p || !window.confirm('End your buddy pairing with ' + p.buddy.name + '?\n\nThey will be told the pairing ended. You can find a new buddy straight after.')) return false;
+      buddyCall('POST', '/api/buddy/end', {}, 'Pairing ended.').then(function () {
+        if (d.find) buddyCall('PUT', '/api/buddy/prefs', { seeking: true, goal: (buddy.state && buddy.state.prefs.goal) || '' });
+        loadSuggestions();
+      });
+      return false;
+    },
     'save-alert': function () {
       api('POST', '/api/alerts', { what: jobs.what, where: jobs.where, remote: jobs.remote, field: jobs.field }).then(function (j) {
         toast('Alert saved: ' + j.alert.name + '. New matches will show up here and on Home.');
@@ -1025,6 +1072,19 @@
   };
 
   var forms = {
+    buddyprefs: function (f) {
+      buddyCall('PUT', '/api/buddy/prefs', { seeking: f.get('seeking') === '1', goal: f.get('goal') },
+        f.get('seeking') === '1' ? 'Saved. Others looking for a buddy can now find you.' : 'Saved.').then(loadSuggestions);
+      return false;
+    },
+    checkin: function (f, form) {
+      var plan = String(f.get('plan') || '').trim();
+      if (!plan) return false;
+      form.querySelector('button').disabled = true;
+      buddy.editing = false;
+      buddyCall('PUT', '/api/buddy/checkin', { plan: plan }, 'Checked in. Your buddy can see your plan.');
+      return false;
+    },
     jobsearch: function (f) {
       jobs.what = String(f.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
       jobs.where = String(f.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -1059,6 +1119,7 @@
       api('PUT', '/api/profile', body).then(function (j) {
         me.name = j.name;
         me.profileDone = !!(j.profile.headline || j.profile.bio || j.profile.location || j.profile.skills.length || j.profile.link);
+        me.color = j.profile.color;
         prof.people = null;
         toast('Profile saved.');
         location.hash = '#/u/' + me.username;
@@ -1425,6 +1486,7 @@
       var ev;
       try { ev = JSON.parse(e.data); } catch (err) { return; /* ignore a bad event */ }
       if (ev && ev.type === 'jobs-updated') return loadAlerts();
+      if (ev && ev.type === 'buddy') return onBuddyEvent(ev);
       onChatEvent(ev);
     };
     es.onerror = function () {
@@ -1785,9 +1847,12 @@
     var role = p.headline
       ? '<p class="headline">' + (p.status === 'hired' ? 'Now working as ' : 'Looking for ') + '<b>' + esc(p.headline) + '</b></p>'
       : j.me ? '<p class="headline muted"><a href="#/edit-profile">Add the role you are looking for</a></p>' : '';
+    var canAsk = !j.me && j.buddy && j.buddy.seeking && !j.buddy.paired && !j.blockedByMe;
+    if (j.buddy && j.buddy.seeking && !j.buddy.paired) meta.push('<span class="buddy-tag">' + ico('users') + ' Looking for a buddy</span>');
     var actions = j.me
       ? '<a class="btn primary" href="#/edit-profile">Edit profile</a>'
-      : '<a class="btn primary" href="#/dm/' + u + '">' + ico('chat') + 'Message</a>' +
+      : (canAsk ? '<button class="btn" data-act="buddy-ask" data-u="' + u + '" data-n="' + esc(j.name) + '">' + ico('users') + 'Ask to be buddies</button>' : '') +
+        '<a class="btn primary" href="#/dm/' + u + '">' + ico('chat') + 'Message</a>' +
         '<button class="btn ghost" data-act="' + (j.blockedByMe ? 'unblock' : 'block') + '" data-u="' + u + '">' + (j.blockedByMe ? 'Unblock' : 'Block') + '</button>';
     var about = p.bio
       ? '<p class="bio">' + esc(p.bio) + '</p>'
@@ -1856,6 +1921,7 @@
     if (!prof.people) return '<p class="muted">Loading…</p>';
     var q = prof.query.trim().toLowerCase();
     var list = prof.people.filter(function (p) {
+      if (prof.buddyOnly && !p.seeking) return false;
       return !q || [p.name, p.username, p.headline, p.location, p.skills.join(' ')].join(' ').toLowerCase().indexOf(q) > -1;
     });
     if (!list.length) return '<p class="muted">Nobody matches that yet.</p>';
@@ -1864,8 +1930,183 @@
         '<span class="person-text"><b>' + esc(p.name) + (p.me ? ' <span class="muted">(you)</span>' : '') + '</b>' +
         '<span class="muted small">@' + esc(p.username) + (p.location ? ' · ' + esc(p.location) : '') + '</span>' +
         (p.headline ? '<span class="person-role">' + esc(p.headline) + '</span>' : '') +
-        statusLabel(p.status) + '</span></a>';
+        statusLabel(p.status) + (p.seeking ? '<span class="buddy-tag">' + ico('users') + ' Looking for a buddy</span>' : '') + '</span></a>';
     }).join('');
+  }
+
+  // ---------- accountability buddy ----------
+  var BUDDY_CHEERS = ['🙌', '💪', '🔥', '👏'];
+  var QUIET_DAYS = 5;
+  var buddy = { state: null, suggestions: null, editing: false };
+
+  function loadBuddy() {
+    if (!me) return Promise.resolve();
+    return api('GET', '/api/buddy').then(function (j) {
+      buddy.state = j;
+      if (j.pair && j.pair.me.plan) buddy.editing = false;
+      renderBuddy();
+      updateHomeBuddy();
+    }).catch(function (e) { if (e.status === 401) fail(e); });
+  }
+  function loadSuggestions() {
+    api('GET', '/api/buddy/suggestions').then(function (j) {
+      buddy.suggestions = Array.isArray(j.suggestions) ? j.suggestions : [];
+      renderBuddy();
+    }).catch(fail);
+  }
+  function renderBuddy() { if (currentView() === 'buddy') renderSection('buddybody', buddyHtml()); }
+  function buddyCall(method, url, body, okMsg) {
+    return api(method, url, body).then(function (j) {
+      if (j && j.today) { buddy.state = j; renderBuddy(); updateHomeBuddy(); }
+      if (okMsg) toast(okMsg);
+      return j;
+    }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); });
+  }
+  function dayLetter(day) { return new Date(day + 'T12:00:00').toLocaleDateString([], { weekday: 'narrow' }); }
+  function weekRow(label, days) {
+    return '<div class="bweek"><span class="bweek-label">' + esc(label) + '</span>' + days.map(function (d) {
+      var cls = d.done ? 'done' : d.planned ? 'planned' : '';
+      return '<span class="bday ' + cls + '" title="' + esc(d.day) + (d.done ? ': done' : d.planned ? ': checked in' : ': no check-in') + '"><i></i>' + esc(dayLetter(d.day)) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function buddyHtml() {
+    var st = buddy.state;
+    if (!st) return '<p class="muted">Loading…</p>';
+    return st.pair ? pairedHtml(st) : soloHtml(st);
+  }
+
+  function soloHtml(st) {
+    var prefs = '<form class="card stack narrow" data-form="buddyprefs">' +
+      '<label class="check big-check"><input type="checkbox" name="seeking" value="1"' + (st.prefs.seeking ? ' checked' : '') + '> I\'m looking for an accountability buddy</label>' +
+      '<label class="field-label">What are you working towards? <span class="muted">(optional)</span>' +
+      '<input type="text" id="bgoal" name="goal" maxlength="120" placeholder="e.g. 2 applications a day, landing a support role in Chennai" value="' + esc(st.prefs.goal) + '"></label>' +
+      '<p class="muted small">When this is on, other members can find you and send you a request. You can only have one buddy at a time.</p>' +
+      '<div class="row"><button class="btn primary">Save</button></div></form>';
+    var incoming = st.incoming.length ? '<section class="stack"><h3>Buddy requests for you</h3>' + st.incoming.map(function (r) {
+      return '<article class="card buddy-req"><div class="row between"><span><a class="plain-link" href="#/u/' + esc(r.username) + '"><b>' + esc(r.name) + '</b></a> <span class="muted small">@' + esc(r.username) + ' · ' + ago(r.t) + '</span></span>' +
+        '<span class="row"><button class="btn tiny ghost" data-act="buddy-decline" data-id="' + Number(r.id) + '">Not now</button>' +
+        '<button class="btn tiny primary" data-act="buddy-accept" data-id="' + Number(r.id) + '">Accept</button></span></div>' +
+        (r.note ? '<p class="snippet">“' + esc(r.note) + '”</p>' : '') + '</article>';
+    }).join('') + '</section>' : '';
+    var outgoing = st.outgoing.length ? '<section class="stack"><h3>Waiting to hear back</h3>' + st.outgoing.map(function (r) {
+      return '<div class="row between card buddy-req"><span>You asked <a class="plain-link" href="#/u/' + esc(r.username) + '"><b>' + esc(r.name) + '</b></a> <span class="muted small">' + ago(r.t) + '</span></span>' +
+        '<button class="link" data-act="buddy-cancel" data-id="' + Number(r.id) + '">Cancel request</button></div>';
+    }).join('') + '</section>' : '';
+    var sugg = buddy.suggestions === null ? '<p class="muted">Finding people…</p>'
+      : buddy.suggestions.length ? '<div class="people-grid">' + buddy.suggestions.map(function (p) {
+          var asked = st.outgoing.some(function (r) { return r.username === p.username; });
+          return '<article class="card person buddy-person">' + avatarHtml(p.name, p.color, 'lg') + '<span class="person-text">' +
+            '<a class="plain-link" href="#/u/' + esc(p.username) + '"><b>' + esc(p.name) + '</b></a>' +
+            '<span class="muted small">@' + esc(p.username) + (p.location ? ' · ' + esc(p.location) : '') + '</span>' +
+            (p.headline ? '<span class="person-role">' + esc(p.headline) + '</span>' : '') +
+            (p.goal ? '<span class="small">Working towards: ' + esc(p.goal) + '</span>' : '') +
+            '<span class="row" style="margin-top:8px">' + (asked ? '<span class="muted small">Request sent</span>'
+              : '<button class="btn tiny primary" data-act="buddy-ask" data-u="' + esc(p.username) + '" data-n="' + esc(p.name) + '">Ask to be buddies</button>') +
+            '</span></span></article>';
+        }).join('') + '</div>'
+      : '<p class="card muted">Nobody else is looking for a buddy right now. Turn on “I\'m looking” above so others can find you, and check back soon.</p>';
+    return '<section class="card buddy-intro"><h2>' + ico('users') + ' How it works</h2><ol class="steps">' +
+      '<li><b>Pair up</b> with one person who is also job hunting.</li>' +
+      '<li><b>Each morning</b>, write one line about today\'s plan. Tick it off when it is done.</li>' +
+      '<li><b>See each other\'s day</b>, cheer each other on, and nudge if someone goes quiet.</li></ol>' +
+      '<p class="muted small">Your plans are only visible to your buddy. Either of you can end the pairing at any time.</p></section>' +
+      incoming + prefs + outgoing +
+      '<section class="stack"><h3>People looking for a buddy</h3>' + sugg + '</section>';
+  }
+
+  function pairedHtml(st) {
+    var p = st.pair, b = p.buddy, u = esc(b.username);
+    var quiet = p.silentDays >= QUIET_DAYS
+      ? '<p class="banner">' + ico('bell') + '<span><b>' + esc(b.name) + ' has not checked in for ' + p.silentDays + ' days.</b> Life happens. Send a nudge, or <button class="link big" data-act="buddy-end" data-find="1">find a new buddy</button>.</span></p>' : '';
+    var mine = p.me.plan && !buddy.editing
+      ? '<p class="plan">' + esc(p.me.plan) + '</p>' +
+        '<div class="row"><button class="btn ' + (p.me.done ? 'ghost done-btn' : 'primary') + '" data-act="buddy-done">' + (p.me.done ? ico('check') + 'Done. Nice work!' : 'Mark as done') + '</button>' +
+        '<button class="link" data-act="buddy-edit">Edit plan</button></div>'
+      : '<form class="stack" data-form="checkin"><input type="text" id="bplan" name="plan" maxlength="140" required placeholder="e.g. Apply to 2 jobs and finish SQL chapter 4" value="' + esc(p.me.plan) + '">' +
+        '<div class="row"><button class="btn primary">' + (p.me.plan ? 'Save plan' : 'Check in') + '</button>' + (p.me.plan ? '<button type="button" class="link" data-act="buddy-edit">Cancel</button>' : '') + '</div></form>';
+    var gotCheer = p.me.cheer ? '<p class="cheer-note">' + esc(b.name) + ' cheered you on ' + esc(p.me.cheer) + '</p>' : '';
+    var gotNudge = p.nudgedMe && !p.me.plan ? '<p class="cheer-note">' + esc(b.name) + ' nudged you to check in 👋</p>' : '';
+    var theirs = p.them.plan
+      ? '<p class="plan">' + esc(p.them.plan) + '</p><p class="small ' + (p.them.done ? 'win-text' : 'muted') + '">' + (p.them.done ? ico('check') + ' Done for today' : 'In progress') + '</p>' +
+        '<div class="row cheers">' + BUDDY_CHEERS.map(function (e) {
+          return '<button class="react' + (p.them.cheer === e ? ' on' : '') + '" data-act="buddy-cheer" data-e="' + e + '" aria-label="Cheer with ' + e + '">' + e + '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted">Has not checked in yet today.</p>' +
+        (p.nudgedThem ? '<p class="muted small">' + ico('check') + ' Nudged</p>' : '<button class="btn ghost" data-act="buddy-nudge">👋 Nudge ' + esc(b.name) + '</button>');
+    return '<header class="buddy-head">' + avatarHtml(b.name, b.color, 'xl') +
+      '<div class="grow"><p class="muted small">Your accountability buddy</p><h2 class="buddy-name"><a class="plain-link" href="#/u/' + u + '">' + esc(b.name) + '</a></h2>' +
+      (b.headline ? '<p class="person-role">' + esc(b.headline) + '</p>' : '') +
+      (b.goal ? '<p class="small">Working towards: ' + esc(b.goal) + '</p>' : '') +
+      '<p class="muted small">Buddies since ' + new Date(p.since).toLocaleDateString([], { day: 'numeric', month: 'long' }) + '</p></div>' +
+      '<div class="streak-box"><b>' + p.streak + '</b><span>' + ico('flame') + 'day streak <br>together</span></div></header>' +
+      quiet +
+      '<div class="grid2"><section class="card stack"><h3>Your day</h3>' + gotNudge + mine + gotCheer + '</section>' +
+      '<section class="card stack"><h3>' + esc(b.name) + '\'s day</h3>' + theirs + '</section></div>' +
+      '<section class="card stack"><h3>This week</h3>' + weekRow('You', p.myWeek) + weekRow(b.name, p.theirWeek) +
+      '<p class="muted small"><span class="bday planned inline"><i></i></span> checked in &nbsp; <span class="bday done inline"><i></i></span> done. The streak grows on days you both check in.</p></section>' +
+      '<p class="small muted buddy-foot"><a href="#/dm/' + u + '">Message ' + esc(b.name) + '</a> · <button class="link" data-act="buddy-end">End buddy pairing</button></p>';
+  }
+
+  // Home: a small card or nudge, depending on where you are.
+  function homeBuddyHtml() {
+    var st = buddy.state;
+    if (!st) return '<div id="homebuddy"></div>';
+    if (st.pair) {
+      var p = st.pair;
+      return '<section class="card home-buddy" id="homebuddy"><div class="row between"><h3>' + ico('users') + ' You &amp; ' + esc(p.buddy.name) + '</h3><a class="btn tiny ghost" href="#/buddy">Open</a></div>' +
+        '<div class="row between hb-row"><span>' + (p.me.plan ? (p.me.done ? ico('check') + ' You finished today\'s plan' : 'Your plan: ' + esc(p.me.plan)) : '<b>You have not checked in today.</b> <a href="#/buddy">Check in</a>') + '</span></div>' +
+        '<div class="row between hb-row"><span class="muted">' + esc(p.buddy.name) + ': ' + (p.them.plan ? (p.them.done ? 'done for today' : 'checked in') : 'not checked in yet') + '</span>' +
+        '<span class="small"><b>' + p.streak + '</b> day streak</span></div></section>';
+    }
+    if (st.incoming.length) {
+      var r = st.incoming[0];
+      return '<p class="banner" id="homebuddy">' + ico('users') + '<span><b>' + esc(r.name) + '</b> wants to be your accountability buddy. <a href="#/buddy">See request</a></span></p>';
+    }
+    if (!st.prefs.seeking && !st.outgoing.length) {
+      return '<p class="banner" id="homebuddy">' + ico('users') + '<span>Stay on track with an <b>accountability buddy</b>: one person, one line a day. <a href="#/buddy">Find one</a></span></p>';
+    }
+    return '<div id="homebuddy"></div>';
+  }
+  function updateHomeBuddy() {
+    if (currentView() !== 'home') return;
+    var el = document.getElementById('homebuddy');
+    if (el) el.outerHTML = homeBuddyHtml();
+  }
+
+  var BUDDY_TOASTS = {
+    request: function (n) { return n + ' wants to be your accountability buddy.'; },
+    accepted: function (n) { return n + ' accepted. You are buddies now! 🎉'; },
+    declined: function (n) { return n + ' cannot be your buddy right now. Try someone else.'; },
+    done: function (n) { return n + ' finished today\'s plan 🎉'; },
+    cheer: function (n) { return n + ' cheered you on!'; },
+    nudge: function (n) { return n + ' nudged you to check in 👋'; },
+    ended: function () { return 'Your buddy pairing has ended.'; }
+  };
+  function onBuddyEvent(ev) {
+    if (BUDDY_TOASTS[ev.kind]) toast(BUDDY_TOASTS[ev.kind](ev.from || 'Your buddy'));
+    loadBuddy();
+    if (currentView() === 'buddy' && (ev.kind === 'ended' || ev.kind === 'declined')) loadSuggestions();
+  }
+
+  // ---------- you: account bar (Home) and sidebar chip ----------
+  function accountBar() {
+    var u = esc(me.username);
+    var link = function (href, icon, label) { return '<a class="ql" href="' + href + '">' + ico(icon) + '<span>' + label + '</span></a>'; };
+    return '<nav class="account-bar card" aria-label="You">' +
+      '<a class="ab-me" href="#/u/' + u + '">' + avatarHtml(me.name, me.color, 'lg') +
+      '<span><b>' + esc(me.name) + '</b><small>@' + u + ' · View your profile</small></span></a>' +
+      '<div class="ab-links">' + link('#/people', 'users', 'People') + link('#/buddy', 'buddy', 'Buddy') + link('#/account', 'settings', 'Account') +
+      '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
+  }
+  function updateMeChip() {
+    var el = document.getElementById('mechip');
+    if (!el) return;
+    if (!me || ui.newCode) { el.hidden = true; return; }
+    el.hidden = false;
+    el.href = '#/u/' + me.username;
+    el.classList.toggle('on', currentView() === 'profile' && profileRoute() === me.username);
+    el.innerHTML = avatarHtml(me.name, me.color, '') + '<span class="mc-text"><b>' + esc(me.name) + '</b><small>@' + esc(me.username) + '</small></span>' + ico('settings');
   }
 
   var afterRender = {
@@ -1890,7 +2131,8 @@
       else if (!jobs.loaded && !jobs.loading) loadJobs(false);
     },
     'edit-profile': loadEditor,
-    people: loadPeople
+    people: loadPeople,
+    buddy: function () { loadBuddy(); loadSuggestions(); }
   };
 
   // ---------- splash ----------
@@ -1954,6 +2196,7 @@
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
     updateBadge();
+    updateMeChip();
     if (afterRender[v]) afterRender[v]();
   }
 

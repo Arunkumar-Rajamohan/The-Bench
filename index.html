@@ -13,6 +13,23 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Splash: shown the moment the page arrives, until the app is ready (app.js fades it out). -->
+  <div id="splash" role="status" aria-label="Loading The Bench">
+    <div class="splash-inner">
+      <svg class="splash-mark" viewBox="0 0 64 64" aria-hidden="true">
+        <rect class="sm-bg" width="64" height="64" rx="16"/>
+        <g class="sm-lines" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+          <path pathLength="1" d="M15 22h34"/>
+          <path pathLength="1" d="M13 33h38"/>
+          <path pathLength="1" d="M18 22v-5M46 22v-5"/>
+          <path pathLength="1" d="M17 33v14M47 33v14M17 41h30"/>
+        </g>
+        <circle class="sm-dot" cx="49" cy="15" r="5"/>
+      </svg>
+      <p class="splash-word">The <em>Bench</em></p>
+      <p class="splash-msg" id="splash-msg">Pulling up a chair…</p>
+    </div>
+  </div>
   <div class="shell">
     <aside class="side">
       <a class="brand" href="#/home">
@@ -27,7 +44,7 @@
         <a href="#/feed" data-view="feed"><span data-icon="feed" aria-hidden="true"></span><b>Feed</b></a>
         <a href="#/chat" data-view="chat"><span data-icon="chat" aria-hidden="true"></span><b>Chat</b><i id="chatbadge" class="badge" hidden></i></a>
         <a href="#/fun" data-view="fun"><span data-icon="fun" aria-hidden="true"></span><b>Fun</b></a>
-        <a href="#/jobs" data-view="jobs"><span data-icon="jobs" aria-hidden="true"></span><b>Jobs</b></a>
+        <a href="#/jobs" data-view="jobs"><span data-icon="jobs" aria-hidden="true"></span><b>Jobs</b><i id="jobsbadge" class="badge" hidden></i></a>
         <a href="#/tracker" data-view="tracker"><span data-icon="tracker" aria-hidden="true"></span><b>Tracker</b></a>
         <a href="#/prep" data-view="prep"><span data-icon="prep" aria-hidden="true"></span><b>Prep</b></a>
         <a href="#/routine" data-view="routine"><span data-icon="routine" aria-hidden="true"></span><b>Routine</b></a>

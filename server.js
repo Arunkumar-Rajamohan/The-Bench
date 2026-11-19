@@ -137,6 +137,18 @@ const SCHEMA = [
     user_id INTEGER NOT NULL,
     PRIMARY KEY (lead_id, user_id)
   )`,
+  // Saved job searches ("alerts"). last_seen = when the member last looked at the results.
+  `CREATE TABLE IF NOT EXISTS job_alerts (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    what TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
+    remote INTEGER NOT NULL DEFAULT 0,
+    field TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS job_alerts_user ON job_alerts(user_id)',
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -328,6 +340,11 @@ const q = {
   hasLeadVote: stmt('SELECT 1 AS x FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
   addLeadVote: stmt('INSERT OR IGNORE INTO lead_votes (lead_id, user_id) VALUES (?, ?)'),
   delLeadVote: stmt('DELETE FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
+  alertsFor: stmt('SELECT * FROM job_alerts WHERE user_id = ? ORDER BY id'),
+  alert: stmt('SELECT * FROM job_alerts WHERE id = ?'),
+  addAlert: stmt('INSERT INTO job_alerts (user_id, what, place, remote, field, created, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  delAlert: stmt('DELETE FROM job_alerts WHERE id = ? AND user_id = ?'),
+  seenAlert: stmt('UPDATE job_alerts SET last_seen = ? WHERE id = ? AND user_id = ?'),
   people: stmt(`SELECT u.username, u.name, u.created, p.data FROM users u LEFT JOIN profiles p ON p.user_id = u.id
     WHERE u.banned = 0 ORDER BY COALESCE(p.updated, 0) DESC, u.id DESC LIMIT 300`)
 };
@@ -700,7 +717,7 @@ function plainText(s) {
 // Refreshed every 3 hours, filtered to roles in India, searched in memory. No keys, no middlemen.
 
 const EMPLOYERS = require('./employers');
-const JOBS_REFRESH = 3 * 60 * 60000;
+const JOBS_REFRESH = (Number(process.env.JOBS_REFRESH_MINUTES) || 180) * 60000; // default: every 3 hours
 const JOBS_PAGE = 20;
 const FEED_BASE = { // overridable for local testing only
   greenhouse: (process.env.GREENHOUSE_BASE_URL || 'https://boards-api.greenhouse.io').replace(/\/+$/, ''),
@@ -852,6 +869,7 @@ async function refreshJobs() {
   jobsStore.failed = failed;
   jobsStore.firstLoad = false;
   if (failed.length) console.error('Job feeds failed: ' + failed.join(', '));
+  pushAll({ type: 'jobs-updated', channel: 'jobs' }); // open pages refresh their alert counts
 }
 function ensureJobs() {
   const stale = Date.now() - jobsStore.updated > JOBS_REFRESH;
@@ -877,6 +895,56 @@ function leadUrl(v) {
   return url.href;
 }
 
+const CITY_ALIASES = { bangalore: 'bengaluru', bengaluru: 'bangalore', gurgaon: 'gurugram', gurugram: 'gurgaon', bombay: 'mumbai', madras: 'chennai' };
+const MAX_ALERTS = 5;
+
+function cleanFilters(src) {
+  const get = (k) => (typeof src.get === 'function' ? src.get(k) : src[k]);
+  const field = String(get('field') || '');
+  return {
+    what: String(get('what') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60),
+    where: String(get('where') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60),
+    remote: get('remote') === '1' || get('remote') === true || get('remote') === 1,
+    field: field === 'nontech' || FIELD_LABEL[field] ? field : ''
+  };
+}
+
+// Returns the matches before the field filter (for the field counts) and the final list.
+function searchJobs(f) {
+  const words = f.what.split(' ').filter(Boolean);
+  const matches = jobsStore.jobs.filter((j) => {
+    if (f.remote && !j.remote) return false;
+    const loc = j.location.toLowerCase();
+    if (f.where && !loc.includes(f.where) && !(CITY_ALIASES[f.where] && loc.includes(CITY_ALIASES[f.where]))) return false;
+    const hay = (j.title + ' ' + j.company + ' ' + j.team).toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+  const list = !f.field ? matches
+    : f.field === 'nontech' ? matches.filter((j) => j.field !== 'engineering')
+    : matches.filter((j) => j.field === f.field);
+  return { matches, list };
+}
+
+function alertName(f) {
+  const title = (t) => t.replace(/\b\w/g, (c) => c.toUpperCase());
+  const parts = [
+    f.field === 'nontech' ? 'Non-tech' : f.field ? FIELD_LABEL[f.field] : '',
+    f.what ? '“' + f.what + '”' : '',
+    f.where ? 'in ' + title(f.where) : '',
+    f.remote ? 'remote' : ''
+  ].filter(Boolean).join(' ');
+  return parts.charAt(0).toUpperCase() + parts.slice(1);
+}
+
+function alertView(a) {
+  const f = { what: a.what, where: a.place, remote: !!a.remote, field: a.field };
+  const { list } = searchJobs(f);
+  return {
+    id: a.id, name: alertName(f), what: a.what, where: a.place, remote: !!a.remote, field: a.field,
+    lastSeen: a.last_seen, total: list.length, newCount: list.filter((j) => j.posted && j.posted > a.last_seen).length
+  };
+}
+
 async function jobsApi(req, res, route, user) {
   const method = req.method;
   let m;
@@ -885,26 +953,11 @@ async function jobsApi(req, res, route, user) {
     limit('jobs:' + user.id, 60, 60000);
     await ensureJobs();
     const sp = new URL(req.url, 'http://x').searchParams;
-    const what = (sp.get('what') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
-    const where = (sp.get('where') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
-    const remote = sp.get('remote') === '1';
-    const field = String(sp.get('field') || '');
     const page = Math.min(Math.max(parseInt(sp.get('page'), 10) || 1, 1), 50);
-    const words = what.split(' ').filter(Boolean);
-    const cityAliases = { bangalore: 'bengaluru', bengaluru: 'bangalore', gurgaon: 'gurugram', gurugram: 'gurgaon', bombay: 'mumbai', madras: 'chennai' };
-    const matches = jobsStore.jobs.filter((j) => {
-      if (remote && !j.remote) return false;
-      const loc = j.location.toLowerCase();
-      if (where && !loc.includes(where) && !(cityAliases[where] && loc.includes(cityAliases[where]))) return false;
-      const hay = (j.title + ' ' + j.company + ' ' + j.team).toLowerCase();
-      return words.every((w) => hay.includes(w));
-    });
-    // Count fields before applying the field filter, so the menu shows what each choice would give.
+    const { matches, list } = searchJobs(cleanFilters(sp));
+    // Count fields before applying the field filter, so the chips show what each choice would give.
     const counts = {};
     for (const j of matches) counts[j.field] = (counts[j.field] || 0) + 1;
-    const list = !field ? matches
-      : field === 'nontech' ? matches.filter((j) => j.field !== 'engineering')
-      : matches.filter((j) => j.field === field);
     send(res, 200, {
       jobs: list.slice((page - 1) * JOBS_PAGE, page * JOBS_PAGE), total: list.length, page,
       companies: EMPLOYERS.length, updated: jobsStore.updated || null,
@@ -913,6 +966,43 @@ async function jobsApi(req, res, route, user) {
       partial: !!(jobsStore.refreshing && jobsStore.firstLoad)
     });
     return true;
+  }
+
+  if (method === 'GET' && route === '/alerts') {
+    await ensureJobs();
+    const alerts = (await q.alertsFor.all(user.id)).map(alertView);
+    send(res, 200, { alerts, totalNew: alerts.reduce((sum, a) => sum + a.newCount, 0), partial: !!(jobsStore.refreshing && jobsStore.firstLoad) });
+    return true;
+  }
+
+  if (method === 'POST' && route === '/alerts') {
+    limit('alerts:' + user.id, 20, 10 * 60000);
+    const f = cleanFilters(await readBody(req));
+    if (!f.what && !f.where && !f.remote && !f.field) throw new HttpError(400, 'Pick a field, a keyword, a city or remote first, then save.');
+    const mine = await q.alertsFor.all(user.id);
+    if (mine.some((a) => a.what === f.what && a.place === f.where && !!a.remote === f.remote && a.field === f.field)) {
+      throw new HttpError(409, 'You already have an alert for this search.');
+    }
+    if (mine.length >= MAX_ALERTS) throw new HttpError(400, 'You can keep up to ' + MAX_ALERTS + ' alerts. Delete one to add another.');
+    const t = Date.now();
+    const info = await q.addAlert.run(user.id, f.what, f.where, f.remote ? 1 : 0, f.field, t, t);
+    send(res, 201, { alert: alertView({ id: info.lastId, what: f.what, place: f.where, remote: f.remote ? 1 : 0, field: f.field, last_seen: t }) });
+    return true;
+  }
+
+  if ((m = /^\/alerts\/(\d{1,15})(\/seen)?$/.exec(route))) {
+    const a = await q.alert.get(Number(m[1]));
+    if (!a || a.user_id !== user.id) throw new HttpError(404, 'That alert is gone.');
+    if (method === 'POST' && m[2]) {
+      await q.seenAlert.run(Date.now(), a.id, user.id);
+      send(res, 200, { ok: true, previous: a.last_seen });
+      return true;
+    }
+    if (method === 'DELETE' && !m[2]) {
+      await q.delAlert.run(a.id, user.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
   }
 
   if (method === 'GET' && route === '/leads') {

@@ -46,6 +46,7 @@
     'arrow-left': '<path d="M19 12H5.5M11 6l-6 6 6 6"/>',
     pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
     link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
+    bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
   function ico(name) {
@@ -179,6 +180,7 @@
     stopTimer();
     me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
     stopStream(); chat = freshChat(); updateBadge();
+    alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
   }
   var toastTimer = null;
   function toast(msg) {
@@ -302,6 +304,7 @@
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
         (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
+        alertBanner() +
         '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
@@ -459,8 +462,66 @@
   }
 
   // ----- from employers -----
+  // ----- job alerts (saved searches) -----
+  var alerts = { list: null, totalNew: 0, notified: null };
+  function notifyOn() { try { return localStorage.getItem('bench:notify') === '1' && window.Notification && Notification.permission === 'granted'; } catch (e) { return false; } }
+  function sameSearch(a) { return a.what === jobs.what.toLowerCase() && a.where === jobs.where.toLowerCase() && a.remote === jobs.remote && a.field === jobs.field; }
+  function updateJobsBadge() {
+    var el = document.getElementById('jobsbadge');
+    if (el) { el.textContent = alerts.totalNew ? String(alerts.totalNew > 99 ? '99+' : alerts.totalNew) : ''; el.hidden = !alerts.totalNew; }
+  }
+  function alertsStrip() {
+    if (!alerts.list || !alerts.list.length) return '';
+    var notifyBtn = window.Notification
+      ? '<button type="button" class="link" data-act="alert-notify">' + (notifyOn() ? 'Desktop notifications: on' : 'Turn on desktop notifications') + '</button>' : '';
+    return '<section class="card alerts-card"><div class="row between"><h3>' + ico('bell') + 'Your job alerts</h3>' + notifyBtn + '</div><div class="chips">' +
+      alerts.list.map(function (a) {
+        var on = jobs.activeAlert === a.id;
+        return '<span class="alert-chip' + (on ? ' on' : '') + '"><button type="button" data-act="alert-open" data-id="' + Number(a.id) + '">' + esc(a.name) +
+          (a.newCount ? ' <b class="new-count">' + a.newCount + ' new</b>' : ' <span class="muted">' + a.total + '</span>') + '</button>' +
+          '<button type="button" class="x" data-act="alert-del" data-id="' + Number(a.id) + '" aria-label="Delete alert ' + esc(a.name) + '">' + ico('x') + '</button></span>';
+      }).join('') + '</div></section>';
+  }
+  function renderAlertsStrip() {
+    var el = document.getElementById('alertstrip');
+    if (el && currentView() === 'jobs' && jobs.tab === 'employers') el.innerHTML = alertsStrip();
+  }
+  function loadAlerts() {
+    if (!me) return;
+    api('GET', '/api/alerts').then(function (j) {
+      alerts.list = Array.isArray(j.alerts) ? j.alerts : [];
+      alerts.totalNew = Number(j.totalNew) || 0;
+      // Desktop notification, only for matches that arrived after the page was opened, and only when not looking.
+      if (alerts.notified === null) alerts.notified = alerts.totalNew;
+      if (alerts.totalNew > alerts.notified && notifyOn() && document.visibilityState !== 'visible') {
+        try {
+          var note = new Notification('The Bench', { body: alerts.totalNew + ' new job' + (alerts.totalNew === 1 ? '' : 's') + ' match your alerts', icon: 'favicon.svg', tag: 'bench-alerts' });
+          note.onclick = function () { window.focus(); location.hash = '#/jobs'; note.close(); };
+        } catch (e) { /* notifications blocked */ }
+      }
+      alerts.notified = Math.max(alerts.notified, alerts.totalNew);
+      updateJobsBadge();
+      renderAlertsStrip();
+      var saveBox = document.getElementById('savealert');
+      if (saveBox) saveBox.innerHTML = saveAlertHtml();
+      if (currentView() === 'home') { var b = document.getElementById('alertbanner'); if (b) b.outerHTML = alertBanner(); }
+    }).catch(function (e) { if (e.status === 401) fail(e); });
+  }
+  function alertBanner() {
+    return alerts.totalNew
+      ? '<p class="banner" id="alertbanner">' + ico('bell') + '<span><b>' + alerts.totalNew + ' new job' + (alerts.totalNew === 1 ? '' : 's') + '</b> match your alerts. <a href="#/jobs">See them</a></span></p>'
+      : '<span id="alertbanner" hidden></span>';
+  }
+  function saveAlertHtml() {
+    var filtered = jobs.what || jobs.where || jobs.remote || jobs.field;
+    if (!filtered || !alerts.list) return '';
+    if (alerts.list.some(sameSearch)) return '<span class="muted small">' + ico('bell') + ' Saved as an alert</span>';
+    return '<button type="button" class="btn tiny ghost" data-act="save-alert">' + ico('bell') + 'Alert me about new jobs like these</button>';
+  }
+
   function employersPane() {
-    return '<form class="card job-search" data-form="jobsearch">' +
+    return '<div id="alertstrip">' + alertsStrip() + '</div>' +
+      '<form class="card job-search" data-form="jobsearch">' +
       '<label class="grow">Role, team or company<input type="search" name="what" maxlength="60" placeholder="e.g. support, finance, Stripe" value="' + esc(jobs.what) + '"></label>' +
       '<label class="grow">City <span class="muted">(optional)</span><input type="search" name="where" maxlength="60" placeholder="e.g. Bengaluru" value="' + esc(jobs.where) + '"></label>' +
       '<label class="check remote-check"><input type="checkbox" name="remote" value="1"' + (jobs.remote ? ' checked' : '') + '> Remote only</label>' +
@@ -469,7 +530,8 @@
   }
   function jobHtml(j) {
     var tags = [j.remote ? 'Remote' : '', j.type, j.team].filter(Boolean).map(function (t) { return '<span class="pill">' + esc(t) + '</span>'; }).join('');
-    return '<article class="card job"><div class="row between job-top"><h3>' + esc(j.title) + '</h3>' +
+    var fresh = jobs.newSince && j.posted && j.posted > jobs.newSince;
+    return '<article class="card job' + (fresh ? ' fresh' : '') + '"><div class="row between job-top"><h3>' + (fresh ? '<span class="new-tag">New</span>' : '') + esc(j.title) + '</h3>' +
       (j.posted ? '<span class="muted small nowrap">' + ago(j.posted) + '</span>' : '') + '</div>' +
       '<p class="meta"><b class="company">' + esc(j.company) + '</b>' + (j.location ? ' · ' + esc(j.location) : '') + '</p>' +
       '<div class="row between job-foot"><div class="row">' + tags + '</div>' +
@@ -499,6 +561,7 @@
     var filters = [fieldName && esc(fieldName), jobs.what && '“' + esc(jobs.what) + '”', jobs.where && 'in ' + esc(jobs.where), jobs.remote && 'remote'].filter(Boolean).join(' ');
     return fieldChips() + partial + '<p class="muted small results-count">' + jobs.total.toLocaleString() + ' opening' + (jobs.total === 1 ? '' : 's') + (filters ? ' for ' + filters : '') +
       ' from the careers pages of ' + jobs.companies + ' companies hiring in India. Newest first.</p>' +
+      '<div id="savealert" class="save-alert">' + saveAlertHtml() + '</div>' +
       '<div class="jobs-list">' + jobs.list.map(jobHtml).join('') + '</div>' +
       (more ? '<div class="row center"><button class="btn" data-act="jobs-more"' + (jobs.loading ? ' disabled' : '') + '>' + (jobs.loading ? 'Loading…' : 'Show more') + '</button></div>' : '') +
       (jobs.error ? '<p class="err">' + esc(jobs.error) + '</p>' : '');
@@ -659,6 +722,7 @@
       try { localStorage.removeItem(OLD_KEY); } catch (e) { /* storage blocked */ }
     }
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
+    loadAlerts();
     return loadPosts().catch(fail);
   }
   function oldLocal() {
@@ -854,8 +918,59 @@
       return false;
     },
     'jobs-more': function () { loadJobs(true); return false; },
+    'save-alert': function () {
+      api('POST', '/api/alerts', { what: jobs.what, where: jobs.where, remote: jobs.remote, field: jobs.field }).then(function (j) {
+        toast('Alert saved: ' + j.alert.name + '. New matches will show up here and on Home.');
+        loadAlerts();
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); });
+      return false;
+    },
+    'alert-open': function (d) {
+      var a = find(alerts.list || [], Number(d.id));
+      if (!a) return false;
+      jobs.what = a.what; jobs.where = a.where; jobs.remote = a.remote; jobs.field = a.field;
+      jobs.newSince = a.lastSeen; jobs.activeAlert = a.id; // mark jobs that arrived since the last look
+      alerts.totalNew = Math.max(0, alerts.totalNew - a.newCount);
+      a.newCount = 0; a.lastSeen = Date.now();
+      jobs.tab = 'employers';
+      updateJobsBadge();
+      render();
+      loadJobs(false);
+      api('POST', '/api/alerts/' + a.id + '/seen', {}).catch(function () { /* counts catch up on the next load */ });
+      return false;
+    },
+    'alert-del': function (d) {
+      var a = find(alerts.list || [], Number(d.id));
+      if (!a || !window.confirm('Delete the alert "' + a.name + '"?')) return false;
+      api('DELETE', '/api/alerts/' + a.id).then(function () {
+        if (jobs.activeAlert === a.id) { jobs.activeAlert = null; jobs.newSince = 0; }
+        toast('Alert deleted.');
+        loadAlerts();
+      }).catch(fail);
+      return false;
+    },
+    'alert-notify': function () {
+      if (notifyOn()) {
+        try { localStorage.removeItem('bench:notify'); } catch (e) { /* storage blocked */ }
+        toast('Desktop notifications are off.');
+        renderAlertsStrip();
+        return false;
+      }
+      if (!window.Notification) { toast('This browser does not support notifications.'); return false; }
+      Notification.requestPermission().then(function (p) {
+        if (p === 'granted') {
+          try { localStorage.setItem('bench:notify', '1'); } catch (e) { /* storage blocked */ }
+          toast('Done. You will get a desktop notification when new matches arrive while The Bench is open.');
+        } else {
+          toast('Notifications are blocked for this site. You can allow them in your browser settings.');
+        }
+        renderAlertsStrip();
+      });
+      return false;
+    },
     'jobs-field': function (d) {
       jobs.field = d.f || '';
+      jobs.newSince = 0; jobs.activeAlert = null;
       loadJobs(false);
       return false;
     },
@@ -914,6 +1029,7 @@
       jobs.what = String(f.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
       jobs.where = String(f.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
       jobs.remote = f.get('remote') === '1';
+      jobs.newSince = 0; jobs.activeAlert = null;
       loadJobs(false);
       return false;
     },
@@ -1305,7 +1421,12 @@
     var es = new EventSource('/api/stream');
     chat.es = es;
     es.onopen = function () { if (chat.down) { chat.down = false; resync(); } };
-    es.onmessage = function (e) { try { onChatEvent(JSON.parse(e.data)); } catch (err) { /* ignore a bad event */ } };
+    es.onmessage = function (e) {
+      var ev;
+      try { ev = JSON.parse(e.data); } catch (err) { return; /* ignore a bad event */ }
+      if (ev && ev.type === 'jobs-updated') return loadAlerts();
+      onChatEvent(ev);
+    };
     es.onerror = function () {
       chat.down = true;
       // The browser retries by itself after a dropped connection. It gives up when the server
@@ -1772,6 +1893,35 @@
     people: loadPeople
   };
 
+  // ---------- splash ----------
+  // The splash is in index.html so it shows the instant the page arrives. Here we rotate its message and fade it out.
+  var SPLASH_LINES = ['Pulling up a chair…', 'Putting the chai on…', 'Saving you a good seat…', 'Dusting off the bench…', 'Gathering the crew…'];
+  var splashStart = Date.now();
+  // Let the full drawing play on the first visit of a session; after that, get out of the way quickly.
+  var splashMin = (function () {
+    try { if (sessionStorage.getItem('bench:splash')) return 350; sessionStorage.setItem('bench:splash', '1'); } catch (e) { /* storage blocked */ }
+    return 1500;
+  })();
+  var splashTimer = setInterval(function () {
+    var el = document.getElementById('splash-msg');
+    if (!el) return clearInterval(splashTimer);
+    var i = (SPLASH_LINES.indexOf(el.textContent) + 1) % SPLASH_LINES.length;
+    el.classList.remove('swap');
+    void el.offsetWidth; // restart the animation
+    el.textContent = SPLASH_LINES[i];
+    el.classList.add('swap');
+  }, 1800);
+  function hideSplash() {
+    var el = document.getElementById('splash');
+    if (!el || el.classList.contains('done')) return;
+    setTimeout(function () {
+      el.classList.add('done');
+      clearInterval(splashTimer);
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 600);
+    }, Math.max(0, splashMin - (Date.now() - splashStart)));
+  }
+  var lastView = '';
+
   // ---------- wiring ----------
   var main = document.getElementById('main');
 
@@ -1784,13 +1934,20 @@
   function render() {
     document.body.classList.toggle('anon', !me);
     main.classList.remove('chat-mode');
-    if (ui.booting) { main.innerHTML = '<p class="muted">Pulling up a chair…</p>'; return; }
+    if (ui.booting) { main.innerHTML = ''; return; } // the splash screen covers this moment
     if (!me) { main.innerHTML = authView(); return; }
     document.body.classList.toggle('anon', !!ui.newCode); // hide the nav until the code is saved
     if (ui.newCode) { main.innerHTML = codeView(); return; }
     var v = currentView();
     main.innerHTML = views[v]();
     main.classList.toggle('chat-mode', v === 'chat');
+    // A gentle fade only when moving to a different page, not on every small update.
+    if (v !== lastView) {
+      main.classList.remove('enter');
+      void main.offsetWidth;
+      main.classList.add('enter');
+      lastView = v;
+    }
     document.querySelectorAll('#nav a').forEach(function (a) {
       var on = a.dataset.view === v;
       a.classList.toggle('on', on);
@@ -1863,5 +2020,5 @@
   api('GET', '/api/me')
     .then(function (j) { return enter(j, false); })
     .catch(function (e) { if (e.status !== 401) ui.authError = e.message; })
-    .then(function () { ui.booting = false; render(); });
+    .then(function () { ui.booting = false; render(); hideSplash(); });
 })();

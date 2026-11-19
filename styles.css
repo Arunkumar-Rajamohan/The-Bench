@@ -601,6 +601,57 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .chip.on span { color: inherit; opacity: .7; }
 @media (max-width: 860px) { .chips { flex-wrap: nowrap; overflow-x: auto; margin-left: -16px; margin-right: -16px; padding: 0 16px 4px; scrollbar-width: none; } .chips::-webkit-scrollbar { display: none; } .chip { flex: none; } }
 
+/* ---------- job alerts ---------- */
+.alerts-card { padding: 16px 20px; margin-bottom: 16px; }
+.alerts-card h3 .ico { color: var(--accent); width: 14px; height: 14px; }
+.alerts-card .chips { margin: 10px 0 0; }
+.alert-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); overflow: hidden; }
+.alert-chip > button { border: 0; background: none; cursor: pointer; padding: 6px 4px 6px 12px; font-size: .84rem; font-weight: 500; color: var(--ink); }
+.alert-chip > button.x { padding: 6px 10px 6px 6px; color: var(--muted); display: grid; place-items: center; }
+.alert-chip > button.x .ico { width: 13px; height: 13px; }
+.alert-chip > button.x:hover { color: var(--bad); }
+.alert-chip:hover { border-color: var(--line-2); }
+.alert-chip.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.new-count { color: var(--accent); font-weight: 700; margin-left: 2px; }
+.save-alert { margin: -6px 0 14px; }
+.save-alert .btn .ico, .save-alert .ico { width: 14px; height: 14px; }
+.new-tag { display: inline-block; vertical-align: 3px; margin-right: 8px; padding: 1px 7px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font: 700 .62rem/1.5 var(--sans); text-transform: uppercase; letter-spacing: .08em; }
+.job.fresh { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow); }
+@media (max-width: 860px) { .alerts-card .chips { flex-wrap: wrap; overflow: visible; margin-left: 0; margin-right: 0; padding: 0; } }
+
+/* ---------- splash + page transitions ---------- */
+#splash { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); transition: opacity .5s ease, visibility .5s; }
+#splash.done { opacity: 0; visibility: hidden; }
+.splash-inner { display: grid; justify-items: center; gap: 14px; text-align: center; padding: 24px; }
+.splash-mark { width: clamp(78px, 9vw, 104px); height: clamp(78px, 9vw, 104px); animation: splash-pop .55s cubic-bezier(.2, .9, .3, 1.3) both, splash-breathe 2.6s ease-in-out 1.7s infinite; }
+.sm-bg { fill: var(--ink); }
+.sm-lines { stroke: var(--bg); }
+.sm-lines path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: splash-draw .45s ease-out forwards; }
+.sm-lines path:nth-child(1) { animation-delay: .3s; }
+.sm-lines path:nth-child(2) { animation-delay: .5s; }
+.sm-lines path:nth-child(3) { animation-delay: .7s; }
+.sm-lines path:nth-child(4) { animation-delay: .85s; }
+.sm-dot { fill: var(--accent); transform-box: fill-box; transform-origin: center; transform: scale(0); animation: splash-dot .45s cubic-bezier(.2, .9, .3, 1.5) 1.15s forwards; }
+.splash-word { margin-top: 6px; font: 600 clamp(2rem, 3.4vw, 2.6rem)/1 var(--serif); letter-spacing: -.02em; opacity: 0; animation: splash-rise .55s ease-out .55s forwards; }
+.splash-word em { font-style: italic; font-weight: 500; color: var(--accent); }
+.splash-msg { min-height: 1.5em; font: italic clamp(1.02rem, 1.4vw, 1.15rem)/1.5 var(--serif); color: var(--muted); opacity: 0; animation: splash-rise .55s ease-out .9s forwards; }
+.splash-msg.swap { animation: splash-swap .45s ease both; }
+@keyframes splash-pop { from { opacity: 0; transform: scale(.6) rotate(-8deg); } }
+@keyframes splash-draw { to { stroke-dashoffset: 0; } }
+@keyframes splash-dot { to { transform: scale(1); } }
+@keyframes splash-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes splash-swap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes splash-breathe { 50% { transform: scale(1.045); } }
+main.enter > * { animation: page-enter .32s ease-out both; }
+main.enter > *:nth-child(2) { animation-delay: .04s; }
+main.enter > *:nth-child(3) { animation-delay: .08s; }
+@keyframes page-enter { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .sm-lines path { stroke-dashoffset: 0; }
+  .sm-dot { transform: none; }
+  .splash-word, .splash-msg { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }

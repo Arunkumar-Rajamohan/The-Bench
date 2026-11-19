@@ -98,6 +98,22 @@ const SCHEMA = [
     created INTEGER NOT NULL,
     PRIMARY KEY (blocker_id, blocked_id)
   )`,
+  // Fun tab. Question-of-the-day answers live in `messages` (channel 'qotd:<day>'), so reports, deletes and bans cover them.
+  `CREATE TABLE IF NOT EXISTS msg_reacts (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    PRIMARY KEY (message_id, user_id, emoji)
+  )`,
+  `CREATE TABLE IF NOT EXISTS puzzle_plays (
+    day TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    guesses TEXT NOT NULL DEFAULT '[]',
+    solved INTEGER NOT NULL DEFAULT 0,
+    tries INTEGER NOT NULL DEFAULT 0,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (day, user_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -242,7 +258,27 @@ const q = {
   wipeIfDeleted: stmt(`UPDATE messages SET text = '' WHERE id = ? AND deleted = 1
     AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0)`),
   setBanned: stmt('UPDATE users SET banned = ? WHERE id = ?'),
-  bannedUsers: stmt('SELECT username, name FROM users WHERE banned = 1 ORDER BY username')
+  bannedUsers: stmt('SELECT username, name FROM users WHERE banned = 1 ORDER BY username'),
+
+  // fun tab
+  answers: stmt(`SELECT m.id, m.text, m.created, m.user_id, u.name, u.username FROM messages m JOIN users u ON u.id = m.user_id
+    WHERE m.channel = ? AND m.deleted = 0 AND u.banned = 0
+      AND m.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+    ORDER BY m.id LIMIT 300`),
+  answerReacts: stmt(`SELECT r.message_id, r.emoji, COUNT(*) AS n, SUM(r.user_id = ?) AS mine
+    FROM msg_reacts r JOIN messages m ON m.id = r.message_id WHERE m.channel = ? GROUP BY r.message_id, r.emoji`),
+  myAnswer: stmt('SELECT id FROM messages WHERE channel = ? AND user_id = ? AND deleted = 0'),
+  hasMsgReact: stmt('SELECT 1 AS x FROM msg_reacts WHERE message_id = ? AND user_id = ? AND emoji = ?'),
+  addMsgReact: stmt('INSERT OR IGNORE INTO msg_reacts (message_id, user_id, emoji) VALUES (?, ?, ?)'),
+  delMsgReact: stmt('DELETE FROM msg_reacts WHERE message_id = ? AND user_id = ? AND emoji = ?'),
+  play: stmt('SELECT * FROM puzzle_plays WHERE day = ? AND user_id = ?'),
+  savePlay: stmt(`INSERT INTO puzzle_plays (day, user_id, guesses, solved, tries, updated) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (day, user_id) DO UPDATE SET guesses = excluded.guesses, solved = excluded.solved, tries = excluded.tries, updated = excluded.updated`),
+  solvedDays: stmt('SELECT day FROM puzzle_plays WHERE user_id = ? AND solved = 1 ORDER BY day DESC LIMIT 60'),
+  leaderboard: stmt(`SELECT u.name, u.username, SUM(6 - p.tries) AS points, COUNT(*) AS solved
+    FROM puzzle_plays p JOIN users u ON u.id = p.user_id
+    WHERE p.solved = 1 AND p.day >= ? AND p.day <= ? AND u.banned = 0
+    GROUP BY p.user_id ORDER BY points DESC, solved DESC, MIN(p.updated) ASC LIMIT 10`)
 };
 
 // ---------- helpers ----------
@@ -587,7 +623,160 @@ async function api(req, res, route) {
   }
 
   if (await chatApi(req, res, route, user)) return;
+  if (await funApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
+}
+
+// ---------- fun tab: question of the day + daily word puzzle ----------
+// Rejection Bingo is personal, so it lives in each user's private data (PUT /api/me/data).
+// A "day" runs midnight to midnight India time, the same for everyone.
+
+const FUN = require('./fun-data');
+const FUN_EPOCH = Date.UTC(2026, 10, 1); // day 0 = 1 Nov 2026
+const PUZZLE_TRIES = 5;
+const ANSWER_MAX = 300;
+const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+const dayKey = (d) => dayFmt.format(d || new Date()); // YYYY-MM-DD
+const dayNum = (day) => Math.round((Date.parse(day + 'T00:00:00Z') - FUN_EPOCH) / 864e5);
+const shiftDay = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const pickFor = (list, n) => list[((n % list.length) + list.length) % list.length];
+
+// Small seeded random generator, so everyone gets the same scramble on the same day.
+function seeded(a) {
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function puzzleFor(day) {
+  const n = dayNum(day), w = pickFor(FUN.WORDS, n), rand = seeded(n + 1000);
+  const letters = w.word.split('');
+  for (let i = letters.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [letters[i], letters[j]] = [letters[j], letters[i]];
+  }
+  let scrambled = letters.join('');
+  if (scrambled === w.word) scrambled = scrambled.slice(1) + scrambled[0];
+  return { number: n + 1, word: w.word, hint: w.hint, scrambled };
+}
+const sortLetters = (s) => s.split('').sort().join('');
+
+function parseGuesses(play) {
+  try { const g = JSON.parse(play.guesses); return Array.isArray(g) ? g.filter((x) => typeof x === 'string') : []; }
+  catch (e) { return []; }
+}
+
+// What the player may see. The answer is only included once they have solved it or run out of tries.
+function puzzleView(p, play) {
+  const guesses = play ? parseGuesses(play) : [];
+  const solved = !!(play && play.solved);
+  const done = solved || guesses.length >= PUZZLE_TRIES;
+  const wrong = guesses.filter((g) => g !== p.word).length;
+  const shown = done ? p.word.length : Math.min(wrong, p.word.length - 2); // each miss reveals one more letter
+  return {
+    number: p.number, hint: p.hint, scrambled: p.scrambled, length: p.word.length,
+    guesses, solved, done, maxTries: PUZZLE_TRIES, triesLeft: Math.max(0, PUZZLE_TRIES - guesses.length),
+    reveal: p.word.slice(0, shown) + '_'.repeat(p.word.length - shown),
+    answer: done ? p.word : null
+  };
+}
+
+async function puzzleExtras(user, day) {
+  const days = new Set((await q.solvedDays.all(user.id)).map((r) => r.day));
+  let streak = 0, d = days.has(day) ? day : shiftDay(day, -1);
+  while (days.has(d)) { streak++; d = shiftDay(d, -1); }
+  const dow = new Date(day + 'T00:00:00Z').getUTCDay();
+  const monday = shiftDay(day, -((dow + 6) % 7));
+  const board = (await q.leaderboard.all(monday, shiftDay(monday, 6))).map((r) => ({
+    name: r.name, username: r.username, points: r.points, solved: r.solved, me: r.username === user.username
+  }));
+  return { streak, leaderboard: board, weekStart: monday };
+}
+
+async function qotdView(user, day) {
+  const channel = 'qotd:' + day;
+  const rows = await q.answers.all(channel, user.id);
+  const reacts = {};
+  for (const r of await q.answerReacts.all(user.id, channel)) {
+    (reacts[r.message_id] = reacts[r.message_id] || { counts: {}, mine: {} }).counts[r.emoji] = r.n;
+    if (r.mine) reacts[r.message_id].mine[r.emoji] = true;
+  }
+  return {
+    day, question: pickFor(FUN.QUESTIONS, dayNum(day)),
+    answered: rows.some((r) => r.user_id === user.id),
+    answers: rows.map((r) => ({
+      id: r.id, text: r.text, t: r.created, name: r.name, username: r.username, own: r.user_id === user.id,
+      reacts: (reacts[r.id] || {}).counts || {}, mine: (reacts[r.id] || {}).mine || {}
+    }))
+  };
+}
+
+async function funApi(req, res, route, user) {
+  const method = req.method;
+  const today = dayKey();
+  let m;
+
+  if (method === 'GET' && route === '/fun/today') {
+    const p = puzzleFor(today);
+    send(res, 200, {
+      day: today,
+      qotd: await qotdView(user, today),
+      puzzle: Object.assign(puzzleView(p, await q.play.get(today, user.id)), await puzzleExtras(user, today))
+    });
+    return true;
+  }
+
+  if (method === 'GET' && route === '/fun/qotd') {
+    const which = new URL(req.url, 'http://x').searchParams.get('day');
+    send(res, 200, await qotdView(user, which === 'yesterday' ? shiftDay(today, -1) : today));
+    return true;
+  }
+
+  if (method === 'POST' && route === '/fun/qotd') {
+    limit('write:' + user.id, 20, 60000);
+    const b = await readBody(req);
+    const body = text(b.text, ANSWER_MAX, 'Answer');
+    const channel = 'qotd:' + today;
+    if (await q.myAnswer.get(channel, user.id)) throw new HttpError(409, 'You already answered today. Delete your answer to write a new one.');
+    await q.addMsg.run(channel, user.id, body, Date.now());
+    send(res, 201, await qotdView(user, today));
+    return true;
+  }
+
+  if (method === 'POST' && (m = /^\/fun\/answers\/(\d{1,15})\/react$/.exec(route))) {
+    limit('react:' + user.id, 120, 60000);
+    const b = await readBody(req);
+    if (!REACTS.includes(b.r)) throw new HttpError(400, 'Unknown reaction.');
+    const msg = await q.msg.get(Number(m[1]));
+    if (!msg || msg.deleted || !msg.channel.startsWith('qotd:')) throw new HttpError(404, 'That answer is gone.');
+    if (await q.hasMsgReact.get(msg.id, user.id, b.r)) await q.delMsgReact.run(msg.id, user.id, b.r);
+    else await q.addMsgReact.run(msg.id, user.id, b.r);
+    send(res, 200, { ok: true });
+    return true;
+  }
+
+  if (method === 'POST' && route === '/fun/puzzle') {
+    limit('puzzle:' + user.id, 30, 60000);
+    const b = await readBody(req);
+    const p = puzzleFor(today);
+    const play = await q.play.get(today, user.id);
+    const view = puzzleView(p, play);
+    if (view.done) throw new HttpError(409, 'You have finished today\'s puzzle. A new one arrives at midnight.');
+    const guess = String(b.guess || '').trim().toUpperCase();
+    if (!/^[A-Z]+$/.test(guess)) throw new HttpError(400, 'Letters only, please.');
+    if (guess.length !== p.word.length) throw new HttpError(400, 'Use all ' + p.word.length + ' letters.');
+    if (sortLetters(guess) !== sortLetters(p.word)) throw new HttpError(400, 'Use only the letters shown, each one once.');
+    if (view.guesses.includes(guess)) throw new HttpError(400, 'You already tried that one.');
+    const guesses = view.guesses.concat(guess);
+    const solved = guess === p.word;
+    await q.savePlay.run(today, user.id, JSON.stringify(guesses), solved ? 1 : 0, guesses.length, Date.now());
+    send(res, 200, Object.assign(puzzleView(p, { guesses: JSON.stringify(guesses), solved }), await puzzleExtras(user, today)));
+    return true;
+  }
+
+  return false;
 }
 
 // ---------- chat API ----------
@@ -606,15 +795,16 @@ async function peerByName(name, me) {
   if (u.id === me.id) throw new HttpError(400, 'That is you!');
   return u;
 }
-// Who can see a stored message: anyone for rooms, only the two people for a DM.
+const isPublicChannel = (channel) => channel.startsWith('room:') || channel.startsWith('qotd:');
+// Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
-  if (channel.startsWith('room:')) return true;
+  if (isPublicChannel(channel)) return true;
   const ids = channel.slice(3).split(':').map(Number);
   return ids.includes(userId);
 }
 // Tell everyone who can see `channel` that message `id` is gone.
 async function broadcastDelete(channel, id) {
-  if (channel.startsWith('room:')) return pushAll({ type: 'del', channel, id });
+  if (isPublicChannel(channel)) return pushAll({ type: 'del', channel, id });
   const [a, b] = channel.slice(3).split(':').map(Number);
   const ua = await q.userById.get(a), ub = await q.userById.get(b);
   if (ua && ub) {
@@ -743,7 +933,8 @@ async function chatApi(req, res, route, user) {
     if (method === 'GET' && route === '/admin/reports') {
       const reports = (await q.openReports.all()).map((r) => ({
         id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted,
-        where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5) : 'a private message',
+        where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5)
+          : r.channel.startsWith('qotd:') ? 'Question of the Day' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });

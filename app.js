@@ -104,7 +104,8 @@
         moods: {}
       },
       resume: '',
-      practice: []
+      practice: [],
+      bingo: null // made the first time the Fun tab opens
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -114,6 +115,7 @@
     if (Array.isArray(raw.apps)) b.apps = raw.apps.filter(isObj);
     if (Array.isArray(raw.practice)) b.practice = raw.practice.filter(isObj);
     if (typeof raw.resume === 'string') b.resume = raw.resume;
+    b.bingo = cleanBingo(raw.bingo);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -278,6 +280,7 @@
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">🔑 <b>Protect your account:</b> get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></p>') +
+        '<p class="banner">🎉 Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></p>' +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
         '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
@@ -309,6 +312,13 @@
       return '<div class="chat' + (ch ? ' has-ch' : '') + '"><aside class="chat-list card" id="chatlist">' + chatListHtml(ch) + '</aside>' +
         '<section class="chat-pane card" id="chatpane">' +
         (ch ? paneHtml(ch) : '<div class="pane-empty"><p>Pick a room or a person to chat with.</p></div>') + '</section></div>';
+    },
+
+    fun: function () {
+      return head('Fun 🎉', 'A new question and puzzle every day at midnight (India time), plus bingo for the bad days.') +
+        '<div class="fun-grid"><section class="card stack" id="puzzle">' + puzzleHtml() + '</section>' +
+        '<section class="card stack" id="qotd">' + qotdHtml() + '</section>' +
+        '<section class="card stack fun-wide" id="bingo">' + bingoHtml() + '</section></div>';
     },
 
     admin: function () {
@@ -520,6 +530,71 @@
       catch (e) { done(false); }
       return false;
     },
+    shuffle: function () {
+      var p = fun.data && fun.data.puzzle;
+      if (!p) return false;
+      var a = (fun.order || p.scrambled).split('');
+      for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t; }
+      fun.order = a.join('');
+      renderSection('puzzle', puzzleHtml());
+      return false;
+    },
+    'share-puzzle': function () {
+      var p = fun.data && fun.data.puzzle;
+      if (!p || !p.done) return false;
+      var last = p.guesses.length - 1;
+      var squares = p.guesses.map(function (g, i) { return p.solved && i === last ? '🟩' : '🟥'; }).join('');
+      shareToRoom('lobby', '🧩 The Bench puzzle #' + p.number + ': ' + squares + ' ' +
+        (p.solved ? 'solved in ' + p.guesses.length + '/' + p.maxTries + '!' : 'not today!') + ' Play it in the Fun tab.');
+      return false;
+    },
+    qday: function (d) {
+      fun.qDay = d.d === 'yesterday' ? 'yesterday' : 'today';
+      renderSection('qotd', qotdHtml());
+      if (fun.qDay === 'yesterday' && !fun.yesterday) reloadQotd();
+      return false;
+    },
+    qreact: function (d) {
+      api('POST', '/api/fun/answers/' + Number(d.id) + '/react', { r: d.r }).then(reloadQotd).catch(fail);
+      return false;
+    },
+    qdel: function (d) {
+      closeMenus();
+      if (!window.confirm('Delete this answer?')) return false;
+      api('DELETE', '/api/chat/msg/' + Number(d.id)).then(reloadQotd).catch(fail);
+      return false;
+    },
+    bingo: function (d) {
+      var b = S.bingo, i = Number(d.i);
+      if (!b || !(i >= 0 && i < 25) || i === FREE) return false;
+      var at = b.ticks.indexOf(i);
+      if (at > -1) b.ticks.splice(at, 1); else b.ticks.push(i);
+      var fresh = fullLines(b).filter(function (n) { return b.celebrated.indexOf(n) === -1; });
+      if (fresh.length) {
+        b.celebrated = b.celebrated.concat(fresh);
+        b.total += fresh.length;
+        confetti();
+        toast('BINGO! 🎉 That is ' + b.total + ' all time. Laugh it off, you are doing great.');
+      }
+      save();
+      renderSection('bingo', bingoHtml());
+      return false;
+    },
+    'share-bingo': function () {
+      var b = S.bingo, lines = b ? fullLines(b) : [];
+      if (!lines.length) return false;
+      var line = BINGO_LINES[lines[lines.length - 1]].filter(function (i) { return i !== FREE; });
+      shareToRoom('vent', '🎯 Rejection Bingo! I got a line on The Bench:\n' +
+        line.map(function (i) { return '• ' + cellText(b, i); }).join('\n'));
+      return false;
+    },
+    'new-bingo': function () {
+      if (!window.confirm('Start a new bingo card?\n\nThe ticks on this card are cleared. Your all-time bingo count stays.')) return false;
+      S.bingo = newBingo(S.bingo ? S.bingo.total : 0);
+      save();
+      renderSection('bingo', bingoHtml());
+      return false;
+    },
     older: function () {
       var ch = activeChannel(), el = msgsEl();
       if (!ch || !el) return false;
@@ -639,6 +714,43 @@
   };
 
   var forms = {
+    puzzle: function (f, form) {
+      var guess = String(f.get('guess') || '').trim();
+      if (!guess || fun.busy) return false;
+      fun.busy = true;
+      form.querySelector('button').disabled = true;
+      api('POST', '/api/fun/puzzle', { guess: guess }).then(function (p) {
+        fun.data.puzzle = p;
+        var box = document.getElementById('pguess');
+        if (box) box.value = '';
+        renderSection('puzzle', puzzleHtml());
+        if (p.solved) { confetti(); toast('🎉 Solved! Come back tomorrow for a new one.'); }
+        else if (p.done) toast('Out of tries. The word was ' + p.answer + '.');
+        else { toast('Not quite. One more letter revealed.'); var nb = document.getElementById('pguess'); if (nb) nb.focus(); }
+      }).catch(function (e) {
+        if (e.status === 400) toast(e.message); else fail(e);
+        var b = document.querySelector('form[data-form="puzzle"] button');
+        if (b) b.disabled = false;
+      }).then(function () { fun.busy = false; });
+      return false;
+    },
+    qotd: function (f, form) {
+      var body = String(f.get('text') || '').trim();
+      if (!body) return false;
+      form.querySelector('button').disabled = true;
+      api('POST', '/api/fun/qotd', { text: body }).then(function (j) {
+        if (fun.data) fun.data.qotd = j;
+        fun.qDay = 'today';
+        var box = document.getElementById('qanswer');
+        if (box) box.value = '';
+        renderSection('qotd', qotdHtml());
+      }).catch(function (e) {
+        toast(e.message);
+        var b = document.querySelector('form[data-form="qotd"] button');
+        if (b) b.disabled = false;
+      });
+      return false;
+    },
     chat: function (f, form) {
       var ch = activeChannel(), body = String(f.get('text') || '').trim();
       if (!ch || !body || chat.sending) return false;
@@ -1037,6 +1149,235 @@
       '<section class="card"><h2>Banned accounts</h2><ul class="plain">' + banned + '</ul></section></div>';
   }
 
+  // ---------- fun tab ----------
+  // Puzzle and question come from the server (same for everyone each day). Bingo is personal and saved in S.
+  var BINGO = [
+    'Ghosted after the final round',
+    '"We went with someone more senior"',
+    'Entry-level job wants 5 years of experience',
+    'Auto-rejection email at 2am',
+    '"We\'ll keep your resume on file"',
+    'Interview rescheduled three times',
+    'Asked my salary expectation in the first minute',
+    'Take-home task longer than a weekend',
+    '"So, tell me about yourself" (again)',
+    'Job post closed the day I applied',
+    'Recruiter called me by the wrong name',
+    '"You\'re overqualified"',
+    'Offered an unpaid "trial day"',
+    'Interviewer forgot to unmute',
+    'Five interview rounds for one job',
+    'Rejected for a job I never applied to',
+    '"What is your biggest weakness?"',
+    'Had to retype my whole resume into a form',
+    '"Competitive salary" (no number given)',
+    'Interviewer was 20 minutes late',
+    'Rejection email with someone else\'s name',
+    'Job changed halfway through the interview',
+    '"We\'re like a family here"',
+    'Asked to do a free sample project',
+    'Offer taken back',
+    'Heard back three months later',
+    '"I\'ll call you tomorrow" (they did not)',
+    '"Where do you see yourself in 5 years?"',
+    'Made an account just to apply',
+    'Same job reposted a week after I applied',
+    'Asked about the gap in my resume',
+    '"Fast-paced environment" in the job post',
+    'Interview in a cafe with loud music',
+    'Asked for references before the first interview',
+    'Someone viewed my profile, then silence',
+    'Rejected in under an hour',
+    'Group interview with ten other people',
+    '"Rockstar" or "ninja" in the job title',
+    'Internet died during the online interview',
+    'Asked "Why should we hire you?" with a straight face'
+  ];
+  var BINGO_LINES = (function () {
+    var lines = [], i, k;
+    for (i = 0; i < 5; i++) {
+      var row = [], col = [];
+      for (k = 0; k < 5; k++) { row.push(i * 5 + k); col.push(k * 5 + i); }
+      lines.push(row, col);
+    }
+    lines.push([0, 6, 12, 18, 24], [4, 8, 12, 16, 20]);
+    return lines;
+  })();
+  var FREE = 12;
+  var fun = { data: null, qDay: 'today', yesterday: null, order: null, busy: false };
+
+  function cleanBingo(raw) {
+    if (!isObj(raw) || !Array.isArray(raw.card) || raw.card.length !== 24) return null;
+    var seen = {}, ok = raw.card.every(function (n) {
+      var good = Number.isInteger(n) && n >= 0 && n < BINGO.length && !seen[n];
+      seen[n] = true;
+      return good;
+    });
+    if (!ok) return null;
+    var cells = function (list, max) {
+      return (Array.isArray(list) ? list : []).filter(function (i, at, all) {
+        return Number.isInteger(i) && i >= 0 && i < max && all.indexOf(i) === at;
+      });
+    };
+    return {
+      card: raw.card.slice(),
+      ticks: cells(raw.ticks, 25).filter(function (i) { return i !== FREE; }),
+      celebrated: cells(raw.celebrated, BINGO_LINES.length),
+      total: Number.isInteger(raw.total) && raw.total >= 0 ? raw.total : 0
+    };
+  }
+  function newBingo(total) {
+    var ids = BINGO.map(function (_, i) { return i; });
+    for (var i = ids.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1)), t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+    }
+    return { card: ids.slice(0, 24), ticks: [], celebrated: [], total: total || 0 };
+  }
+  function cellText(b, i) { return i === FREE ? 'FREE: you showed up!' : BINGO[b.card[i < FREE ? i : i - 1]]; }
+  function ticked(b, i) { return i === FREE || b.ticks.indexOf(i) > -1; }
+  function fullLines(b) {
+    return BINGO_LINES.map(function (line, n) { return line.every(function (i) { return ticked(b, i); }) ? n : -1; })
+      .filter(function (n) { return n > -1; });
+  }
+
+  function confetti() {
+    try { if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; } catch (e) { /* old browser */ }
+    var box = document.createElement('div'), colors = ['#e8502f', '#ffc93c', '#12877b', '#4fd1c1', '#ff7a5c', '#8a6cff'];
+    box.className = 'confetti';
+    box.setAttribute('aria-hidden', 'true');
+    for (var i = 0; i < 90; i++) {
+      var s = document.createElement('i');
+      s.style.left = (Math.random() * 100) + 'vw';
+      s.style.background = colors[i % colors.length];
+      s.style.animationDelay = (Math.random() * 0.6) + 's';
+      s.style.animationDuration = (1.8 + Math.random() * 1.4) + 's';
+      box.appendChild(s);
+    }
+    document.body.appendChild(box);
+    setTimeout(function () { box.remove(); }, 4000);
+  }
+
+  // Re-draw one section without losing what the person was typing in it.
+  function renderSection(id, html) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var kept = {}, focus = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : '';
+    el.querySelectorAll('input[id], textarea[id]').forEach(function (f) { kept[f.id] = f.value; });
+    el.innerHTML = html;
+    Object.keys(kept).forEach(function (k) { var f = document.getElementById(k); if (f) f.value = kept[k]; });
+    if (focus) { var f = document.getElementById(focus); if (f) f.focus(); }
+  }
+
+  // ----- puzzle -----
+  function puzzleHtml() {
+    var p = fun.data && fun.data.puzzle;
+    if (!p) return '<h2>🧩 Daily puzzle</h2><p class="muted">Loading today\'s puzzle…</p>';
+    var last = p.guesses.length - 1;
+    var tiles = (fun.order || p.scrambled).split('').map(function (c) { return '<span class="tile">' + esc(c) + '</span>'; }).join('');
+    var slots = p.reveal.split('').map(function (c) {
+      return '<span class="slot' + (c === '_' ? '' : ' on') + '">' + (c === '_' ? '' : esc(c)) + '</span>';
+    }).join('');
+    var tries = p.guesses.map(function (g, i) {
+      var right = p.solved && i === last;
+      return '<li class="' + (right ? 'ok' : 'no') + '"><span aria-hidden="true">' + (right ? '✅' : '❌') + '</span> ' + esc(g) + '</li>';
+    }).join('');
+    var board = p.leaderboard.length
+      ? '<ol class="board-list">' + p.leaderboard.map(function (r) {
+          return '<li class="' + (r.me ? 'me' : '') + '"><span>' + esc(r.name) + (r.me ? ' (you)' : '') + '</span><b>' + Number(r.points) + ' pts</b></li>';
+        }).join('') + '</ol>'
+      : '<p class="muted small">Nobody has solved one this week yet. Be the first!</p>';
+
+    var play = p.done ? '' :
+      '<p class="small">Unscramble the word. Each wrong guess reveals one more letter. <b>' + p.triesLeft + ' of ' + p.maxTries + ' tries left.</b></p>' +
+      '<form class="row" data-form="puzzle"><input id="pguess" class="grow" type="text" name="guess" maxlength="' + p.length + '" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Your guess (' + p.length + ' letters)" aria-label="Your guess" required>' +
+      '<button class="btn primary">Guess</button><button type="button" class="btn ghost" data-act="shuffle" aria-label="Shuffle the letters">🔀</button></form>';
+    var result = !p.done ? '' : p.solved
+      ? '<p class="win">🎉 Solved in ' + p.guesses.length + '/' + p.maxTries + '! The word was <b>' + esc(p.answer) + '</b>.</p>'
+      : '<p class="lose">The word was <b>' + esc(p.answer) + '</b>. So close. A new puzzle arrives at midnight.</p>';
+    var share = p.done ? '<button class="btn ghost tiny" data-act="share-puzzle">Share my result in #lobby</button>' : '';
+
+    return '<div class="row between"><h2>🧩 Puzzle #' + Number(p.number) + '</h2><span class="pill">🔥 ' + Number(p.streak) + ' day streak</span></div>' +
+      '<p class="small"><b>Hint:</b> ' + esc(p.hint) + '</p>' +
+      '<div class="tiles" aria-label="Scrambled letters: ' + esc((fun.order || p.scrambled).split('').join(' ')) + '">' + tiles + '</div>' +
+      '<div class="slots" aria-label="' + (p.done ? 'Answer' : 'Letters revealed so far') + '">' + slots + '</div>' +
+      play + (tries ? '<ul class="guesses">' + tries + '</ul>' : '') + result + share +
+      '<div class="lboard"><h3>🏆 This week</h3>' + board + '<p class="muted small">5 points for a first-try solve, down to 1 for the fifth. Resets every Monday.</p></div>';
+  }
+
+  // ----- question of the day -----
+  function qotdHtml() {
+    var today = fun.qDay === 'today', d = today ? fun.data && fun.data.qotd : fun.yesterday;
+    var tabs = '<div class="seg" role="group" aria-label="Which day">' +
+      '<button type="button" data-act="qday" data-d="today" aria-pressed="' + today + '"' + (today ? ' class="on"' : '') + '>Today</button>' +
+      '<button type="button" data-act="qday" data-d="yesterday" aria-pressed="' + !today + '"' + (!today ? ' class="on"' : '') + '>Yesterday</button></div>';
+    var top = '<div class="row between"><h2>💭 Question of the day</h2>' + tabs + '</div>';
+    if (!d) return top + '<p class="muted">Loading…</p>';
+    var form = !today ? '' : d.answered
+      ? '<p class="muted small">You answered today. 👍 Come back tomorrow for a new question.</p>'
+      : '<form class="stack" data-form="qotd"><textarea id="qanswer" name="text" maxlength="300" placeholder="Your answer…" aria-label="Your answer" required></textarea>' +
+        '<div class="row between"><span class="muted small">Everyone on The Bench can see answers.</span><button class="btn primary">Answer</button></div></form>';
+    var list = d.answers.slice().reverse().map(answerHtml).join('') ||
+      '<p class="muted small">' + (today ? 'No answers yet. Be the first!' : 'Nobody answered yesterday.') + '</p>';
+    return top + '<p class="question">' + esc(d.question) + '</p>' + form +
+      '<p class="small muted">' + d.answers.length + ' answer' + (d.answers.length === 1 ? '' : 's') + '</p><div class="answers">' + list + '</div>';
+  }
+  function answerHtml(a) {
+    var id = Number(a.id), u = esc(a.username);
+    var who = a.own ? '<b class="who">' + esc(a.name) + '</b>'
+      : '<a class="who" href="#/dm/' + u + '" title="Message @' + u + ' privately">' + esc(a.name) + '</a>';
+    var reacts = REACTS.map(function (r) {
+      var n = Number(a.reacts[r]) || 0;
+      return '<button class="react' + (a.mine[r] ? ' on' : '') + '" data-act="qreact" data-id="' + id + '" data-r="' + r + '">' + r + (n ? ' ' + n : '') + '</button>';
+    }).join('');
+    var opts = [];
+    if (!a.own) opts.push('<button type="button" data-act="report" data-id="' + id + '">Report</button>');
+    if (a.own || me.isAdmin) opts.push('<button type="button" data-act="qdel" data-id="' + id + '">Delete' + (a.own ? '' : ' (moderator)') + '</button>');
+    return '<div class="answer"><div class="msg-head">' + who + '<span class="muted small">' + ago(a.t) + '</span>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Answer options">⋯</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
+      '</div><p class="msg-text">' + esc(a.text) + '</p><div class="row">' + reacts + '</div></div>';
+  }
+
+  // ----- rejection bingo -----
+  function bingoHtml() {
+    var b = S.bingo;
+    if (!b) return '<h2>🎯 Rejection Bingo</h2><p class="muted">Shuffling your card…</p>';
+    var lines = fullLines(b), inLine = {};
+    lines.forEach(function (n) { BINGO_LINES[n].forEach(function (i) { inLine[i] = true; }); });
+    var cells = '';
+    for (var i = 0; i < 25; i++) {
+      var on = ticked(b, i);
+      cells += i === FREE
+        ? '<div class="cell on free' + (inLine[i] ? ' line' : '') + '">' + esc(cellText(b, i)) + '</div>'
+        : '<button type="button" class="cell' + (on ? ' on' : '') + (inLine[i] ? ' line' : '') + '" data-act="bingo" data-i="' + i + '" aria-pressed="' + on + '">' + esc(cellText(b, i)) + '</button>';
+    }
+    return '<div class="row between"><h2>🎯 Rejection Bingo</h2><span class="pill">🏅 ' + b.total + ' bingo' + (b.total === 1 ? '' : 's') + ' all time</span></div>' +
+      '<p class="small muted">Tick a square when it happens to you. Five in a row (across, down or corner to corner) is a bingo. Your card is private.</p>' +
+      '<div class="bingo">' + cells + '</div>' +
+      '<div class="row between"><span class="small">' + (lines.length ? '<b>' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on this card!</b>' : b.ticks.length + ' squares ticked') + '</span>' +
+      '<span class="row">' + (lines.length ? '<button class="btn tiny ghost" data-act="share-bingo">Share in #vent</button>' : '') +
+      '<button class="btn tiny ghost" data-act="new-bingo">New card</button></span></div>';
+  }
+
+  // ----- loading -----
+  function loadFun() {
+    return api('GET', '/api/fun/today').then(function (j) {
+      if (fun.data && fun.data.day !== j.day) fun.yesterday = null; // the day rolled over
+      fun.data = j; fun.order = null;
+      renderSection('puzzle', puzzleHtml());
+      renderSection('qotd', qotdHtml());
+    }).catch(fail);
+  }
+  function reloadQotd() {
+    return api('GET', '/api/fun/qotd' + (fun.qDay === 'yesterday' ? '?day=yesterday' : '')).then(function (j) {
+      if (fun.qDay === 'yesterday') fun.yesterday = j; else if (fun.data) fun.data.qotd = j;
+      renderSection('qotd', qotdHtml());
+    }).catch(fail);
+  }
+  function shareToRoom(room, text) {
+    return api('POST', '/api/chat/room/' + room, { text: text })
+      .then(function () { toast('Shared in #' + room + '.'); }).catch(fail);
+  }
+
   var afterRender = {
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
@@ -1048,7 +1389,11 @@
       if (box && wideScreen()) box.focus();
     },
     account: loadBlocks,
-    admin: function () { if (me.isAdmin) loadAdmin(); }
+    admin: function () { if (me.isAdmin) loadAdmin(); },
+    fun: function () {
+      if (!S.bingo) { S.bingo = newBingo(0); save(); renderSection('bingo', bingoHtml()); }
+      loadFun();
+    }
   };
 
   // ---------- wiring ----------

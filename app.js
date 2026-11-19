@@ -52,6 +52,7 @@
     phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     download: '<path d="M12 4v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>',
     mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/>',
+    book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M9 7.5h7"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -137,7 +138,8 @@
       practice: [],
       bingo: null, // made the first time the Fun tab opens
       cv: null, // resume builder, made the first time it opens
-      cl: null // cover letter helper, made the first time it opens
+      cl: null, // cover letter helper, made the first time it opens
+      learn: {} // free learning library: course id -> 'doing' | 'done'
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -150,6 +152,7 @@
     b.bingo = cleanBingo(raw.bingo);
     b.cv = cleanCv(raw.cv);
     b.cl = cleanCl(raw.cl);
+    b.learn = cleanLearn(raw.learn);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -379,6 +382,14 @@
         '<div class="cv-preview-wrap"><p class="muted small cv-preview-label">Live preview</p><div id="clpreview">' + (ready ? clPreview() : '') + '</div></div></div>';
     },
 
+    learn: function () {
+      return head('Free learning library', 'Hand-picked courses that are free to learn. Mark what you are doing, and add finished ones to your resume.') +
+        '<div id="learnsum">' + learnSummary() + '</div>' +
+        '<div id="learnctl">' + learnControls() + '</div>' +
+        '<div id="learnlist">' + learnListHtml() + '</div>' +
+        '<p class="muted small" style="margin-top:16px">Links go to each provider’s own site. Course details change, so check the certificate terms there before you start.</p>';
+    },
+
     buddy: function () {
       return head('Accountability buddy', 'Pair up with one person, share a one-line plan each day, and keep each other going.') +
         '<div id="buddybody">' + buddyHtml() + '</div>';
@@ -453,7 +464,7 @@
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
       return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
-        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a></span></p>' +
+        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a> · <a href="#/learn">Free courses</a></span></p>' +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -483,6 +494,7 @@
       }
       return head('Routine', 'Job hunting is a job. Tick at least one thing a day to keep the streak alive.') +
         '<p class="banner">' + ico('users') + '<span>Keep each other going: check in with an <a href="#/buddy">accountability buddy</a>.</span></p>' +
+        '<p class="banner">' + ico('book') + '<span>Need something for your learning time? Browse the <a href="#/learn">free learning library</a>.</span></p>' +
         '<div class="stats"><div class="stat hot"><b>' + streak() + '</b><span>' + ico('flame') + 'Day streak</span></div>' +
         '<div class="stat"><b>' + doneOn(today()).length + '/' + S.routine.tasks.length + '</b><span>done today</span></div></div>' +
         '<div class="grid2"><section class="card"><h2>Today</h2>' + taskList() +
@@ -1004,6 +1016,26 @@
       return false;
     },
     'cv-print': function () { window.print(); return false; },
+    'learn-field': function (d) { learn.field = d.f; refreshLearn(true); return false; },
+    'learn-set': function (d) {
+      if (S.learn[d.id] === d.s) delete S.learn[d.id]; else S.learn[d.id] = d.s;
+      save();
+      refreshLearn(true);
+      if (d.s === 'done' && S.learn[d.id] === 'done') toast('Nice one. That is something real to put on your resume.');
+      return false;
+    },
+    'learn-to-cv': function () {
+      (S.cv ? Promise.resolve() : ensureCv()).then(function () {
+        var have = cvLines(S.cv.certs).map(function (x) { return x.toLowerCase(); });
+        var add = COURSES.filter(function (c) { return S.learn[c.id] === 'done'; }).map(function (c) { return c.title + ' (' + c.by + ')'; })
+          .filter(function (line) { return have.indexOf(line.toLowerCase()) === -1; });
+        if (!add.length) { toast('Your finished courses are already on your resume.'); return; }
+        S.cv.certs = cvLines(S.cv.certs).concat(add).join('\n');
+        save();
+        toast('Added ' + add.length + ' course' + (add.length > 1 ? 's' : '') + ' to Certifications on your resume.');
+      });
+      return false;
+    },
     'cl-tone': function (d) { S.cl.tone = d.t; save(); refreshCl(true); return false; },
     'cl-edit': function () {
       S.cl.custom = clGenerated();
@@ -2208,6 +2240,7 @@
       (canInstall() ? '<button type="button" class="ql" data-act="install-app">' + ico('phone') + '<span>Install app</span></button>' : '') +
       '<a class="ql" href="#/resume">' + ico('feed') + '<span>Resume</span></a>' +
       '<a class="ql" href="#/cover">' + ico('mail') + '<span>Cover letter</span></a>' +
+      '<a class="ql" href="#/learn">' + ico('book') + '<span>Learn</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -2601,6 +2634,106 @@
     if (kw) kw.innerHTML = clKeywordsHtml();
   }
 
+  // ---------- free learning library ----------
+  // A hand-picked list. Every course here is free to learn; "cert" says what the certificate costs:
+  // free = free certificate or badge, paid = free to learn but the certificate or exam costs money, some = some courses have free certificates, none = no certificate.
+  var LEARN_FIELDS = [['all', 'All'], ['office', 'Office & Excel'], ['data', 'Data'], ['tech', 'Software & IT'], ['marketing', 'Marketing'], ['sales', 'Sales & support'],
+    ['design', 'Design'], ['finance', 'Finance'], ['pm', 'Project management'], ['soft', 'English & soft skills'], ['general', 'Big libraries']];
+  var CERT_LABEL = { free: 'Free certificate', paid: 'Certificate costs extra', some: 'Some free certificates', none: 'No certificate' };
+  var COURSES = [
+    { id: 'gcf-excel', field: 'office', title: 'Excel tutorials', by: 'GCFGlobal', cert: 'none', url: 'https://edu.gcfglobal.org/en/excel/', note: 'Step-by-step lessons from the very basics up to formulas, charts and PivotTables.' },
+    { id: 'ms-excel', field: 'office', title: 'Excel video training', by: 'Microsoft', cert: 'none', url: 'https://support.microsoft.com/en-us/office/excel-video-training-9bc05390-e94c-46af-a5b3-d7c22f6990bb', note: 'Short official videos on tables, formulas, charts and PivotTables.' },
+    { id: 'kaggle', field: 'data', title: 'Python, Pandas and SQL mini-courses', by: 'Kaggle Learn', cert: 'free', url: 'https://www.kaggle.com/learn', note: 'Hands-on lessons that run in your browser, with a certificate for each course you finish.' },
+    { id: 'fcc-data', field: 'data', title: 'Data Analysis with Python', by: 'freeCodeCamp', cert: 'free', url: 'https://www.freecodecamp.org/learn/data-analysis-with-python/', note: 'NumPy, Pandas and charts. Build five projects to earn the certificate.' },
+    { id: 'ms-powerbi', field: 'data', title: 'Power BI training', by: 'Microsoft Learn', cert: 'paid', url: 'https://learn.microsoft.com/en-us/training/powerplatform/power-bi', note: 'Build reports and dashboards. Prepares you for the PL-300 exam, which is paid.' },
+    { id: 'google-da', field: 'data', title: 'Google Data Analytics Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-data-analytics', note: 'Spreadsheets, SQL and dashboards. Audit the courses for free; Coursera offers financial aid for the certificate.' },
+    { id: 'cs50x', field: 'tech', title: 'CS50x: Introduction to Computer Science', by: 'Harvard University', cert: 'free', url: 'https://cs50.harvard.edu/x/', note: 'The famous beginner course. Finish the problem sets for a free certificate from CS50.' },
+    { id: 'fcc-web', field: 'tech', title: 'Responsive Web Design', by: 'freeCodeCamp', cert: 'free', url: 'https://www.freecodecamp.org/learn/2022/responsive-web-design/', note: 'HTML and CSS from zero, with projects to build for the certificate.' },
+    { id: 'odin', field: 'tech', title: 'The Odin Project', by: 'The Odin Project', cert: 'none', url: 'https://www.theodinproject.com/', note: 'A complete web development path, free and open source, with a friendly community.' },
+    { id: 'khan-code', field: 'tech', title: 'Computer programming', by: 'Khan Academy', cert: 'none', url: 'https://www.khanacademy.org/computing/computer-programming', note: 'A gentle first taste of coding, with instant visual results.' },
+    { id: 'az900', field: 'tech', title: 'Azure Fundamentals (AZ-900) learning path', by: 'Microsoft Learn', cert: 'paid', url: 'https://learn.microsoft.com/en-us/training/paths/microsoft-azure-fundamentals-describe-cloud-concepts/', note: 'Cloud basics in plain language. The training is free; the exam is paid.' },
+    { id: 'aws-cp', field: 'tech', title: 'AWS Cloud Practitioner Essentials', by: 'AWS Skill Builder', cert: 'paid', url: 'https://skillbuilder.aws/', note: 'Search for "Cloud Practitioner Essentials" after signing in. The course is free; the exam is paid.' },
+    { id: 'cisco-cyber', field: 'tech', title: 'Introduction to Cybersecurity', by: 'Cisco Networking Academy', cert: 'free', url: 'https://www.netacad.com/courses/introduction-to-cybersecurity', note: 'How attacks work and how to stay safe online. Free badge when you finish.' },
+    { id: 'hs-inbound', field: 'marketing', title: 'Inbound Marketing', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/inbound-marketing', note: 'Content, social and lead nurturing basics, with a free certification.' },
+    { id: 'skillshop', field: 'marketing', title: 'Google Ads certifications', by: 'Google Skillshop', cert: 'free', url: 'https://skillshop.withgoogle.com/', note: 'Official Google Ads and Analytics training with free certifications.' },
+    { id: 'semrush', field: 'marketing', title: 'SEO and digital marketing courses', by: 'Semrush Academy', cert: 'free', url: 'https://www.semrush.com/academy/', note: 'Short courses on SEO, content and ads, most with a free certificate.' },
+    { id: 'meta', field: 'marketing', title: 'Meta Blueprint courses', by: 'Meta', cert: 'paid', url: 'https://www.facebook.com/business/learn', note: 'Facebook and Instagram marketing. Courses are free; certification exams are paid.' },
+    { id: 'hs-sales', field: 'sales', title: 'Inbound Sales', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/inbound-sales', note: 'Modern selling: finding leads, calls and closing, with a free certification.' },
+    { id: 'hs-service', field: 'sales', title: 'Customer Service', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/customer-service', note: 'Support basics: tickets, customer happiness and keeping customers.' },
+    { id: 'canva', field: 'design', title: 'Canva Design School', by: 'Canva', cert: 'none', url: 'https://www.canva.com/designschool/', note: 'Bite-size lessons on layout, colour and type, plus social media design.' },
+    { id: 'google-ux', field: 'design', title: 'Google UX Design Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-ux-design', note: 'Research, wireframes and Figma prototypes. Free to audit; financial aid available.' },
+    { id: 'varsity', field: 'finance', title: 'Zerodha Varsity', by: 'Zerodha', cert: 'none', url: 'https://zerodha.com/varsity/', note: 'Stock markets, financial statements and personal finance, explained simply for India.' },
+    { id: 'khan-fin', field: 'finance', title: 'Economics, finance and accounting', by: 'Khan Academy', cert: 'none', url: 'https://www.khanacademy.org/economics-finance-domain', note: 'Clear videos on accounting, interest, banking and the economy.' },
+    { id: 'google-pm', field: 'pm', title: 'Google Project Management Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-project-management', note: 'Planning, Agile and stakeholder skills. Free to audit; financial aid available.' },
+    { id: 'scrum', field: 'pm', title: 'Scrum open assessments', by: 'Scrum.org', cert: 'none', url: 'https://www.scrum.org/open-assessments', note: 'Free practice tests to check your Scrum basics before an interview.' },
+    { id: 'tcs-edge', field: 'soft', title: 'Career Edge – Young Professional', by: 'TCS iON', cert: 'free', url: 'https://learning.tcsionhub.in/courses/career-edge-young-professional/', note: 'Communication, resume writing, interviews and office basics, with a free certificate.' },
+    { id: 'bc-english', field: 'soft', title: 'LearnEnglish', by: 'British Council', cert: 'none', url: 'https://learnenglish.britishcouncil.org/', note: 'Free lessons, listening and grammar practice for workplace English.' },
+    { id: 'lhtl', field: 'soft', title: 'Learning How to Learn', by: 'Coursera', cert: 'paid', url: 'https://www.coursera.org/learn/learning-how-to-learn', note: 'One of the most popular courses anywhere: study smarter and beat procrastination. Free to audit.' },
+    { id: 'elements-ai', field: 'soft', title: 'Elements of AI', by: 'University of Helsinki', cert: 'free', url: 'https://www.elementsofai.com/', note: 'What AI is and is not, with no maths or coding needed. Free certificate.' },
+    { id: 'swayam', field: 'general', title: 'SWAYAM', by: 'Government of India', cert: 'paid', url: 'https://swayam.gov.in/', note: 'Free university courses. You pay only if you sit the proctored certificate exam.' },
+    { id: 'nptel', field: 'general', title: 'NPTEL', by: 'IITs and IISc', cert: 'paid', url: 'https://nptel.ac.in/', note: 'Engineering, management and humanities courses from IIT faculty. Certificate exams have a small fee.' },
+    { id: 'skill-india', field: 'general', title: 'Skill India Digital Hub', by: 'Government of India', cert: 'some', url: 'https://www.skillindiadigital.gov.in/', note: 'Government skilling courses in many fields and Indian languages.' },
+    { id: 'infy', field: 'general', title: 'Infosys Springboard', by: 'Infosys', cert: 'free', url: 'https://infyspringboard.onwingspan.com/', note: 'Thousands of courses, from soft skills to coding, with free certificates.' },
+    { id: 'ibm', field: 'general', title: 'IBM SkillsBuild', by: 'IBM', cert: 'free', url: 'https://skillsbuild.org/', note: 'AI, data, cloud and workplace skills, with free digital badges.' },
+    { id: 'edx', field: 'general', title: 'edX', by: 'edX', cert: 'paid', url: 'https://www.edx.org/', note: 'Courses from top universities. Most are free to audit; certificates cost extra.' },
+    { id: 'alison', field: 'general', title: 'Alison', by: 'Alison', cert: 'paid', url: 'https://alison.com/', note: 'Short courses in almost everything. Free to learn; certificates cost extra.' }
+  ];
+  var learn = { field: 'all', freeOnly: false, q: '' };
+  function cleanLearn(raw) {
+    var b = {};
+    if (isObj(raw)) Object.keys(raw).forEach(function (k) { if (raw[k] === 'doing' || raw[k] === 'done') b[k] = raw[k]; });
+    return b;
+  }
+  function learnMatches() {
+    var q = learn.q.trim().toLowerCase();
+    return COURSES.filter(function (c) {
+      if (learn.field !== 'all' && c.field !== learn.field) return false;
+      if (learn.freeOnly && c.cert !== 'free') return false;
+      return !q || (c.title + ' ' + c.by + ' ' + c.note).toLowerCase().indexOf(q) > -1;
+    });
+  }
+  function fieldLabel(f) { for (var i = 0; i < LEARN_FIELDS.length; i++) if (LEARN_FIELDS[i][0] === f) return LEARN_FIELDS[i][1]; return ''; }
+  function learnCard(c) {
+    var st = S.learn[c.id];
+    var btn = function (s, label) {
+      return '<button type="button" class="btn tiny' + (st === s ? ' primary' : ' ghost') + '" data-act="learn-set" data-id="' + c.id + '" data-s="' + s + '" aria-pressed="' + (st === s) + '">' +
+        (st === s && s === 'done' ? ico('check') : '') + label + '</button>';
+    };
+    return '<article class="card lcard' + (st ? ' ' + st : '') + '"><div class="row between"><span class="pill">' + fieldLabel(c.field) + '</span>' +
+      '<span class="lc-cert ' + c.cert + '">' + CERT_LABEL[c.cert] + '</span></div>' +
+      '<h3><a class="plain-link" href="' + esc(c.url) + '" target="_blank" rel="noopener">' + esc(c.title) + ' ' + ico('link') + '</a></h3>' +
+      '<p class="muted small">by ' + esc(c.by) + '</p><p class="small">' + esc(c.note) + '</p>' +
+      '<div class="row">' + btn('doing', st === 'doing' ? 'Doing it' : 'Start') + btn('done', 'Done') + '</div></article>';
+  }
+  function learnListHtml() {
+    var list = learnMatches();
+    if (!list.length) return '<p class="muted">Nothing matches. Try another field or clear the search.</p>';
+    // What you are doing first, then new ones, then finished ones.
+    var rank = function (c) { return S.learn[c.id] === 'doing' ? 0 : S.learn[c.id] === 'done' ? 2 : 1; };
+    return '<div class="lgrid">' + list.slice().sort(function (a, b) { return rank(a) - rank(b); }).map(learnCard).join('') + '</div>';
+  }
+  function learnSummary() {
+    var done = 0, doing = 0;
+    Object.keys(S.learn).forEach(function (k) { if (S.learn[k] === 'done') done++; else doing++; });
+    return '<div class="stats"><div class="stat"><b>' + doing + '</b><span>in progress</span></div>' +
+      '<div class="stat hot"><b>' + done + '</b><span>' + ico('trophy') + 'finished</span></div></div>' +
+      (done ? '<p class="row"><button type="button" class="btn ghost" data-act="learn-to-cv">' + ico('feed') + 'Add finished courses to my resume</button></p>' : '');
+  }
+  function learnControls() {
+    return '<div class="chips" role="group" aria-label="Field">' + LEARN_FIELDS.map(function (f) {
+      return '<button type="button" class="chip' + (learn.field === f[0] ? ' on' : '') + '" data-act="learn-field" data-f="' + f[0] + '" aria-pressed="' + (learn.field === f[0]) + '">' + f[1] + '</button>';
+    }).join('') + '</div>' +
+      '<div class="row learn-tools"><input class="grow" type="search" id="learnq" placeholder="Search, e.g. Excel, SQL, English" aria-label="Search courses" value="' + esc(learn.q) + '">' +
+      '<label class="row small"><input type="checkbox" id="learnfree"' + (learn.freeOnly ? ' checked' : '') + '> Free certificate only</label></div>';
+  }
+  function refreshLearn(all) {
+    if (all) {
+      var c = document.getElementById('learnctl'); if (c) c.innerHTML = learnControls();
+      var s = document.getElementById('learnsum'); if (s) s.innerHTML = learnSummary();
+    }
+    var l = document.getElementById('learnlist'); if (l) l.innerHTML = learnListHtml();
+  }
+
   var afterRender = {
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
@@ -2731,6 +2864,7 @@
     if (ch) { markLatest(ch); refreshChatList(); updateBadge(); }
   });
   document.addEventListener('change', function (e) {
+    if (e.target.id === 'learnfree') { learn.freeOnly = e.target.checked; refreshLearn(false); return; }
     if (e.target.id === 'cl-pick' && e.target.value && S.cl) {
       var app = find(S.apps, e.target.value);
       if (app) {
@@ -2758,6 +2892,9 @@
       S.cl[e.target.dataset.cl] = e.target.value;
       save();
       refreshCl(false);
+    } else if (e.target.id === 'learnq') {
+      learn.q = e.target.value;
+      refreshLearn(false);
     } else if (e.target.id === 'peopleq') {
       prof.query = e.target.value;
       document.getElementById('peoplelist').innerHTML = peopleHtml();

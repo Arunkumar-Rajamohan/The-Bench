@@ -783,6 +783,22 @@ mark.clp-gap { background: #fbe3c4; color: var(--cv-ink); border-radius: 3px; pa
 .kw .ico { width: 12px; height: 12px; }
 .cvf select { width: 100%; }
 
+/* Free learning library */
+.lgrid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.lcard { display: grid; gap: 8px; align-content: start; }
+.lcard h3 { font: 600 1.08rem/1.3 var(--serif); text-transform: none; letter-spacing: 0; color: var(--ink); margin: 4px 0 0; }
+.lcard h3 .ico { width: 13px; height: 13px; color: var(--muted); vertical-align: -1px; }
+.lcard p { margin: 0; }
+.lcard .row { margin-top: 4px; gap: 8px; }
+.lcard.done { background: color-mix(in srgb, var(--good) 6%, var(--paper)); }
+.lcard.doing { border-color: var(--line-2); }
+.lc-cert { font-size: .72rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.lc-cert.free { color: var(--good); }
+.lc-cert.some { color: var(--gold); }
+.learn-tools { gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.learn-tools label { gap: 6px; white-space: nowrap; }
+.learn-tools input[type="search"] { flex: 1 1 240px; min-width: 0; }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

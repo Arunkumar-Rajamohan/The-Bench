@@ -896,6 +896,45 @@ dialog.sheet .grid2.tight { grid-template-columns: repeat(auto-fit, minmax(180px
 .sal-note { margin-top: 18px; }
 @media (max-width: 860px) { .sal-table { font-size: .8rem; } .sal-table.cmp { font-size: .76rem; } .sal-table td + td, .sal-table th + th { padding-left: 6px; } .sal-big b { font-size: 2rem; } }
 
+/* Mood check-in and support */
+.mood-checkin .moods { flex-wrap: wrap; }
+.mood-checkin .mood { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+.mood-checkin .mood span { font-size: .66rem; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+.mood-reply { padding: 12px 14px; border-radius: var(--r-sm); background: var(--sunk); display: grid; gap: 8px; }
+.mood-reply p, .mood-reply ul { margin: 0; }
+.mood-reply ul { padding-left: 18px; display: grid; gap: 3px; }
+.mood-reply.low { background: color-mix(in srgb, var(--accent) 9%, var(--paper)); }
+.mood-reply.good { background: color-mix(in srgb, var(--good) 9%, var(--paper)); }
+.mood-tags { margin: 6px 0 0; flex-wrap: wrap !important; overflow: visible !important; margin-left: 0 !important; margin-right: 0 !important; padding: 0 !important; }
+.mood-chart { width: 100%; height: auto; display: block; }
+.mood-chart .mgrid { stroke: var(--line); stroke-width: 1; }
+.mood-chart .memo { font-size: 15px; }
+.mood-chart .mlabel { font: 500 11px var(--sans); fill: var(--muted); }
+.mood-chart .mline { fill: none; stroke: var(--line-2); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.mood-chart .mdot { stroke: var(--paper); stroke-width: 2; }
+.mood-chart .m0 { fill: var(--bad); }
+.mood-chart .m1 { fill: var(--accent); }
+.mood-chart .m2 { fill: var(--muted); }
+.mood-chart .m3 { fill: var(--blue); }
+.mood-chart .m4 { fill: var(--good); }
+@media (max-width: 860px) { .mood-chart .mlabel { font-size: 19px; } .mood-chart .memo { font-size: 22px; } .mood-chart .mdot { stroke-width: 2.5; } }
+.mood-insights { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: .9rem; }
+.mood-lower { margin-top: 18px; }
+.helplines h2 .ico { width: 18px; height: 18px; color: var(--accent); vertical-align: -3px; }
+.help-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.help-list li { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.help-list li:first-child { border-top: 0; }
+.help-list .btn { white-space: nowrap; }
+.banner.warm { background: color-mix(in srgb, var(--accent) 10%, var(--paper)); }
+.breath-wrap { display: grid; justify-items: center; gap: 18px; padding: 18px 0 8px; }
+.breath { width: 90px; height: 90px; border-radius: 50%; background: color-mix(in srgb, var(--blue) 30%, var(--paper)); border: 2px solid var(--blue); transform: scale(.7); transition: transform 4s ease-in-out; }
+.breath.in { transform: scale(1.5); }
+.breath.hold { transform: scale(1.5); }
+.breath.out { transform: scale(.7); }
+.breath-say { font: 500 1.2rem/1.3 var(--serif); margin: 18px 0 0; min-height: 1.6em; }
+.center-text { text-align: center; }
+@media (prefers-reduced-motion: reduce) { .breath { transition: none !important; } }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

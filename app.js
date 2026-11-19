@@ -54,6 +54,7 @@
     mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/>',
     book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M9 7.5h7"/>',
     rupee: '<path d="M7 4h10"/><path d="M7 8.5h10"/><path d="M7 4h3.5a4.5 4.5 0 0 1 0 9H7l7.5 7"/>',
+    heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -312,7 +313,8 @@
       cv: null, // resume builder, made the first time it opens
       cl: null, // cover letter helper, made the first time it opens
       learn: {}, // free learning library: course id -> 'doing' | 'done'
-      salary: null // salary and offer helper inputs, made the first time it opens
+      salary: null, // salary and offer helper inputs, made the first time it opens
+      moodlog: {} // mood check-in extras by day: { tags, note }
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -328,6 +330,7 @@
     b.cl = cleanCl(raw.cl);
     b.learn = cleanLearn(raw.learn);
     b.salary = cleanSalary(raw.salary);
+    b.moodlog = cleanMoodlog(raw.moodlog);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -824,6 +827,163 @@
     setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
   }
 
+  // ---------- mood check-in and support ----------
+  // Private to each member. The mood itself stays in S.routine.moods[day] (0-4, as before); what affected it and a note
+  // go in S.moodlog[day] = { tags: [...], note: '' }.
+  var MOOD_TAGS = ['Rejection', 'Money worries', 'Family pressure', 'Poor sleep', 'Lonely', 'Health', 'Interview', 'Good news', 'Made progress', 'Exercise', 'Time with people', 'Rest'];
+  var MOOD_WORDS = ['Awful', 'Low', 'Okay', 'Good', 'Great'];
+  var HELPLINES = [
+    { name: 'Tele-MANAS', by: 'Government of India', tel: '14416', show: '14416 or 1-800-891-4416', when: 'Free, 24 hours, in many Indian languages' },
+    { name: 'Vandrevala Foundation', by: 'Call or WhatsApp', tel: '+919999666555', show: '+91 99996 66555', when: 'Free, 24 hours' },
+    { name: 'AASRA', by: 'Suicide prevention and emotional support', tel: '+912227546669', show: '+91 22 2754 6669', when: '24 hours' },
+    { name: 'iCall', by: 'Counsellors from TISS', tel: '+919152987821', show: '+91 91529 87821', when: 'Monday to Saturday, 8 am to 9 pm' }
+  ];
+  var COPING = [
+    ['Keep a small routine', 'Wake up, get dressed and start at the same time each day. Structure is what a job used to give you.'],
+    ['Put a fence around job hunting', 'Set hours, for example 10 to 1, then stop. Searching all day burns you out faster than it finds jobs.'],
+    ['Rejection is about fit, not your worth', 'Most applications get no reply at all. It is a numbers game, not a verdict on you.'],
+    ['Move your body', 'A 15-minute walk lifts mood more reliably than scrolling LinkedIn.'],
+    ['Tell someone how it is going', 'A friend, family member or your buddy here. Saying it out loud makes it lighter.'],
+    ['Make a simple money plan', 'Write down what is coming in and going out for the next 3 months. Knowing the number is less scary than guessing.'],
+    ['Count small wins', 'An application sent, a course module finished, a good conversation. They add up.']
+  ];
+  function cleanMoodlog(raw) {
+    var b = {};
+    if (!isObj(raw)) return b;
+    Object.keys(raw).filter(isDay).sort().slice(-400).forEach(function (k) {
+      var e = raw[k];
+      if (!isObj(e)) return;
+      var tags = Array.isArray(e.tags) ? e.tags.filter(function (t) { return MOOD_TAGS.indexOf(t) > -1; }) : [];
+      var note = typeof e.note === 'string' ? e.note.slice(0, 280) : '';
+      if (tags.length || note) b[k] = { tags: tags, note: note };
+    });
+    return b;
+  }
+  function moodOn(k) { var v = S.routine.moods[k]; return typeof v === 'number' && v >= 0 && v <= 4 ? v : null; }
+  function lastDays(n) { var out = []; for (var i = n - 1; i >= 0; i--) out.push(addDays(today(), -i)); return out; }
+  function avg(list) { return list.length ? list.reduce(function (a, b) { return a + b; }, 0) / list.length : null; }
+  // Three or more hard days in a row (among the days you checked in during the last week).
+  function hardStretch() {
+    var logged = lastDays(7).map(moodOn).filter(function (v) { return v !== null; });
+    var tail = logged.slice(-3);
+    return tail.length === 3 && tail.every(function (v) { return v <= 1; });
+  }
+  function moodChart() {
+    var days = lastDays(30), W = 620, H = 176, left = 44, right = 12, top = 16, bottom = 34;
+    var x = function (i) { return left + i * (W - left - right) / (days.length - 1); };
+    var y = function (v) { return top + (4 - v) * (H - top - bottom) / 4; };
+    var grid = [0, 1, 2, 3, 4].map(function (v) {
+      return '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + y(v) + '" y2="' + y(v) + '" class="mgrid"/>' +
+        '<text x="' + (left - 10) + '" y="' + (y(v) + 5) + '" text-anchor="end" class="memo">' + MOODS[v] + '</text>';
+    }).join('');
+    var path = '', prev = null;
+    days.forEach(function (k, i) {
+      var v = moodOn(k);
+      if (v === null) { prev = null; return; }
+      path += (prev === null ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' ';
+      prev = v;
+    });
+    var dots = days.map(function (k, i) {
+      var v = moodOn(k);
+      return v === null ? '' : '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="' + (k === today() ? 6 : 4.5) + '" class="mdot m' + v + '"><title>' +
+        esc(fmtDay(k) + ': ' + MOOD_WORDS[v]) + '</title></circle>';
+    }).join('');
+    var labels = days.map(function (k, i) {
+      return i % 7 === 2 || i === days.length - 1 ? '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) + '" text-anchor="' + (i === days.length - 1 ? 'end' : 'middle') + '" class="mlabel">' +
+        (i === days.length - 1 ? 'Today' : esc(dayDate(k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))) + '</text>' : '';
+    }).join('');
+    return '<svg class="mood-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Your mood over the last 30 days">' + grid +
+      (path ? '<path d="' + path + '" class="mline"/>' : '') + dots + labels + '</svg>';
+  }
+  function moodInsights() {
+    var days = lastDays(30), logged = days.filter(function (k) { return moodOn(k) !== null; });
+    if (logged.length < 3) return '<p class="muted small">Check in on a few more days and patterns will show up here.</p>';
+    var out = [];
+    var score = function (v) { return (v + 1).toFixed(1); };
+    var thisWeek = avg(days.slice(-7).map(moodOn).filter(function (v) { return v !== null; }));
+    var lastWeek = avg(days.slice(-14, -7).map(moodOn).filter(function (v) { return v !== null; }));
+    out.push('You checked in on <b>' + logged.length + ' of the last 30 days</b>. Average mood: <b>' + score(avg(logged.map(moodOn))) + ' out of 5</b>.');
+    if (thisWeek !== null && lastWeek !== null) {
+      var d = thisWeek - lastWeek;
+      out.push(Math.abs(d) < 0.3 ? 'This week is about the same as last week.' : d > 0 ? 'This week is <b>better</b> than last week. Whatever you are doing, keep it up.' : 'This week has been <b>harder</b> than last week. Go easy on yourself.');
+    }
+    var withTask = logged.filter(hit).map(moodOn), without = logged.filter(function (k) { return !hit(k); }).map(moodOn);
+    if (withTask.length >= 3 && without.length >= 3 && avg(withTask) - avg(without) >= 0.3) {
+      out.push('On days you ticked a routine task, your mood averaged <b>' + score(avg(withTask)) + '</b>, compared with ' + score(avg(without)) + ' on days you did not. Small actions help.');
+    }
+    var tally = function (pred) {
+      var c = {};
+      logged.forEach(function (k) { if (pred(moodOn(k)) && S.moodlog[k]) S.moodlog[k].tags.forEach(function (t) { c[t] = (c[t] || 0) + 1; }); });
+      return Object.keys(c).filter(function (t) { return c[t] >= 2; }).sort(function (a, b) { return c[b] - c[a]; }).slice(0, 3);
+    };
+    var lows = tally(function (v) { return v <= 1; }), highs = tally(function (v) { return v >= 3; });
+    if (lows.length) out.push('Hard days often came with: <b>' + lows.map(esc).join(', ') + '</b>.');
+    if (highs.length) out.push('Good days often came with: <b>' + highs.map(esc).join(', ') + '</b>. Plan more of those.');
+    return '<ul class="mood-insights">' + out.map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>';
+  }
+  function moodResponse(v) {
+    if (v === null) return '';
+    if (v <= 1) {
+      return '<div class="mood-reply low"><p><b>A rough day. That is allowed.</b> Job hunting is hard, and feeling low does not mean you are doing it wrong.</p>' +
+        '<ul class="small"><li>Do one tiny thing, then stop for the day.</li><li>Step outside for 10 minutes.</li><li>Message someone: a friend, family, or <a href="#/buddy">your buddy</a>.</li></ul>' +
+        '<div class="row"><button type="button" class="btn tiny" data-act="breathe">Try a 1-minute breathing exercise</button><button type="button" class="btn tiny ghost" data-act="to-support">Talk to someone</button></div></div>';
+    }
+    if (v === 2) return '<div class="mood-reply"><p><b>An okay day is a fine day.</b> Pick one useful thing from your <a href="#/routine">routine</a> and call it a win.</p></div>';
+    return '<div class="mood-reply good"><p><b>Glad today is a good one.</b> What helped? Tag it below, so you can spot what to do more of.</p></div>';
+  }
+  function moodCheckin() {
+    var k = today(), v = moodOn(k), log = S.moodlog[k] || { tags: [], note: '' };
+    return '<section class="card stack mood-checkin"><h2>How are you feeling today?</h2><div class="moods">' +
+      MOODS.map(function (mo, i) {
+        return '<button class="mood' + (v === i ? ' on' : '') + '" data-act="mood" data-v="' + i + '" aria-label="' + MOOD_WORDS[i] + '" aria-pressed="' + (v === i) + '">' + mo + '<span>' + MOOD_WORDS[i] + '</span></button>';
+      }).join('') + '</div>' + moodResponse(v) +
+      '<div><p class="small"><b>What is affecting you?</b> <span class="muted">(optional, pick any)</span></p><div class="chips mood-tags">' +
+      MOOD_TAGS.map(function (t) {
+        var on = log.tags.indexOf(t) > -1;
+        return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-act="mood-tag" data-t="' + esc(t) + '" aria-pressed="' + on + '">' + esc(t) + '</button>';
+      }).join('') + '</div></div>' +
+      '<label class="stack small"><b>A note to yourself</b><textarea id="moodnote" rows="2" maxlength="280" placeholder="Anything on your mind. Only you can see this.">' + esc(log.note) + '</textarea></label></section>';
+  }
+  function helplinesHtml() {
+    return '<section class="card stack helplines" id="support"><h2>' + ico('phone') + ' If you need to talk</h2>' +
+      '<p>Free, confidential, and you do not need to be in crisis to call. If you are in danger right now, call <a href="tel:112"><b>112</b></a>.</p>' +
+      '<ul class="help-list">' + HELPLINES.map(function (h) {
+        return '<li><div class="grow"><b>' + esc(h.name) + '</b> <span class="muted small">' + esc(h.by) + '</span><br><span class="small muted">' + esc(h.when) + '</span></div>' +
+          '<a class="btn tiny primary" href="tel:' + esc(h.tel) + '">' + ico('phone') + esc(h.show) + '</a></li>';
+      }).join('') + '</ul><p class="muted small">Numbers checked in November 2026. If one line is busy, try another. The Bench is a peer community, not a medical service.</p></section>';
+  }
+  function copingHtml() {
+    return '<section class="card stack"><h2>When it gets heavy</h2><ul class="sal-tips">' + COPING.map(function (c) {
+      return '<li><b>' + c[0] + '.</b> ' + c[1] + '</li>';
+    }).join('') + '</ul></section>';
+  }
+  // A one-minute breathing pacer: in for 4, hold for 4, out for 6.
+  var breathTimer = null;
+  function startBreathing() {
+    var d = sheet('breathe', '<h2>Breathe with the circle</h2><div class="breath-wrap"><div class="breath" id="breathcircle"></div><p class="breath-say" id="breathsay">Get comfortable</p></div>' +
+      '<p class="muted small center-text">In for 4, hold for 4, out for 6. About one minute.</p><div class="row"><button type="button" class="btn ghost" data-act="sheet-close">Stop</button></div>');
+    var steps = [['Breathe in', 4, 'in'], ['Hold', 4, 'hold'], ['Breathe out', 6, 'out']], round = 0, step = -1;
+    clearTimeout(breathTimer);
+    var next = function () {
+      if (!document.getElementById('breathcircle')) return;
+      step++;
+      if (step === steps.length) { step = 0; round++; }
+      if (round === 4) {
+        document.getElementById('breathsay').textContent = 'Well done. Notice how you feel.';
+        document.getElementById('breathcircle').className = 'breath';
+        return;
+      }
+      var st = steps[step];
+      document.getElementById('breathsay').textContent = st[0] + '…';
+      var c = document.getElementById('breathcircle');
+      c.style.transitionDuration = st[1] + 's';
+      c.className = 'breath ' + st[2];
+      breathTimer = setTimeout(next, st[1] * 1000);
+    };
+    breathTimer = setTimeout(next, 1200);
+    d.addEventListener('close', function () { clearTimeout(breathTimer); });
+  }
+
   var views = {
     home: function () {
       var done = doneOn(today()).length, total = S.routine.tasks.length;
@@ -910,6 +1070,14 @@
         ivStats() + ivPacks() +
         '<div class="grid2 iv-grid"><div id="ivq">' + ivQuestion() + '</div>' +
         '<section class="card stack"><h2>Recent practice</h2>' + ivHistory() + '</section></div>';
+    },
+
+    mood: function () {
+      return head('How you are doing', 'A private check-in, just for you. Nobody else can see this page, not even moderators.') +
+        (hardStretch() ? '<p class="banner warm">' + ico('heart') + '<span><b>You have had a few hard days in a row.</b> That happens to a lot of people between jobs. Talking to someone can really help. <button type="button" class="link" data-act="to-support">See free helplines</button></span></p>' : '') +
+        '<div class="grid2">' + moodCheckin() +
+        '<section class="card stack"><h2>Your last 30 days</h2>' + moodChart() + '<div id="moodinsights">' + moodInsights() + '</div></section></div>' +
+        '<div class="grid2 mood-lower">' + helplinesHtml() + copingHtml() + '</div>';
     },
 
     salary: function () {
@@ -1045,7 +1213,8 @@
         MOODS.map(function (mo, i) {
           return '<button class="mood' + (mood === i ? ' on' : '') + '" data-act="mood" data-v="' + i + '" aria-label="Mood ' + (i + 1) + ' of 5" aria-pressed="' + (mood === i) + '">' + mo + '</button>';
         }).join('') + '</div>' +
-        (mood !== undefined && mood <= 1 ? '<p class="small muted" style="margin-top:10px">Rough days are part of this. Do one tiny task, then go easy on yourself.</p>' : '') +
+        (mood !== undefined && mood <= 1 ? '<p class="small muted" style="margin-top:10px">Rough days are part of this. Do one tiny task, then go easy on yourself. <a href="#/mood">Need support?</a></p>' : '') +
+        '<p class="small" style="margin-top:10px"><a href="#/mood">' + ico('heart') + ' Your month, what affects your mood, and support</a></p>' +
         '</section><section class="card"><h2>Last 7 days</h2><div class="week">' + days.join('') + '</div></section></div></div>';
     }
   };
@@ -1661,6 +1830,18 @@
       return false;
     },
     'cv-print': function () { window.print(); return false; },
+    'mood-tag': function (d) {
+      var k = today(), log = S.moodlog[k] || (S.moodlog[k] = { tags: [], note: '' });
+      var i = log.tags.indexOf(d.t);
+      if (i > -1) log.tags.splice(i, 1); else if (MOOD_TAGS.indexOf(d.t) > -1) log.tags.push(d.t);
+      if (!log.tags.length && !log.note) delete S.moodlog[k];
+      save();
+      document.querySelectorAll('[data-act="mood-tag"]').forEach(function (b) { var on = !!(S.moodlog[k] && S.moodlog[k].tags.indexOf(b.dataset.t) > -1); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+      var ins = document.getElementById('moodinsights'); if (ins) ins.innerHTML = moodInsights();
+      return false;
+    },
+    breathe: function () { startBreathing(); return false; },
+    'to-support': function () { var el = document.getElementById('support'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return false; },
     'sal-mode': function (d) { S.salary.compare = d.m === '2'; },
     'learn-field': function (d) { learn.field = d.f; refreshLearn(true); return false; },
     'learn-set': function (d) {
@@ -3031,6 +3212,7 @@
       '<a class="ql" href="#/cover">' + ico('mail') + '<span>Cover letter</span></a>' +
       '<a class="ql" href="#/learn">' + ico('book') + '<span>Learn</span></a>' +
       '<a class="ql" href="#/salary">' + ico('rupee') + '<span>Salary</span></a>' +
+      '<a class="ql" href="#/mood">' + ico('heart') + '<span>Wellbeing</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -3686,6 +3868,11 @@
       refreshCl(false);
     } else if (e.target.id === 'ivnote' && iv.cur) {
       if (e.target.value.trim()) S.qnotes[iv.cur] = e.target.value; else delete S.qnotes[iv.cur];
+      save();
+    } else if (e.target.id === 'moodnote') {
+      var mk = today(), ml = S.moodlog[mk] || { tags: [], note: '' };
+      ml.note = e.target.value.slice(0, 280);
+      if (ml.tags.length || ml.note) S.moodlog[mk] = ml; else delete S.moodlog[mk];
       save();
     } else if (e.target.dataset && e.target.dataset.sal && S.salary) {
       var sp = e.target.dataset.sal.split('.'), off = S.salary[sp[0]];

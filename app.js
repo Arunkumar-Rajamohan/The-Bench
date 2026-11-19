@@ -523,7 +523,8 @@
     if (item.kind === 'interview') {
       return '<li class="due-row"><span class="due-ico iv">' + ico('prep') + '</span><span class="grow">Interview ' + relDay(a.interview) + ': ' + who +
         '<br><span class="muted small">' + esc(interviewText(a)) + '</span></span>' +
-        (withActions ? '<span class="row due-acts"><button type="button" class="btn tiny ghost" data-act="app-ics" data-id="' + id + '">' + ico('download') + 'Add to calendar</button>' +
+        (withActions ? '<span class="row due-acts"><a class="btn tiny ghost" href="' + esc(googleCalUrl(a)) + '" target="_blank" rel="noopener noreferrer">' + ico('link') + 'Google Calendar</a>' +
+          '<button type="button" class="btn tiny ghost" data-act="app-ics" data-id="' + id + '" title="Downloads a calendar file for Outlook, Apple or any other calendar">' + ico('download') + 'Other calendar</button>' +
           '<a class="btn tiny ghost" href="#/interview">Practise</a></span>' : '') + '</li>';
     }
     var late = dayDiff(a.followUp, today());
@@ -638,6 +639,25 @@
       'DESCRIPTION:' + esc2((a.note ? a.note + '\n\n' : '') + 'Practise first: open The Bench, Prep, Start practising.'),
       'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc2('Interview with ' + a.company + ' in 1 hour'), 'END:VALARM',
       'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+  }
+  // Opens Google Calendar with the interview filled in. Only the job title and company go to Google (never your notes),
+  // and only when you tap it. Times are in this device's time zone.
+  function googleCalUrl(a) {
+    var d = a.interview.replace(/-/g, ''), dates;
+    if (isTime(a.itime)) {
+      var p = a.itime.split(':'), e = dayDate(a.interview);
+      e.setHours(Number(p[0]) + 1, Number(p[1]), 0, 0);
+      dates = d + 'T' + a.itime.replace(':', '') + '00/' + dkey(e).replace(/-/g, '') + 'T' + String(e.getHours()).padStart(2, '0') + String(e.getMinutes()).padStart(2, '0') + '00';
+    } else {
+      dates = d + '/' + addDays(a.interview, 1).replace(/-/g, '');
+    }
+    var tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e2) { /* older browser */ }
+    return 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
+      '&text=' + encodeURIComponent('Interview: ' + a.title + ' at ' + a.company) +
+      '&dates=' + dates +
+      '&details=' + encodeURIComponent('Practise first: open The Bench, then Prep, then Start practising.') +
+      (tz ? '&ctz=' + encodeURIComponent(tz) : '');
   }
   function downloadIcs(a) {
     var blob = new Blob([icsText(a)], { type: 'text/calendar' });

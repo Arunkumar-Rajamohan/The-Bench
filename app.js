@@ -153,6 +153,7 @@
     clearTimeout(saveTimer); saveTimer = null;
     stopTimer();
     me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
+    stopStream(); chat = freshChat(); updateBadge();
   }
   var toastTimer = null;
   function toast(msg) {
@@ -253,10 +254,13 @@
       '<form class="row" data-form="reply" style="margin-top:12px"><input type="hidden" name="id" value="' + id + '">' +
       '<input class="grow" type="text" name="text" placeholder="Say something nice…" maxlength="300" aria-label="Reply" required>' +
       '<button class="btn ghost">Reply</button></form>';
-    return '<article class="card post"><div class="row between"><div class="row"><span class="who">' + esc(p.name) + '</span>' +
+    var who = p.own
+      ? '<span class="who">' + esc(p.name) + '</span>'
+      : '<a class="who" href="#/dm/' + esc(p.username) + '" title="Message @' + esc(p.username) + ' privately">' + esc(p.name) + '</a>';
+    return '<article class="card post"><div class="row between"><div class="row">' + who +
       '<span class="muted small">@' + esc(p.username) + '</span>' +
       '<span class="pill ' + tag + '">' + tag + '</span><span class="muted small">' + ago(p.t) + '</span></div>' +
-      (p.own && !compact ? '<button class="link" data-act="del-post" data-id="' + id + '">delete</button>' : '') + '</div>' +
+      ((p.own || me.isAdmin) && !compact ? '<button class="link" data-act="del-post" data-id="' + id + '">delete</button>' : '') + '</div>' +
       '<p class="body">' + esc(p.text) + '</p><div class="row">' + reacts + '</div>' + replies + '</article>';
   }
 
@@ -292,8 +296,25 @@
         '<label>Current password<input type="password" name="password" maxlength="200" autocomplete="current-password" required></label>' +
         '<label>New password<input type="password" name="newPassword" minlength="8" maxlength="200" autocomplete="new-password" required></label>' +
         '<p class="muted small">This signs you out on every other device.</p>' +
-        '<button class="btn">Change password</button></form></div>' +
+        '<button class="btn">Change password</button></form>' +
+        '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
+        '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
+        (me.isAdmin ? '<section class="card stack"><h2>Moderation 🛡️</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        '</div>' +
         '<p class="small muted" style="margin-top:16px"><a href="#/home">← Back home</a> · <button class="link" data-act="logout">Log out</button></p>';
+    },
+
+    chat: function () {
+      var ch = activeChannel();
+      return '<div class="chat' + (ch ? ' has-ch' : '') + '"><aside class="chat-list card" id="chatlist">' + chatListHtml(ch) + '</aside>' +
+        '<section class="chat-pane card" id="chatpane">' +
+        (ch ? paneHtml(ch) : '<div class="pane-empty"><p>Pick a room or a person to chat with.</p></div>') + '</section></div>';
+    },
+
+    admin: function () {
+      if (!me.isAdmin) return head('Moderators only 🛡️', 'This page is for moderators.');
+      return head('Moderation 🛡️', 'Reports from members. A private message only shows up here when one of the two people in it reports it.') +
+        '<div id="adminbody"><p class="muted">Loading reports…</p></div>';
     },
 
     feed: function () {
@@ -474,6 +495,7 @@
       if (old) { S = old; saveTimer = setTimeout(flush, 0); }
       try { localStorage.removeItem(OLD_KEY); } catch (e) { /* storage blocked */ }
     }
+    loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     return loadPosts().catch(fail);
   }
   function oldLocal() {
@@ -496,6 +518,63 @@
       var done = function (ok) { note.textContent = ok ? 'Copied ✓' : 'Copy failed. Select the code and copy it by hand.'; };
       try { navigator.clipboard.writeText(ui.newCode).then(function () { done(true); }, function () { done(false); }); }
       catch (e) { done(false); }
+      return false;
+    },
+    older: function () {
+      var ch = activeChannel(), el = msgsEl();
+      if (!ch || !el) return false;
+      var fromBottom = el.scrollHeight - el.scrollTop;
+      loadChannel(ch, true).then(function () {
+        var now = msgsEl();
+        if (!now || activeChannel() !== ch) return;
+        now.innerHTML = msgsHtml(ch);
+        now.scrollTop = now.scrollHeight - fromBottom; // keep the reader's place
+      }).catch(fail);
+      return false;
+    },
+    report: function (d) {
+      closeMenus();
+      var reason = window.prompt('Report this message to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/chat/msg/' + Number(d.id) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
+      return false;
+    },
+    block: function (d) {
+      closeMenus();
+      if (!window.confirm('Block @' + d.u + '?\n\nThey will not be able to message you, and you will not see their messages in rooms. You can unblock them from your Account page.')) return false;
+      api('POST', '/api/blocks/' + encodeURIComponent(d.u))
+        .then(function () { toast('Blocked @' + d.u + '.'); chatBlocked(d.u, true); }).catch(fail);
+      return false;
+    },
+    unblock: function (d) {
+      api('DELETE', '/api/blocks/' + encodeURIComponent(d.u)).then(function () {
+        toast('Unblocked @' + d.u + '.');
+        chatBlocked(d.u, false);
+        if (currentView() === 'account') loadBlocks();
+      }).catch(fail);
+      return false;
+    },
+    'del-msg': function (d) {
+      closeMenus();
+      if (!window.confirm('Delete this message?')) return false;
+      var ch = activeChannel();
+      api('DELETE', '/api/chat/msg/' + Number(d.id))
+        .then(function () { onChatEvent({ type: 'del', channel: ch, id: Number(d.id) }); }).catch(fail);
+      return false;
+    },
+    mod: function (d) {
+      if (d.a === 'ban' && !window.confirm('Delete this message and ban @' + d.u + '?\n\nThey are signed out and cannot log in. Their posts and messages are hidden. You can unban them later.')) return false;
+      api('POST', '/api/admin/reports/' + Number(d.id), { action: d.a }).then(function () {
+        toast(d.a === 'dismiss' ? 'Report dismissed.' : d.a === 'ban' ? 'Message deleted and @' + d.u + ' banned.' : 'Message deleted.');
+        loadAdmin();
+        if (d.a === 'ban') { chat.msgs = {}; loadSummary().catch(function () { /* refreshed on next visit */ }); }
+      }).catch(fail);
+      return false;
+    },
+    unban: function (d) {
+      if (!window.confirm('Unban @' + d.u + '? They will be able to log in again.')) return false;
+      api('POST', '/api/admin/unban/' + encodeURIComponent(d.u)).then(function () { toast('@' + d.u + ' unbanned.'); loadAdmin(); }).catch(fail);
       return false;
     },
     'code-done': function () {
@@ -560,6 +639,18 @@
   };
 
   var forms = {
+    chat: function (f, form) {
+      var ch = activeChannel(), body = String(f.get('text') || '').trim();
+      if (!ch || !body || chat.sending) return false;
+      var box = form.querySelector('textarea'), btn = form.querySelector('button');
+      chat.sending = true; btn.disabled = true;
+      api('POST', channelUrl(ch), { text: body }).then(function (j) {
+        if (box.value.trim() === body) { box.value = ''; autosize(box); }
+        onChatEvent({ type: 'msg', channel: ch, msg: j.msg, peer: chat.peers[ch] });
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); })
+        .then(function () { chat.sending = false; btn.disabled = false; if (document.body.contains(box)) box.focus(); });
+      return false;
+    },
     auth: function (f, form) {
       var mode = ui.authMode;
       var body = { username: String(f.get('username')).trim(), password: String(f.get('password')) };
@@ -614,26 +705,377 @@
     }
   };
 
+  // ---------- chat ----------
+  // Rooms and DMs. Live updates arrive over one EventSource; history loads per channel.
+  // Client-side channel names: 'room:<slug>' and 'dm:<other person's username>'.
+  var ROOM_EMOJI = { lobby: '👋', 'job-leads': '💼', 'interview-prep': '🎤', vent: '🌧️' };
+  var BASE_TITLE = document.title;
+  var chat = freshChat();
+  function freshChat() {
+    return { summary: null, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false };
+  }
+
+  function isChatView() { return !!me && !ui.newCode && currentView() === 'chat'; }
+  function wideScreen() { return window.matchMedia('(min-width: 861px)').matches; }
+  function chatChannel() {
+    var p = location.hash.replace(/^#\/?/, '').split('/');
+    if (p[0] === 'dm' && /^[a-z0-9_]{3,20}$/i.test(p[1] || '')) return 'dm:' + p[1].toLowerCase();
+    if (p[0] === 'chat' && /^[a-z-]{1,30}$/.test(p[1] || '')) return 'room:' + p[1];
+    return '';
+  }
+  // On a wide screen an empty #/chat opens #lobby; on a phone it shows the list of chats.
+  function activeChannel() { return chatChannel() || (wideScreen() ? 'room:lobby' : ''); }
+  function isDm(ch) { return ch.indexOf('dm:') === 0; }
+  function channelUrl(ch) {
+    return isDm(ch) ? '/api/chat/dm/' + encodeURIComponent(ch.slice(3)) : '/api/chat/room/' + encodeURIComponent(ch.slice(5));
+  }
+  function roomBySlug(slug) {
+    var s = chat.summary;
+    return s ? s.rooms.filter(function (r) { return r.slug === slug; })[0] : null;
+  }
+  function dmByUser(u) {
+    var s = chat.summary;
+    return s ? s.dms.filter(function (d) { return d.username === u; })[0] : null;
+  }
+  function initial(name) { return (Array.from(String(name || '?'))[0] || '?').toUpperCase(); }
+  function clock(t) {
+    var d = new Date(t), time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return dkey(d) === today() ? time : d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ', ' + time;
+  }
+
+  // ----- unread tracking (per device, in localStorage) -----
+  function seenKey() { return 'bench:seen:' + me.username; }
+  function loadSeen() {
+    chat.seen = {}; chat.seedSeen = true;
+    try {
+      var raw = localStorage.getItem(seenKey());
+      if (raw !== null) { var v = JSON.parse(raw); if (isObj(v)) chat.seen = v; chat.seedSeen = false; }
+    } catch (e) { /* storage blocked: everything just counts as read on load */ }
+  }
+  function markSeen(ch, id) {
+    if (!id || (chat.seen[ch] || 0) >= id) return;
+    chat.seen[ch] = id;
+    try { localStorage.setItem(seenKey(), JSON.stringify(chat.seen)); } catch (e) { /* storage blocked */ }
+  }
+  function lastIdOf(ch) {
+    var x = isDm(ch) ? dmByUser(ch.slice(3)) : roomBySlug(ch.slice(5));
+    return x ? x.lastId || 0 : 0;
+  }
+  function isUnread(ch) {
+    if (isDm(ch)) { var d = dmByUser(ch.slice(3)); if (!d || d.lastFromMe) return false; }
+    return lastIdOf(ch) > (chat.seen[ch] || 0);
+  }
+  function markLatest(ch) {
+    var list = chat.msgs[ch] || [];
+    markSeen(ch, Math.max(list.length ? list[list.length - 1].id : 0, lastIdOf(ch)));
+  }
+  function updateBadge() {
+    var n = chat.summary ? chat.summary.dms.filter(function (d) { return isUnread('dm:' + d.username); }).length : 0;
+    var el = document.getElementById('chatbadge');
+    if (el) { el.textContent = n ? String(n) : ''; el.hidden = !n; }
+    document.title = (n ? '(' + n + ') ' : '') + BASE_TITLE;
+  }
+
+  // ----- HTML -----
+  function chatListHtml(active) {
+    var s = chat.summary;
+    if (!s) return '<p class="muted small pad">Loading chats…</p>';
+    var rooms = s.rooms.map(function (r) {
+      var ch = 'room:' + r.slug, un = ch !== active && isUnread(ch);
+      return '<a class="ch' + (ch === active ? ' on' : '') + (un ? ' unread' : '') + '" href="#/chat/' + esc(r.slug) + '"' + (ch === active ? ' aria-current="page"' : '') + '>' +
+        '<span class="ch-icon" aria-hidden="true">' + (ROOM_EMOJI[r.slug] || '#') + '</span><span class="ch-text"><b># ' + esc(r.slug) + '</b></span>' +
+        (un ? '<i class="dot" aria-label="new messages"></i>' : '') + '</a>';
+    }).join('');
+    var dms = s.dms.map(function (d) {
+      var ch = 'dm:' + d.username, un = ch !== active && isUnread(ch);
+      return '<a class="ch' + (ch === active ? ' on' : '') + (un ? ' unread' : '') + '" href="#/dm/' + esc(d.username) + '"' + (ch === active ? ' aria-current="page"' : '') + '>' +
+        '<span class="avatar" aria-hidden="true">' + esc(initial(d.name)) + '</span>' +
+        '<span class="ch-text"><b>' + esc(d.name) + '</b><small>' + esc((d.lastFromMe ? 'You: ' : '') + (d.lastText || '')) + '</small></span>' +
+        (un ? '<i class="dot" aria-label="unread"></i>' : '') + '</a>';
+    }).join('') || '<p class="muted small pad">No private chats yet. Tap someone\'s name in a room or on the feed to message them.</p>';
+    return '<h3>Rooms</h3><nav class="chs" aria-label="Rooms">' + rooms + '</nav><h3>Direct messages</h3><nav class="chs" aria-label="Direct messages">' + dms + '</nav>';
+  }
+
+  function composerHtml(label) {
+    return '<form class="composer" data-form="chat"><textarea id="chatbox" name="text" rows="1" maxlength="1000" placeholder="' + esc(label) + '" aria-label="' + esc(label) + '" required></textarea>' +
+      '<button class="btn primary">Send</button></form>';
+  }
+
+  function paneHtml(ch) {
+    var back = '<a class="back" href="#/chat" aria-label="All chats">←</a>';
+    if (chat.errors[ch]) {
+      return '<header class="pane-head">' + back + '<div><h2>Hmm</h2></div></header><div class="pane-empty"><p>' + esc(chat.errors[ch]) + '</p><a href="#/chat/lobby">Go to #lobby</a></div>';
+    }
+    var head, notice = '', composer;
+    if (isDm(ch)) {
+      var u = ch.slice(3), peer = chat.peers[ch];
+      var name = peer ? peer.name : (dmByUser(u) || {}).name || '@' + u;
+      head = '<div class="grow"><h2>' + esc(name) + '</h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
+        (peer ? '<button class="btn tiny ghost" data-act="' + (peer.blockedByMe ? 'unblock' : 'block') + '" data-u="' + esc(u) + '">' + (peer.blockedByMe ? 'Unblock' : 'Block') + '</button>' : '');
+      notice = '<p class="scam">🛡️ Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</p>';
+      composer = peer && peer.blockedByMe
+        ? '<p class="composer-note muted small">You blocked this person. Unblock them to send messages.</p>'
+        : composerHtml('Message ' + name);
+    } else {
+      var slug = ch.slice(5), room = roomBySlug(slug) || (chat.summary ? null : { slug: slug, desc: '' });
+      if (!room) return '<header class="pane-head">' + back + '<div><h2>No such room</h2></div></header><div class="pane-empty"><p>That room does not exist.</p><a href="#/chat/lobby">Go to #lobby</a></div>';
+      head = '<div class="grow"><h2># ' + esc(room.slug) + '</h2><p class="muted small">' + esc(room.desc) + '</p></div>';
+      composer = composerHtml('Message #' + room.slug);
+    }
+    return '<header class="pane-head">' + back + head + '</header>' + notice +
+      '<div class="msgs" id="msgs" role="log" aria-label="Messages">' + msgsHtml(ch) + '</div>' + composer;
+  }
+
+  function msgsHtml(ch) {
+    var list = chat.msgs[ch];
+    if (!list) return '<p class="muted small pad">Loading messages…</p>';
+    var older = chat.more[ch] ? '<button class="btn tiny ghost older" data-act="older">Load older messages</button>' : '';
+    if (!list.length) return older + '<p class="muted pad empty">' + (isDm(ch) ? 'Say hi 👋' : 'No messages yet. Start the conversation!') + '</p>';
+    return older + list.map(function (m) { return msgHtml(m, ch); }).join('');
+  }
+
+  function msgHtml(m, ch) {
+    var own = m.username === me.username, room = !isDm(ch), u = esc(m.username), id = Number(m.id);
+    var opts = [];
+    if (!own && room) opts.push('<a href="#/dm/' + u + '">Message privately</a>');
+    if (!own) opts.push('<button type="button" data-act="report" data-id="' + id + '">Report</button>');
+    if (!own && room) opts.push('<button type="button" data-act="block" data-u="' + u + '">Block @' + u + '</button>');
+    if (own || me.isAdmin) opts.push('<button type="button" data-act="del-msg" data-id="' + id + '">Delete' + (own ? '' : ' (moderator)') + '</button>');
+    var who = own || !room
+      ? '<b class="who">' + esc(m.name) + '</b>'
+      : '<a class="who" href="#/dm/' + u + '" title="Message @' + u + ' privately">' + esc(m.name) + '</a>';
+    return '<div class="msg' + (own ? ' own' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
+      '<time class="muted small">' + clock(m.t) + '</time>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">⋯</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
+      '</div><p class="msg-text">' + esc(m.text) + '</p></div>';
+  }
+
+  // ----- DOM updates that keep the half-typed message in the box -----
+  function msgsEl() { return document.getElementById('msgs'); }
+  function nearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
+  function scrollMsgs() { var el = msgsEl(); if (el) el.scrollTop = el.scrollHeight; }
+  function refreshChatList() {
+    var el = document.getElementById('chatlist');
+    if (el && isChatView()) el.innerHTML = chatListHtml(activeChannel());
+  }
+  function renderPane(ch) {
+    var pane = document.getElementById('chatpane');
+    if (!pane || !isChatView() || activeChannel() !== ch) return;
+    var box = document.getElementById('chatbox'), draft = box ? box.value : '', focused = !!box && document.activeElement === box;
+    pane.innerHTML = paneHtml(ch);
+    var nb = document.getElementById('chatbox');
+    if (nb) { nb.value = draft; autosize(nb); if (focused) nb.focus(); }
+    scrollMsgs();
+  }
+  function appendMsg(m, ch) {
+    var el = msgsEl();
+    if (!el || !isChatView() || activeChannel() !== ch) return;
+    var stick = nearBottom(el) || m.username === me.username;
+    var empty = el.querySelector('.empty');
+    if (empty) empty.remove();
+    el.insertAdjacentHTML('beforeend', msgHtml(m, ch));
+    if (stick) scrollMsgs();
+  }
+  function autosize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight + 4, 160) + 'px';
+    el.style.overflowY = el.scrollHeight + 4 > 160 ? 'auto' : 'hidden';
+  }
+  function closeMenus(except) {
+    document.querySelectorAll('details.msg-menu[open]').forEach(function (d) { if (d !== except) d.open = false; });
+  }
+
+  // ----- data -----
+  function loadSummary() {
+    return api('GET', '/api/chat/summary').then(function (s) {
+      chat.summary = { rooms: Array.isArray(s.rooms) ? s.rooms : [], dms: Array.isArray(s.dms) ? s.dms : [] };
+      if (chat.seedSeen) { // first visit on this device: count what is already there as read
+        chat.seedSeen = false;
+        chat.summary.rooms.forEach(function (r) { markSeen('room:' + r.slug, r.lastId); });
+        chat.summary.dms.forEach(function (d) { markSeen('dm:' + d.username, d.lastId); });
+      }
+      if (isChatView()) { var ch = activeChannel(); if (ch) { markLatest(ch); renderPane(ch); } refreshChatList(); }
+      updateBadge();
+    });
+  }
+
+  function loadChannel(ch, older) {
+    var list = chat.msgs[ch], before = older && list && list.length ? list[0].id : 0;
+    return api('GET', channelUrl(ch) + (before ? '?before=' + before : '')).then(function (j) {
+      var got = Array.isArray(j.messages) ? j.messages : [];
+      chat.msgs[ch] = older && chat.msgs[ch] ? got.concat(chat.msgs[ch]) : got;
+      chat.more[ch] = !!j.more;
+      delete chat.errors[ch];
+      if (j.peer) chat.peers[ch] = { username: j.peer.username, name: j.peer.name, blockedByMe: !!j.blockedByMe };
+    }, function (e) {
+      if (e.status === 404 || e.status === 400) { chat.errors[ch] = e.message; return; }
+      throw e;
+    });
+  }
+
+  function openChannel(ch) {
+    var ready = chat.msgs[ch] && !chat.errors[ch];
+    if (ready) { markLatest(ch); refreshChatList(); updateBadge(); }
+    if (ready && chat.es) return; // the live stream keeps an open channel's cache current
+    loadChannel(ch).then(function () {
+      renderPane(ch);
+      if (isChatView() && activeChannel() === ch) { markLatest(ch); refreshChatList(); updateBadge(); }
+    }).catch(fail);
+  }
+
+  function bumpSummary(ch, m, peer) {
+    var s = chat.summary;
+    if (!s) return;
+    if (!isDm(ch)) { var r = roomBySlug(ch.slice(5)); if (r && m.id > (r.lastId || 0)) r.lastId = m.id; return; }
+    var u = ch.slice(3), d = dmByUser(u);
+    if (!d) d = { username: u, name: peer && peer.name ? peer.name : u };
+    s.dms = [d].concat(s.dms.filter(function (x) { return x !== d; }));
+    d.lastId = m.id; d.lastText = m.text; d.lastFromMe = m.username === me.username;
+  }
+
+  function onChatEvent(ev) {
+    if (!isObj(ev) || typeof ev.channel !== 'string') return;
+    var ch = ev.channel, open = isChatView() && activeChannel() === ch;
+    if (ev.type === 'msg' && isObj(ev.msg)) {
+      var m = ev.msg;
+      if (chat.msgs[ch] && !chat.msgs[ch].some(function (x) { return x.id === m.id; })) {
+        chat.msgs[ch].push(m);
+        appendMsg(m, ch);
+      }
+      if (isDm(ch) && ev.peer && !chat.peers[ch]) chat.peers[ch] = { username: ev.peer.username, name: ev.peer.name, blockedByMe: false };
+      bumpSummary(ch, m, ev.peer);
+      if ((open && document.visibilityState === 'visible') || m.username === me.username) markSeen(ch, m.id);
+      refreshChatList(); updateBadge();
+    } else if (ev.type === 'del') {
+      var id = Number(ev.id);
+      if (chat.msgs[ch]) chat.msgs[ch] = chat.msgs[ch].filter(function (x) { return x.id !== id; });
+      if (open) { var el = document.querySelector('#msgs .msg[data-id="' + id + '"]'); if (el) el.remove(); }
+    }
+  }
+
+  // ----- live stream -----
+  function startStream() {
+    stopStream();
+    if (!window.EventSource || !me) return;
+    var es = new EventSource('/api/stream');
+    chat.es = es;
+    es.onopen = function () { if (chat.down) { chat.down = false; resync(); } };
+    es.onmessage = function (e) { try { onChatEvent(JSON.parse(e.data)); } catch (err) { /* ignore a bad event */ } };
+    es.onerror = function () {
+      chat.down = true;
+      // The browser retries by itself after a dropped connection. It gives up when the server
+      // refuses (for example after logging out elsewhere), so check the session and try again.
+      if (es.readyState === 2) {
+        chat.es = null;
+        clearTimeout(chat.retryTimer);
+        chat.retryTimer = setTimeout(function () {
+          api('GET', '/api/me').then(function () { if (me) startStream(); }).catch(fail);
+        }, 5000);
+      }
+    };
+  }
+  function stopStream() {
+    clearTimeout(chat.retryTimer);
+    if (chat.es) { chat.es.close(); chat.es = null; }
+  }
+  // After a gap in the stream, refetch what might have been missed.
+  function resync() {
+    var ch = isChatView() ? activeChannel() : '';
+    Object.keys(chat.msgs).forEach(function (k) { if (k !== ch) delete chat.msgs[k]; });
+    loadSummary().catch(function () { /* next reconnect tries again */ });
+    if (ch) loadChannel(ch).then(function () { renderPane(ch); }).catch(function () { /* same */ });
+  }
+
+  function chatBlocked(u, blocked) {
+    var p = chat.peers['dm:' + u];
+    if (p) p.blockedByMe = blocked;
+    // Room history is filtered on the server, so drop cached rooms and let them reload.
+    Object.keys(chat.msgs).forEach(function (k) { if (!isDm(k)) delete chat.msgs[k]; });
+    if (isChatView()) { var ch = activeChannel(); if (ch) { renderPane(ch); openChannel(ch); } }
+  }
+
+  // ----- account: blocked people -----
+  function loadBlocks() {
+    api('GET', '/api/blocks').then(function (j) {
+      var el = document.getElementById('blocklist');
+      if (!el) return;
+      var list = Array.isArray(j.blocks) ? j.blocks : [];
+      el.innerHTML = list.length
+        ? '<ul class="plain">' + list.map(function (u) {
+            return '<li class="row between"><span>' + esc(u.name) + ' <span class="muted small">@' + esc(u.username) + '</span></span>' +
+              '<button class="btn tiny ghost" data-act="unblock" data-u="' + esc(u.username) + '">Unblock</button></li>';
+          }).join('') + '</ul>'
+        : '<p class="muted small">You have not blocked anyone.</p>';
+    }).catch(fail);
+  }
+
+  // ----- moderators -----
+  function loadAdmin() {
+    api('GET', '/api/admin/reports').then(function (j) {
+      var el = document.getElementById('adminbody');
+      if (el) el.innerHTML = adminHtml(j);
+    }).catch(fail);
+  }
+  function adminHtml(j) {
+    var reports = (j.reports || []).map(function (r) {
+      var id = Number(r.id), a = esc(r.author);
+      return '<article class="card stack report"><div class="row between"><span><b>' + esc(r.authorName) + '</b> <span class="muted small">@' + a +
+        (r.authorBanned ? ' · banned' : '') + '</span></span><span class="muted small">in ' + esc(r.where) + '</span></div>' +
+        '<p class="quote">' + (r.text ? esc(r.text) : '<i class="muted">(text removed)</i>') + '</p>' +
+        (r.deleted ? '<p class="muted small">The author has already deleted this message.</p>' : '') +
+        '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
+        '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
+        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">Delete message</button>' +
+        (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
+        '</div></article>';
+    }).join('') || '<p class="card muted">No open reports. 🎉</p>';
+    var banned = (j.banned || []).map(function (u) {
+      return '<li class="row between"><span>' + esc(u.name) + ' <span class="muted small">@' + esc(u.username) + '</span></span>' +
+        '<button class="btn tiny ghost" data-act="unban" data-u="' + esc(u.username) + '">Unban</button></li>';
+    }).join('') || '<li class="muted small">Nobody is banned.</li>';
+    return '<div class="stack"><h2>Open reports (' + (j.reports || []).length + ')</h2>' + reports +
+      '<section class="card"><h2>Banned accounts</h2><ul class="plain">' + banned + '</ul></section></div>';
+  }
+
+  var afterRender = {
+    chat: function () {
+      if (!chat.summary) loadSummary().catch(fail);
+      var ch = activeChannel();
+      if (!ch) return;
+      scrollMsgs();
+      openChannel(ch);
+      var box = document.getElementById('chatbox');
+      if (box && wideScreen()) box.focus();
+    },
+    account: loadBlocks,
+    admin: function () { if (me.isAdmin) loadAdmin(); }
+  };
+
   // ---------- wiring ----------
   var main = document.getElementById('main');
 
   function currentView() {
-    var v = location.hash.replace(/^#\/?/, '');
+    var v = location.hash.replace(/^#\/?/, '').split('/')[0];
+    if (v === 'dm') return 'chat';
     return views[v] ? v : 'home';
   }
   function render() {
     document.body.classList.toggle('anon', !me);
+    main.classList.remove('chat-mode');
     if (ui.booting) { main.innerHTML = '<p class="muted">Pulling up a chair…</p>'; return; }
     if (!me) { main.innerHTML = authView(); return; }
     document.body.classList.toggle('anon', !!ui.newCode); // hide the nav until the code is saved
     if (ui.newCode) { main.innerHTML = codeView(); return; }
     var v = currentView();
     main.innerHTML = views[v]();
+    main.classList.toggle('chat-mode', v === 'chat');
     document.querySelectorAll('#nav a').forEach(function (a) {
       var on = a.dataset.view === v;
       a.classList.toggle('on', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
+    updateBadge();
+    if (afterRender[v]) afterRender[v]();
   }
 
   document.addEventListener('click', function (e) {
@@ -649,6 +1091,22 @@
     var fn = forms[f.dataset.form];
     if (fn && fn(new FormData(f), f) !== false) { save(); render(); }
   });
+  // Enter sends a chat message; Shift+Enter makes a new line.
+  document.addEventListener('keydown', function (e) {
+    if (e.target.id !== 'chatbox' || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    var f = e.target.form;
+    if (f.requestSubmit) f.requestSubmit(); else f.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  // Close any open message menu when clicking elsewhere.
+  document.addEventListener('click', function (e) {
+    closeMenus(e.target.closest ? e.target.closest('details.msg-menu') : null);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !isChatView()) return;
+    var ch = activeChannel();
+    if (ch) { markLatest(ch); refreshChatList(); updateBadge(); }
+  });
   document.addEventListener('change', function (e) {
     if (e.target.id === 'saved') document.getElementById('codedone').disabled = !e.target.checked;
   });
@@ -659,6 +1117,8 @@
       document.getElementById('joblist').innerHTML = jobList();
     } else if (e.target.id === 'resume') {
       S.resume = e.target.value; save();
+    } else if (e.target.id === 'chatbox') {
+      autosize(e.target);
     }
   });
   window.addEventListener('hashchange', function () {

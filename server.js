@@ -17,6 +17,18 @@ const MAX_BODY = 256 * 1024;
 const MAX_DATA = 200 * 1024;
 const TAGS = ['Win', 'Rant', 'Question', 'Tip'];
 const REACTS = ['🙌', '💪', '😂'];
+const ROOMS = [
+  { slug: 'lobby', desc: 'Hang out, say hi, talk about anything.' },
+  { slug: 'job-leads', desc: 'Share openings you found. Real jobs only: never ones that ask you to pay.' },
+  { slug: 'interview-prep', desc: 'Practice questions, interview nerves, how it went.' },
+  { slug: 'vent', desc: 'Bad day? Let it out. Be kind here.' }
+];
+const ROOM_SLUGS = new Set(ROOMS.map((r) => r.slug));
+const MSG_MAX = 1000;
+const NEW_DMS_PER_DAY = 10;
+// Moderators: comma-separated usernames, set on the host (e.g. ADMIN_USERNAMES=arun).
+const ADMINS = new Set((process.env.ADMIN_USERNAMES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const isAdmin = (u) => !!u && ADMINS.has(u.username);
 
 // ---------- database ----------
 // Two modes, same SQL:
@@ -59,6 +71,41 @@ const SCHEMA = [
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     emoji TEXT NOT NULL,
     PRIMARY KEY (post_id, user_id, emoji)
+  )`,
+  // Chat. channel is 'room:<slug>' or 'dm:<smaller user id>:<larger user id>'.
+  `CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel, id)',
+  `CREATE TABLE IF NOT EXISTS dms (
+    key TEXT PRIMARY KEY,
+    a INTEGER NOT NULL,
+    b INTEGER NOT NULL,
+    started_by INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    last_id INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS dms_a ON dms(a)',
+  'CREATE INDEX IF NOT EXISTS dms_b ON dms(b)',
+  `CREATE TABLE IF NOT EXISTS blocks (
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY (blocker_id, blocked_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    reporter_id INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (message_id, reporter_id)
   )`
 ];
 
@@ -113,7 +160,8 @@ if (TURSO_URL) {
 
 // Columns added after launch. ADD COLUMN fails once the column exists, which is fine.
 const MIGRATIONS = [
-  'ALTER TABLE users ADD COLUMN recovery TEXT'
+  'ALTER TABLE users ADD COLUMN recovery TEXT',
+  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0'
 ];
 
 async function initDb() {
@@ -136,24 +184,65 @@ const q = {
   userById: stmt('SELECT * FROM users WHERE id = ?'),
   addUser: stmt('INSERT INTO users (username, name, pass, salt, recovery, created) VALUES (?, ?, ?, ?, ?, ?)'),
   addSession: stmt('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)'),
-  session: stmt('SELECT u.id, u.username, u.name, u.data, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?'),
+  session: stmt('SELECT u.id, u.username, u.name, u.data, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ? AND u.banned = 0'),
   dropSession: stmt('DELETE FROM sessions WHERE token_hash = ?'),
   dropUserSessions: stmt('DELETE FROM sessions WHERE user_id = ?'),
   setRecovery: stmt('UPDATE users SET recovery = ? WHERE id = ?'),
   setPassword: stmt('UPDATE users SET pass = ?, salt = ?, recovery = ? WHERE id = ?'),
   saveData: stmt('UPDATE users SET data = ? WHERE id = ?'),
-  posts: stmt('SELECT p.id, p.tag, p.text, p.created, p.user_id, u.name, u.username FROM posts p JOIN users u ON u.id = p.user_id ORDER BY p.id DESC LIMIT 100'),
+  posts: stmt('SELECT p.id, p.tag, p.text, p.created, p.user_id, u.name, u.username FROM posts p JOIN users u ON u.id = p.user_id WHERE u.banned = 0 ORDER BY p.id DESC LIMIT 100'),
   replies: stmt('SELECT r.post_id, r.text, r.created, u.name FROM replies r JOIN users u ON u.id = r.user_id WHERE r.post_id >= ? ORDER BY r.id'),
   reacts: stmt('SELECT post_id, emoji, COUNT(*) AS n, SUM(user_id = ?) AS mine FROM reactions WHERE post_id >= ? GROUP BY post_id, emoji'),
   post: stmt('SELECT id, user_id FROM posts WHERE id = ?'),
   addPost: stmt('INSERT INTO posts (user_id, tag, text, created) VALUES (?, ?, ?, ?)'),
   delPostReplies: stmt('DELETE FROM replies WHERE post_id = ?'),
   delPostReacts: stmt('DELETE FROM reactions WHERE post_id = ?'),
-  delPost: stmt('DELETE FROM posts WHERE id = ? AND user_id = ?'),
+  delPost: stmt('DELETE FROM posts WHERE id = ?'),
   addReply: stmt('INSERT INTO replies (post_id, user_id, text, created) VALUES (?, ?, ?, ?)'),
   hasReact: stmt('SELECT 1 AS x FROM reactions WHERE post_id = ? AND user_id = ? AND emoji = ?'),
   addReact: stmt('INSERT INTO reactions (post_id, user_id, emoji) VALUES (?, ?, ?)'),
-  delReact: stmt('DELETE FROM reactions WHERE post_id = ? AND user_id = ? AND emoji = ?')
+  delReact: stmt('DELETE FROM reactions WHERE post_id = ? AND user_id = ? AND emoji = ?'),
+
+  // chat
+  history: stmt(`SELECT m.id, m.text, m.created, u.name, u.username FROM messages m JOIN users u ON u.id = m.user_id
+    WHERE m.channel = ? AND m.deleted = 0 AND m.id < ? AND u.banned = 0
+      AND m.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+    ORDER BY m.id DESC LIMIT 50`),
+  addMsg: stmt('INSERT INTO messages (channel, user_id, text, created) VALUES (?, ?, ?, ?)'),
+  msg: stmt('SELECT id, channel, user_id, deleted FROM messages WHERE id = ?'),
+  // Keep the text of a message someone reported, so a moderator can still review it after the author deletes it.
+  delMsg: stmt(`UPDATE messages SET deleted = 1,
+    text = CASE WHEN EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0) THEN text ELSE '' END
+    WHERE id = ?`),
+  roomLast: stmt("SELECT channel, MAX(id) AS last_id FROM messages WHERE channel LIKE 'room:%' AND deleted = 0 GROUP BY channel"),
+  dm: stmt('SELECT * FROM dms WHERE key = ?'),
+  addDm: stmt('INSERT OR IGNORE INTO dms (key, a, b, started_by, created, last_id) VALUES (?, ?, ?, ?, ?, 0)'),
+  touchDm: stmt('UPDATE dms SET last_id = ? WHERE key = ?'),
+  dmsStartedSince: stmt('SELECT COUNT(*) AS n FROM dms WHERE started_by = ? AND created > ?'),
+  myDms: stmt(`SELECT d.last_id, u.username, u.name,
+      (SELECT m.text FROM messages m WHERE m.id = d.last_id AND m.deleted = 0) AS last_text,
+      (SELECT m.user_id FROM messages m WHERE m.id = d.last_id) AS last_from
+    FROM dms d JOIN users u ON u.id = CASE WHEN d.a = ? THEN d.b ELSE d.a END
+    WHERE (d.a = ? OR d.b = ?) AND d.last_id > 0 AND u.banned = 0
+    ORDER BY d.last_id DESC LIMIT 50`),
+  isBlocked: stmt('SELECT 1 AS x FROM blocks WHERE blocker_id = ? AND blocked_id = ?'),
+  blockersOf: stmt('SELECT blocker_id FROM blocks WHERE blocked_id = ?'),
+  addBlock: stmt('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created) VALUES (?, ?, ?)'),
+  delBlock: stmt('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?'),
+  myBlocks: stmt('SELECT u.username, u.name FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ? ORDER BY b.created DESC'),
+  addReport: stmt('INSERT OR IGNORE INTO reports (message_id, reporter_id, reason, created) VALUES (?, ?, ?, ?)'),
+  openReports: stmt(`SELECT r.id, r.reason, r.created, r.message_id, m.text, m.channel, m.deleted, m.created AS msg_created,
+      au.username AS author, au.name AS author_name, au.banned AS author_banned, ru.username AS reporter
+    FROM reports r JOIN messages m ON m.id = r.message_id JOIN users au ON au.id = m.user_id JOIN users ru ON ru.id = r.reporter_id
+    WHERE r.resolved = 0 ORDER BY r.id LIMIT 100`),
+  report: stmt('SELECT * FROM reports WHERE id = ?'),
+  resolveReport: stmt('UPDATE reports SET resolved = 1 WHERE id = ?'),
+  resolveMsgReports: stmt('UPDATE reports SET resolved = 1 WHERE message_id = ?'),
+  // After the last open report on an already-deleted message is closed, drop the text that was kept for review.
+  wipeIfDeleted: stmt(`UPDATE messages SET text = '' WHERE id = ? AND deleted = 1
+    AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0)`),
+  setBanned: stmt('UPDATE users SET banned = ? WHERE id = ?'),
+  bannedUsers: stmt('SELECT username, name FROM users WHERE banned = 1 ORDER BY username')
 };
 
 // ---------- helpers ----------
@@ -259,7 +348,7 @@ async function currentUser(req) {
 }
 
 function publicUser(u) {
-  return { username: u.username, name: u.name, hasRecovery: !!(u.recovery || u.has_recovery) };
+  return { username: u.username, name: u.name, hasRecovery: !!(u.recovery || u.has_recovery), isAdmin: isAdmin(u) };
 }
 function parseData(s) { try { return JSON.parse(s); } catch (e) { return {}; } }
 
@@ -276,6 +365,56 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, h] of hits) if (h.reset < now) hits.delete(k);
 }, 60000).unref();
+
+// ---------- live updates (Server-Sent Events) ----------
+// One server instance, so an in-memory list of open connections is enough.
+const streams = new Map(); // user id -> Set of open responses
+const MAX_STREAMS_PER_USER = 5;
+
+function push(userId, event) {
+  const set = streams.get(userId);
+  if (!set) return;
+  const line = 'data: ' + JSON.stringify(event) + '\n\n';
+  for (const r of set) r.write(line);
+}
+function pushAll(event, skip) {
+  const line = 'data: ' + JSON.stringify(event) + '\n\n';
+  for (const [uid, set] of streams) {
+    if (skip && skip.has(uid)) continue;
+    for (const r of set) r.write(line);
+  }
+}
+function closeStreams(userId) {
+  const set = streams.get(userId);
+  if (!set) return;
+  for (const r of set) r.end();
+  streams.delete(userId);
+}
+function openStream(req, res, user) {
+  let set = streams.get(user.id);
+  if (set && set.size >= MAX_STREAMS_PER_USER) throw new HttpError(429, 'Too many open tabs.');
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.write('retry: 5000\n\n');
+  req.socket.setTimeout(0);
+  req.socket.setNoDelay(true);
+  req.socket.setKeepAlive(true);
+  if (!set) streams.set(user.id, (set = new Set()));
+  set.add(res);
+  req.on('close', () => {
+    set.delete(res);
+    if (!set.size && streams.get(user.id) === set) streams.delete(user.id);
+  });
+}
+// Comment lines keep idle connections open through the host's proxy.
+setInterval(() => {
+  for (const set of streams.values()) for (const r of set) r.write(': ping\n\n');
+}, 25000).unref();
 
 // ---------- API ----------
 async function api(req, res, route) {
@@ -308,7 +447,7 @@ async function api(req, res, route) {
     let info;
     try { info = await q.addUser.run(username, name, pass, salt, recoveryHash(recoveryCode), Date.now()); }
     catch (e) { throw new HttpError(409, 'That username is taken.'); }
-    return send(res, 201, { user: { username, name, hasRecovery: true }, data: {}, recoveryCode },
+    return send(res, 201, { user: publicUser({ username, name, recovery: 'set' }), data: {}, recoveryCode },
       { 'Set-Cookie': await startSession(info.lastId) });
   }
 
@@ -319,6 +458,7 @@ async function api(req, res, route) {
     limit('auth:user:' + username.slice(0, 20), 10, 10 * 60000); // per account, whatever the IP
     const u = await q.userByName.get(username);
     if (!(await checkPassword(u, b.password))) throw new HttpError(401, 'Wrong username or password.');
+    if (u.banned) throw new HttpError(403, 'This account has been suspended.');
     return send(res, 200, { user: publicUser(u), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
   }
 
@@ -336,6 +476,7 @@ async function api(req, res, route) {
     if (!u || !u.recovery || !crypto.timingSafeEqual(given, stored)) {
       throw new HttpError(401, 'That username and recovery code do not match.');
     }
+    if (u.banned) throw new HttpError(403, 'This account has been suspended.');
     const salt = crypto.randomBytes(16).toString('hex');
     const recoveryCode = makeRecoveryCode();
     await q.setPassword.run(await hashPassword(password, salt), salt, recoveryHash(recoveryCode), u.id);
@@ -423,10 +564,10 @@ async function api(req, res, route) {
     if (!post) throw new HttpError(404, 'That post is gone.');
 
     if (method === 'DELETE' && !m[2]) {
-      if (post.user_id !== user.id) throw new HttpError(403, 'You can only delete your own posts.');
+      if (post.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete your own posts.');
       await q.delPostReplies.run(id);
       await q.delPostReacts.run(id);
-      await q.delPost.run(id, user.id);
+      await q.delPost.run(id);
       return send(res, 200, { ok: true });
     }
     if (method === 'POST' && m[2] === '/react') {
@@ -445,7 +586,208 @@ async function api(req, res, route) {
     }
   }
 
+  if (await chatApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
+}
+
+// ---------- chat API ----------
+// Rooms are open to every member. DMs are visible only to the two people in them; moderators
+// see a DM message only when one of those two people reports it.
+
+const dmKey = (x, y) => Math.min(x, y) + ':' + Math.max(x, y);
+const wire = (m) => ({ id: m.id, text: m.text, t: m.created, name: m.name, username: m.username });
+function beforeParam(req) {
+  const v = Number(new URL(req.url, 'http://x').searchParams.get('before'));
+  return Number.isInteger(v) && v > 0 ? v : Number.MAX_SAFE_INTEGER;
+}
+async function peerByName(name, me) {
+  const u = await q.userByName.get(String(name || '').toLowerCase());
+  if (!u || u.banned) throw new HttpError(404, 'That person is not here.');
+  if (u.id === me.id) throw new HttpError(400, 'That is you!');
+  return u;
+}
+// Who can see a stored message: anyone for rooms, only the two people for a DM.
+function canSee(channel, userId) {
+  if (channel.startsWith('room:')) return true;
+  const ids = channel.slice(3).split(':').map(Number);
+  return ids.includes(userId);
+}
+// Tell everyone who can see `channel` that message `id` is gone.
+async function broadcastDelete(channel, id) {
+  if (channel.startsWith('room:')) return pushAll({ type: 'del', channel, id });
+  const [a, b] = channel.slice(3).split(':').map(Number);
+  const ua = await q.userById.get(a), ub = await q.userById.get(b);
+  if (ua && ub) {
+    push(a, { type: 'del', channel: 'dm:' + ub.username, id });
+    push(b, { type: 'del', channel: 'dm:' + ua.username, id });
+  }
+}
+async function removeMessage(m) {
+  await q.delMsg.run(m.id);
+  await broadcastDelete(m.channel, m.id);
+}
+
+async function chatApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+
+  if (method === 'GET' && route === '/stream') { openStream(req, res, user); return true; }
+
+  if (method === 'GET' && route === '/chat/summary') {
+    const last = {};
+    for (const r of await q.roomLast.all()) last[r.channel] = r.last_id;
+    const dms = (await q.myDms.all(user.id, user.id, user.id)).map((d) => ({
+      username: d.username, name: d.name, lastId: d.last_id, lastText: d.last_text || '', lastFromMe: d.last_from === user.id
+    }));
+    send(res, 200, { rooms: ROOMS.map((r) => ({ slug: r.slug, desc: r.desc, lastId: last['room:' + r.slug] || 0 })), dms });
+    return true;
+  }
+
+  if ((m = /^\/chat\/room\/([a-z-]{1,30})$/.exec(route))) {
+    const slug = m[1];
+    if (!ROOM_SLUGS.has(slug)) throw new HttpError(404, 'No such room.');
+    const channel = 'room:' + slug;
+    if (method === 'GET') {
+      const rows = await q.history.all(channel, beforeParam(req), user.id);
+      send(res, 200, { messages: rows.reverse().map(wire), more: rows.length === 50 });
+      return true;
+    }
+    if (method === 'POST') {
+      limit('chat:' + user.id, 20, 60000);
+      const b = await readBody(req);
+      const body = text(b.text, MSG_MAX, 'Message');
+      const now = Date.now();
+      const info = await q.addMsg.run(channel, user.id, body, now);
+      const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
+      const blockers = new Set((await q.blockersOf.all(user.id)).map((r) => r.blocker_id));
+      pushAll({ type: 'msg', channel, msg }, blockers);
+      send(res, 201, { msg });
+      return true;
+    }
+  }
+
+  if ((m = /^\/chat\/dm\/([a-z0-9_]{3,20})$/.exec(route))) {
+    const peer = await peerByName(m[1], user);
+    const key = dmKey(user.id, peer.id);
+    const channel = 'dm:' + key;
+    if (method === 'GET') {
+      const rows = await q.history.all(channel, beforeParam(req), 0);
+      send(res, 200, {
+        messages: rows.reverse().map(wire), more: rows.length === 50,
+        peer: { username: peer.username, name: peer.name },
+        blockedByMe: !!(await q.isBlocked.get(user.id, peer.id))
+      });
+      return true;
+    }
+    if (method === 'POST') {
+      limit('chat:' + user.id, 20, 60000);
+      const b = await readBody(req);
+      const body = text(b.text, MSG_MAX, 'Message');
+      if (await q.isBlocked.get(user.id, peer.id)) throw new HttpError(403, 'You blocked this person. Unblock them to send a message.');
+      if (await q.isBlocked.get(peer.id, user.id)) throw new HttpError(403, 'You cannot message this person.');
+      if (!(await q.dm.get(key))) {
+        const started = await q.dmsStartedSince.get(user.id, Date.now() - 864e5);
+        if (started.n >= NEW_DMS_PER_DAY) {
+          throw new HttpError(429, 'You have started ' + NEW_DMS_PER_DAY + ' new conversations today. Try again tomorrow.');
+        }
+        await q.addDm.run(key, Math.min(user.id, peer.id), Math.max(user.id, peer.id), user.id, Date.now());
+      }
+      const now = Date.now();
+      const info = await q.addMsg.run(channel, user.id, body, now);
+      await q.touchDm.run(info.lastId, key);
+      const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
+      push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
+      push(user.id, { type: 'msg', channel: 'dm:' + peer.username, msg, peer: { username: peer.username, name: peer.name } });
+      send(res, 201, { msg });
+      return true;
+    }
+  }
+
+  if ((m = /^\/chat\/msg\/(\d{1,15})(\/report)?$/.exec(route))) {
+    const msg = await q.msg.get(Number(m[1]));
+    if (!msg || msg.deleted || !canSee(msg.channel, user.id)) throw new HttpError(404, 'That message is gone.');
+
+    if (method === 'DELETE' && !m[2]) {
+      if (msg.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete your own messages.');
+      await removeMessage(msg);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'POST' && m[2]) {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (msg.user_id === user.id) throw new HttpError(400, 'You cannot report your own message.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      await q.addReport.run(msg.id, user.id, reason, Date.now());
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+
+  if (method === 'GET' && route === '/blocks') {
+    send(res, 200, { blocks: await q.myBlocks.all(user.id) });
+    return true;
+  }
+  if ((m = /^\/blocks\/([a-z0-9_]{3,20})$/.exec(route)) && (method === 'POST' || method === 'DELETE')) {
+    const peer = await peerByName(m[1], user);
+    if (method === 'POST') await q.addBlock.run(user.id, peer.id, Date.now());
+    else await q.delBlock.run(user.id, peer.id);
+    send(res, 200, { ok: true });
+    return true;
+  }
+
+  // ----- moderators -----
+  if (route.startsWith('/admin/')) {
+    if (!isAdmin(user)) throw new HttpError(403, 'Moderators only.');
+
+    if (method === 'GET' && route === '/admin/reports') {
+      const reports = (await q.openReports.all()).map((r) => ({
+        id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted,
+        where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5) : 'a private message',
+        author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
+      }));
+      send(res, 200, { reports, banned: await q.bannedUsers.all() });
+      return true;
+    }
+
+    if (method === 'POST' && (m = /^\/admin\/reports\/(\d{1,15})$/.exec(route))) {
+      const b = await readBody(req);
+      const report = await q.report.get(Number(m[1]));
+      if (!report) throw new HttpError(404, 'That report is gone.');
+      if (b.action === 'dismiss') {
+        await q.resolveReport.run(report.id);
+        await q.wipeIfDeleted.run(report.message_id);
+      } else if (b.action === 'delete' || b.action === 'ban') {
+        const msg = await q.msg.get(report.message_id);
+        if (msg) {
+          if (b.action === 'ban') {
+            const author = await q.userById.get(msg.user_id);
+            if (isAdmin(author)) throw new HttpError(400, 'Moderators cannot be banned here.');
+            await q.setBanned.run(1, author.id);
+            await q.dropUserSessions.run(author.id);
+            closeStreams(author.id);
+          }
+          await q.resolveMsgReports.run(msg.id); // resolve first, so the text is wiped on delete
+          await removeMessage(msg);
+        }
+        await q.resolveReport.run(report.id);
+      } else {
+        throw new HttpError(400, 'Unknown action.');
+      }
+      send(res, 200, { ok: true });
+      return true;
+    }
+
+    if (method === 'POST' && (m = /^\/admin\/unban\/([a-z0-9_]{3,20})$/.exec(route))) {
+      const u = await q.userByName.get(m[1]);
+      if (!u) throw new HttpError(404, 'No such user.');
+      await q.setBanned.run(0, u.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ---------- static files (fixed allow-list, so nothing else on disk is reachable) ----------

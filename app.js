@@ -474,6 +474,181 @@
       '<p class="body">' + esc(p.text) + '</p><div class="row">' + reacts + '</div>' + replies + '</article>';
   }
 
+  // ---------- tracker follow-ups ----------
+  // Each tracked job can hold: applied, interview (+ itime), followUp (all 'YYYY-MM-DD'), followed (count), contact, note.
+  // Moving a job to Applied starts a 7-day follow-up clock; Offer or Rejected stops it.
+  var FOLLOW_DAYS = 7, AFTER_INTERVIEW_DAYS = 3, MAX_FOLLOWS = 2;
+  function isDay(k) { return typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k); }
+  function isTime(t) { return typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t); }
+  function dayDate(k) { var p = k.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); }
+  function addDays(k, n) { var d = dayDate(k); d.setDate(d.getDate() + n); return dkey(d); }
+  function dayDiff(a, b) { return Math.round((dayDate(b) - dayDate(a)) / 864e5); } // b - a, in days
+  function fmtDay(k) { return dayDate(k).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }); }
+  function fmtTime(t) { var p = t.split(':'); var d = new Date(); d.setHours(Number(p[0]), Number(p[1]), 0, 0); return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
+  function relDay(k) {
+    var n = dayDiff(today(), k);
+    return n === 0 ? 'today' : n === 1 ? 'tomorrow' : n === -1 ? 'yesterday' : n > 1 ? 'in ' + n + ' days' : -n + ' days ago';
+  }
+  function activeStage(a) { return a.stage === 'Applied' || a.stage === 'Interview'; }
+  // What changes when a job moves to a new stage.
+  function onStage(a) {
+    if (a.stage === 'Applied') {
+      if (!isDay(a.applied)) a.applied = today();
+      if (!isDay(a.followUp)) a.followUp = addDays(a.applied, FOLLOW_DAYS);
+    } else if (a.stage === 'Offer' || a.stage === 'Rejected') {
+      a.followUp = '';
+    }
+  }
+  function followDue(a) { return activeStage(a) && isDay(a.followUp) && a.followUp <= today(); }
+  function interviewSoon(a, days) { return a.stage !== 'Rejected' && a.stage !== 'Offer' && isDay(a.interview) && a.interview >= today() && a.interview <= addDays(today(), days); }
+  // Things that need you: follow-ups due or overdue, interviews today or tomorrow.
+  function trackerDue() {
+    var out = [];
+    S.apps.forEach(function (a) {
+      if (interviewSoon(a, 1)) out.push({ kind: 'interview', a: a, key: a.interview + (isTime(a.itime) ? a.itime : '') });
+      if (followDue(a)) out.push({ kind: 'follow', a: a, key: a.followUp });
+    });
+    return out.sort(function (x, y) { return x.key < y.key ? -1 : x.key > y.key ? 1 : 0; });
+  }
+  function updateTrackerBadge() {
+    var el = document.getElementById('trackerbadge');
+    if (!el) return;
+    var n = me ? trackerDue().length : 0;
+    el.textContent = n ? String(n) : '';
+    el.hidden = !n;
+  }
+  function interviewText(a) { return fmtDay(a.interview) + (isTime(a.itime) ? ', ' + fmtTime(a.itime) : ''); }
+  function dueRow(item, withActions) {
+    var a = item.a, id = esc(a.id), who = '<b>' + esc(a.title) + '</b> <span class="muted">at ' + esc(a.company) + '</span>';
+    if (item.kind === 'interview') {
+      return '<li class="due-row"><span class="due-ico iv">' + ico('prep') + '</span><span class="grow">Interview ' + relDay(a.interview) + ': ' + who +
+        '<br><span class="muted small">' + esc(interviewText(a)) + '</span></span>' +
+        (withActions ? '<span class="row due-acts"><button type="button" class="btn tiny ghost" data-act="app-ics" data-id="' + id + '">' + ico('download') + 'Add to calendar</button>' +
+          '<a class="btn tiny ghost" href="#/interview">Practise</a></span>' : '') + '</li>';
+    }
+    var late = dayDiff(a.followUp, today());
+    return '<li class="due-row"><span class="due-ico fu">' + ico('mail') + '</span><span class="grow">Follow up: ' + who +
+      '<br><span class="muted small">' + (late > 0 ? 'Due ' + late + (late === 1 ? ' day' : ' days') + ' ago' : 'Due today') +
+      (a.followed ? ' · followed up ' + a.followed + (a.followed === 1 ? ' time' : ' times') + ' so far' : '') + '</span></span>' +
+      (withActions ? '<span class="row due-acts"><button type="button" class="btn tiny primary" data-act="app-draft" data-id="' + id + '">Draft message</button>' +
+        '<button type="button" class="btn tiny ghost" data-act="app-followed" data-id="' + id + '">' + ico('check') + 'I followed up</button>' +
+        '<button type="button" class="link small" data-act="app-snooze" data-id="' + id + '">Snooze 3 days</button></span>' : '') + '</li>';
+  }
+  function trackerUpcoming() {
+    var due = trackerDue();
+    var later = S.apps.filter(function (a) { return interviewSoon(a, 14) && !interviewSoon(a, 1); })
+      .sort(function (x, y) { return x.interview < y.interview ? -1 : 1; });
+    if (!due.length && !later.length) return '';
+    return '<section class="card due-card"><h2>Coming up</h2><ul class="due-list">' + due.map(function (d) { return dueRow(d, true); }).join('') +
+      later.map(function (a) { return dueRow({ kind: 'interview', a: a }, true); }).join('') + '</ul></section>';
+  }
+  function homeDueHtml() {
+    var due = trackerDue();
+    if (!due.length) return '';
+    return '<section class="card due-card"><div class="row between"><h2>' + ico('bell') + ' Due today</h2><a class="btn tiny ghost" href="#/tracker">Open tracker</a></div>' +
+      '<ul class="due-list">' + due.slice(0, 4).map(function (d) { return dueRow(d, false); }).join('') + '</ul>' +
+      (due.length > 4 ? '<p class="muted small">and ' + (due.length - 4) + ' more in your tracker.</p>' : '') + '</section>';
+  }
+  // The little date lines on each tracker card.
+  function appDates(a) {
+    var out = [];
+    if (isDay(a.interview) && a.stage !== 'Rejected') {
+      var past = a.interview < today();
+      out.push('<span class="adate' + (past ? '' : ' iv') + '">' + ico('prep') + (past ? 'Interviewed ' : 'Interview ') + esc(fmtDay(a.interview)) + (isTime(a.itime) && !past ? ', ' + esc(fmtTime(a.itime)) : '') + '</span>');
+    } else if (a.stage === 'Interview') {
+      out.push('<button type="button" class="adate add" data-act="app-edit" data-id="' + esc(a.id) + '">+ Add interview date</button>');
+    }
+    if (isDay(a.applied)) out.push('<span class="adate">Applied ' + esc(fmtDay(a.applied)) + ' · ' + dayDiff(a.applied, today()) + 'd</span>');
+    if (activeStage(a) && isDay(a.followUp)) {
+      var n = dayDiff(today(), a.followUp);
+      out.push('<span class="adate fu' + (n < 0 ? ' late' : n === 0 ? ' now' : '') + '">' + ico('mail') +
+        (n < 0 ? 'Follow-up ' + -n + 'd overdue' : n === 0 ? 'Follow up today' : 'Follow up ' + relDay(a.followUp)) + '</span>');
+    }
+    return out.length ? '<div class="adates">' + out.join('') + '</div>' : '';
+  }
+
+  // ----- dialogs: edit dates, draft a follow-up -----
+  function sheet(id, html) {
+    var d = document.getElementById(id);
+    if (d) d.remove();
+    document.body.insertAdjacentHTML('beforeend', '<dialog id="' + id + '" class="sheet wide">' + html + '</dialog>');
+    d = document.getElementById(id);
+    d.addEventListener('close', function () { d.remove(); });
+    if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+    return d;
+  }
+  function openAppEditor(a) {
+    var v = function (k) { return esc(typeof a[k] === 'string' ? a[k] : ''); };
+    sheet('appedit', '<h2>' + esc(a.title) + ' <span class="muted">at ' + esc(a.company) + '</span></h2>' +
+      '<form class="stack" data-form="appedit" data-id="' + esc(a.id) + '">' +
+      '<div class="grid2 tight"><label>Applied on<input type="date" name="applied" value="' + v('applied') + '"></label>' +
+      '<label>Follow up on<input type="date" name="followUp" value="' + v('followUp') + '"></label></div>' +
+      '<div class="grid2 tight"><label>Interview on<input type="date" name="interview" value="' + v('interview') + '"></label>' +
+      '<label>Interview time <span class="muted">(optional)</span><input type="time" name="itime" value="' + v('itime') + '"></label></div>' +
+      '<label>Recruiter or contact <span class="muted">(optional)</span><input type="text" name="contact" maxlength="100" value="' + v('contact') + '" placeholder="e.g. Ms. Priya Raman"></label>' +
+      '<label>Notes <span class="muted">(optional)</span><textarea name="note" rows="3" maxlength="500" placeholder="Salary discussed, who you spoke to, next steps">' + v('note') + '</textarea></label>' +
+      '<p class="muted small">Leave "Follow up on" empty for no reminder. Saving an interview date sets a check-in ' + AFTER_INTERVIEW_DAYS + ' days after it.</p>' +
+      '<div class="row"><button class="btn primary">Save</button><button type="button" class="btn ghost" data-act="sheet-close">Cancel</button></div></form>');
+  }
+  function followDraft(a) {
+    var hi = 'Hi ' + (a.contact && a.contact.trim() ? a.contact.trim() : 'there') + ',';
+    var role = 'the ' + a.title + ' role at ' + a.company;
+    var after = isDay(a.interview) && a.interview < today();
+    var subject, body;
+    if (after) {
+      subject = 'Thank you, and following up on ' + a.title;
+      body = 'Thank you again for speaking with me on ' + fmtDay(a.interview) + ' about ' + role + '. I enjoyed learning more about the team, and I am even more interested in the role.\n\n' +
+        'I wanted to check whether there is any update on the next steps, or anything else I can share.';
+    } else if (a.followed) {
+      subject = 'Checking in on my ' + a.title + ' application';
+      body = 'I wanted to check in once more about my application for ' + role + '. I am still very interested and would be glad to share anything else you need.';
+    } else {
+      subject = 'Following up on my ' + a.title + ' application';
+      body = 'I applied for ' + role + (isDay(a.applied) ? ' on ' + fmtDay(a.applied) : '') + ' and wanted to follow up. I am very interested in the role, and I believe my experience is a good match.\n\n' +
+        'Please let me know if there is anything else I can share.';
+    }
+    return 'Subject: ' + subject + '\n\n' + hi + '\n\n' + body + '\n\nThank you for your time,\n' + me.name;
+  }
+  function openDraft(a) {
+    sheet('appdraft', '<h2>' + ico('mail') + ' Follow-up message</h2>' +
+      '<p class="muted small">Edit it to sound like you, then copy it into an email or LinkedIn message.</p>' +
+      '<textarea id="draftbox" rows="12">' + esc(followDraft(a)) + '</textarea>' +
+      '<div class="row" style="margin-top:12px"><button type="button" class="btn primary" data-act="draft-copy">Copy</button>' +
+      '<button type="button" class="btn ghost" data-act="app-followed" data-id="' + esc(a.id) + '">' + ico('check') + 'Sent it</button>' +
+      '<button type="button" class="btn ghost" data-act="sheet-close">Close</button></div>');
+  }
+  // A calendar file for the interview (works with Google Calendar, Outlook and phone calendars).
+  function icsText(a) {
+    var esc2 = function (s) { return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); };
+    var d = a.interview.replace(/-/g, '');
+    var start, end;
+    if (isTime(a.itime)) {
+      var t = a.itime.replace(':', '') + '00';
+      var e = new Date(dayDate(a.interview).getTime()); var p = a.itime.split(':'); e.setHours(Number(p[0]) + 1, Number(p[1]), 0, 0);
+      start = 'DTSTART:' + d + 'T' + t;
+      end = 'DTEND:' + dkey(e).replace(/-/g, '') + 'T' + String(e.getHours()).padStart(2, '0') + String(e.getMinutes()).padStart(2, '0') + '00';
+    } else {
+      start = 'DTSTART;VALUE=DATE:' + d;
+      end = 'DTEND;VALUE=DATE:' + addDays(a.interview, 1).replace(/-/g, '');
+    }
+    var stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//The Bench//Tracker//EN', 'BEGIN:VEVENT',
+      'UID:' + a.id + '-' + d + '@the-bench', 'DTSTAMP:' + stamp, start, end,
+      'SUMMARY:' + esc2('Interview: ' + a.title + ' at ' + a.company),
+      'DESCRIPTION:' + esc2((a.note ? a.note + '\n\n' : '') + 'Practise first: open The Bench, Prep, Start practising.'),
+      'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc2('Interview with ' + a.company + ' in 1 hour'), 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+  }
+  function downloadIcs(a) {
+    var blob = new Blob([icsText(a)], { type: 'text/calendar' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'interview-' + String(a.company).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.ics';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+  }
+
   var views = {
     home: function () {
       var done = doneOn(today()).length, total = S.routine.tasks.length;
@@ -490,6 +665,7 @@
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
         (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
         installBanner() +
+        homeDueHtml() +
         homeBuddyHtml() +
         alertBanner() +
         '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
@@ -623,11 +799,13 @@
             var id = esc(a.id);
             var title = typeof a.url === 'string' && /^https?:\/\//.test(a.url)
               ? '<a class="plain-link" href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.title) + '</a>' : esc(a.title);
-            return '<div class="app"><b>' + title + '</b><span class="muted small">' + esc(a.company) + '</span>' +
+            return '<div class="app' + (followDue(a) ? ' due' : '') + '"><b>' + title + '</b><span class="muted small">' + esc(a.company) + '</span>' +
+              appDates(a) +
               '<div class="row between"><div class="row">' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="-1" aria-label="Move back"' + (i === 0 ? ' disabled' : '') + '>←</button>' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="1" aria-label="Move forward"' + (i === STAGES.length - 1 ? ' disabled' : '') + '>→</button></div>' +
-              '<button class="link" data-act="del-app" data-id="' + id + '">remove</button></div></div>';
+              '<span class="row"><button class="link" data-act="app-edit" data-id="' + id + '">dates</button>' +
+              '<button class="link" data-act="del-app" data-id="' + id + '">remove</button></span></div></div>';
           }).join('') + '</section>';
       }).join('');
       return head('Tracker', 'Every application in one place, so nothing gets lost in your inbox.') +
@@ -636,7 +814,9 @@
         '<input class="grow" type="text" name="company" placeholder="Company" aria-label="Company" maxlength="60" required>' +
         '<select class="auto" name="stage" aria-label="Stage">' + STAGES.map(function (s) { return '<option>' + s + '</option>'; }).join('') + '</select>' +
         '<button class="btn primary">Add</button></form>' +
-        '<div class="board">' + cols + '</div></div>';
+        trackerUpcoming() +
+        '<div class="board">' + cols + '</div>' +
+        '<p class="muted small">Moving a job to Applied sets a follow-up reminder for ' + FOLLOW_DAYS + ' days later. Tap “dates” on a card to add interview dates or change reminders.</p></div>';
     },
 
     prep: function () {
@@ -1507,7 +1687,41 @@
     'move-app': function (d) {
       var a = find(S.apps, d.id); if (!a) return;
       var i = STAGES.indexOf(a.stage) + Number(d.dir);
-      if (i >= 0 && i < STAGES.length) a.stage = STAGES[i];
+      if (i >= 0 && i < STAGES.length) {
+        a.stage = STAGES[i];
+        onStage(a);
+        if (a.stage === 'Interview' && !isDay(a.interview)) setTimeout(function () { openAppEditor(a); }, 0);
+      }
+    },
+    'app-edit': function (d) { var a = find(S.apps, d.id); if (a) openAppEditor(a); return false; },
+    'app-draft': function (d) { var a = find(S.apps, d.id); if (a) openDraft(a); return false; },
+    'app-ics': function (d) { var a = find(S.apps, d.id); if (a && isDay(a.interview)) downloadIcs(a); return false; },
+    'app-followed': function (d) {
+      var a = find(S.apps, d.id); if (!a) return false;
+      a.followed = (Number(a.followed) || 0) + 1;
+      a.lastFollow = today();
+      var sheetEl = document.getElementById('appdraft'); if (sheetEl) sheetEl.close();
+      if (a.followed >= MAX_FOLLOWS + (isDay(a.interview) ? 1 : 0)) {
+        a.followUp = '';
+        toast('Logged. That is ' + a.followed + ' follow-ups, so no more reminders for this one. If there is still no reply, it may be time to move on.');
+      } else {
+        a.followUp = addDays(today(), FOLLOW_DAYS);
+        toast('Logged. We will remind you again on ' + fmtDay(a.followUp) + ' if you have not heard back.');
+      }
+    },
+    'app-snooze': function (d) {
+      var a = find(S.apps, d.id); if (!a) return false;
+      a.followUp = addDays(today(), 3);
+      toast('Snoozed until ' + fmtDay(a.followUp) + '.');
+    },
+    'sheet-close': function (d, btn) { var dl = btn.closest('dialog'); if (dl) dl.close(); return false; },
+    'draft-copy': function () {
+      var box = document.getElementById('draftbox');
+      if (!box) return false;
+      var done = function () { toast('Copied. Paste it into your email or LinkedIn.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(box.value).then(done, function () { box.select(); toast('Select the text and copy it.'); });
+      else { box.select(); toast('Select the text and copy it.'); }
+      return false;
     },
     'del-app': function (d) {
       S.apps = S.apps.filter(function (a) { return a.id !== d.id; });
@@ -1716,11 +1930,29 @@
       var text = String(f.get('text')).trim(); if (!text) return false;
       return feedCall(api('POST', '/api/posts/' + Number(f.get('id')) + '/replies', { text: text }));
     },
+    appedit: function (f, form) {
+      var a = find(S.apps, form.dataset.id); if (!a) return false;
+      var day = function (k) { var v = String(f.get(k) || ''); return isDay(v) ? v : ''; };
+      var oldInterview = a.interview;
+      a.applied = day('applied');
+      a.interview = day('interview');
+      a.itime = isTime(String(f.get('itime') || '')) ? String(f.get('itime')) : '';
+      a.followUp = day('followUp');
+      a.contact = String(f.get('contact') || '').trim().slice(0, 100);
+      a.note = String(f.get('note') || '').trim().slice(0, 500);
+      // A new interview date: check in a few days after it, unless a later reminder is already set.
+      if (a.interview && a.interview !== oldInterview && activeStage(a) && (!a.followUp || a.followUp <= a.interview)) a.followUp = addDays(a.interview, AFTER_INTERVIEW_DAYS);
+      if (a.interview && a.stage !== 'Interview' && (a.stage === 'Wishlist' || a.stage === 'Applied')) a.stage = 'Interview';
+      var dl = form.closest('dialog'); if (dl) dl.close();
+      toast('Saved.');
+    },
     app: function (f) {
       var title = String(f.get('title')).trim(), company = String(f.get('company')).trim();
       if (!title || !company) return false;
       var stage = STAGES.indexOf(f.get('stage')) > -1 ? f.get('stage') : 'Wishlist';
-      S.apps.push({ id: uid(), title: title, company: company, stage: stage, t: Date.now() });
+      var added = { id: uid(), title: title, company: company, stage: stage, t: Date.now() };
+      onStage(added);
+      S.apps.push(added);
     },
     task: function (f) {
       var text = String(f.get('text')).trim(); if (!text) return false;
@@ -3185,6 +3417,7 @@
     main.innerHTML = views[v]();
     main.classList.toggle('chat-mode', v === 'chat');
     document.body.setAttribute('data-view', v);
+    updateTrackerBadge();
     // A gentle fade only when moving to a different page, not on every small update.
     if (v !== lastView) {
       main.classList.remove('enter');

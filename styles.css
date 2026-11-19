@@ -845,6 +845,30 @@ mark.clp-gap { background: #fbe3c4; color: var(--cv-ink); border-radius: 3px; pa
 .ref-pill { cursor: pointer; }
 .ref-pill:hover { border-color: var(--line-2); background: var(--sunk); }
 
+/* Tracker follow-ups */
+.adates { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 8px 0 6px; }
+.adate { display: inline-flex; align-items: center; gap: 4px; font-size: .72rem; color: var(--muted); line-height: 1.3; }
+.adate .ico { width: 12px; height: 12px; }
+.adate.iv { color: var(--blue); font-weight: 600; }
+.adate.fu.now { color: var(--accent); font-weight: 600; }
+.adate.fu.late { color: var(--bad); font-weight: 600; }
+.adate.add { border: 1px dashed var(--line-2); background: transparent; border-radius: 999px; padding: 2px 8px; cursor: pointer; color: var(--ink-2); font: inherit; font-size: .72rem; }
+.app.due { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.app .row.between .row { gap: 8px; }
+.due-card h2 .ico { width: 18px; height: 18px; color: var(--accent); vertical-align: -3px; }
+.due-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; }
+.due-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.due-row:first-child { border-top: 0; }
+.due-row .grow { min-width: 180px; line-height: 1.45; }
+.due-ico { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--sunk); }
+.due-ico .ico { width: 16px; height: 16px; }
+.due-ico.iv { color: var(--blue); }
+.due-ico.fu { color: var(--accent); }
+.due-acts { gap: 8px; flex-wrap: wrap; }
+dialog.sheet.wide { max-width: 560px; }
+dialog.sheet textarea { width: 100%; }
+dialog.sheet .grid2.tight { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

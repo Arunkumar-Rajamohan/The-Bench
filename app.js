@@ -25,6 +25,34 @@
   function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
   function isObj(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 
+  var ICONS = {
+    bench: '<path d="M5 8h14"/><path d="M4 12.5h16"/><path d="M7 8V5.5M17 8V5.5"/><path d="M6 12.5V19M18 12.5V19M6 16h12"/>',
+    home: '<path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9.2V20h13V9.2"/><path d="M10 20v-5.5h4V20"/>',
+    feed: '<path d="M4 5.5h12.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M16.5 9H20v9a2 2 0 0 1-2 2"/><path d="M7.5 9h5.5M7.5 12.5h5.5M7.5 16h3.5"/>',
+    chat: '<path d="M20.5 11.5a8 8 0 0 1-11.7 7.1L3.5 20l1.4-5A8 8 0 1 1 20.5 11.5z"/>',
+    fun: '<path d="M11 3.5l1.6 4.6 4.6 1.6-4.6 1.6L11 16l-1.6-4.7L4.8 9.7l4.6-1.6z"/><path d="M18 14l.8 2.2 2.2.8-2.2.8L18 20l-.8-2.2-2.2-.8 2.2-.8z"/>',
+    jobs: '<rect x="3.5" y="7" width="17" height="12.5" rx="2"/><path d="M8.5 7V5.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V7"/><path d="M3.5 12.5h17"/>',
+    tracker: '<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9.2 4v16M14.8 4v16"/><path d="M5.8 8h1.4M11.3 8h1.4"/>',
+    prep: '<rect x="9" y="3.5" width="6" height="10.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5v3M9 20.5h6"/>',
+    routine: '<path d="M12 20.5a6 6 0 0 0 6-6c0-4.2-3.2-6-4.2-10-2 1.8-3.2 4.2-3.2 6.4-1-.9-1.6-2.1-1.7-3.4C7.4 9.6 6 12 6 14.5a6 6 0 0 0 6 6z"/>',
+    flame: '<path d="M12 20.5a6 6 0 0 0 6-6c0-4.2-3.2-6-4.2-10-2 1.8-3.2 4.2-3.2 6.4-1-.9-1.6-2.1-1.7-3.4C7.4 9.6 6 12 6 14.5a6 6 0 0 0 6 6z"/>',
+    key: '<circle cx="8" cy="15" r="4"/><path d="M10.9 12.1 20 3"/><path d="M16.5 6.5l2.5 2.5M14.5 8.5l2 2"/>',
+    shield: '<path d="M12 3.5l7.5 2.8V12c0 4.6-3.2 7.6-7.5 8.5-4.3-.9-7.5-3.9-7.5-8.5V6.3z"/><path d="M9 12l2 2 4-4"/>',
+    more: '<circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    shuffle: '<path d="M3.5 7.5h3c1.8 0 2.9.9 3.9 2.5l2.4 4.2c.9 1.5 2 2.3 3.8 2.3h3.9"/><path d="M3.5 16.5h3c1.2 0 2.1-.4 2.8-1.2M14.3 8.7c.8-.8 1.7-1.2 2.9-1.2h3.3"/><path d="M18 4.5l2.5 3-2.5 3M18 13.5l2.5 3-2.5 3"/>',
+    trophy: '<path d="M8 4h8v5.5a4 4 0 0 1-8 0z"/><path d="M8 6H5.5a2.5 2.5 0 0 0 2.6 3.5M16 6h2.5a2.5 2.5 0 0 1-2.6 3.5"/><path d="M12 13.5v3.5M8.5 20.5h7M10 17h4"/>',
+    'arrow-left': '<path d="M19 12H5.5M11 6l-6 6 6 6"/>'
+  };
+  function ico(name) {
+    return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + (ICONS[name] || '') + '</svg>';
+  }
+  function greeting() {
+    var h = new Date().getHours();
+    return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  }
+
   function api(method, url, body, keepalive) {
     return fetch(url, {
       method: method,
@@ -209,8 +237,8 @@
       ? '<p class="small">Remembered it? ' + modeLink('login', 'Back to log in') + '</p>'
       : '<p class="small">New here? ' + modeLink('signup', 'Create an account') + '</p>' +
         '<p class="small">' + modeLink('reset', 'Forgot password?') + '</p>';
-    return '<div class="auth"><div class="auth-brand"><span class="brand-mark" aria-hidden="true">🪑</span>' +
-      '<h1>The Bench</h1><p class="sub">A clubhouse for the between-jobs crowd. Everyone sits here sometimes.</p></div>' +
+    return '<div class="auth"><div class="auth-brand"><span class="brand-mark" aria-hidden="true">' + ico('bench') + '</span>' +
+      '<h1>The <em>Bench</em></h1><p class="sub">A clubhouse for the between-jobs crowd. Everyone sits here sometimes.</p></div>' +
       '<form class="card stack" data-form="auth"><h2>' + title + '</h2>' + fields +
       (ui.authError ? '<p class="err" role="alert">' + esc(ui.authError) + '</p>' : '') +
       '<button class="btn primary">' + button + '</button>' + links + '</form></div>';
@@ -222,7 +250,7 @@
   // Shown once, right after a recovery code is made (sign-up, reset, or from the Account page).
   function codeView() {
     return '<div class="auth"><div class="card stack">' +
-      '<h2>🔑 Save your recovery code</h2>' +
+      '<h2>' + ico('key') + ' Save your recovery code</h2>' +
       '<p>If you ever forget your password, this code lets you set a new one. <b>It is shown only this once.</b></p>' +
       '<p class="code" id="rcode">' + esc(ui.newCode) + '</p>' +
       '<div class="row"><button class="btn" data-act="copy-code">Copy code</button><span class="muted small" id="copied" role="status"></span></div>' +
@@ -237,7 +265,7 @@
     return S.routine.tasks.map(function (t) {
       var on = done.indexOf(t.id) > -1;
       return '<div class="taskrow"><button class="task' + (on ? ' done' : '') + '" data-act="toggle-task" data-id="' + esc(t.id) + '" aria-pressed="' + on + '">' +
-        '<span class="box">' + (on ? '✓' : '') + '</span><span class="txt">' + esc(t.text) + '</span></button>' +
+        '<span class="box">' + (on ? ico('check') : '') + '</span><span class="txt">' + esc(t.text) + '</span></button>' +
         '<button class="link" data-act="del-task" data-id="' + esc(t.id) + '" aria-label="Remove task">remove</button></div>';
     }).join('') || '<p class="muted small">No tasks yet. Add one below.</p>';
   }
@@ -271,16 +299,16 @@
       var done = doneOn(today()).length, total = S.routine.tasks.length;
       var latest = posts.slice(0, 2).map(function (p) { return postHtml(p, true); }).join('') ||
         '<p class="card muted">Nobody has posted yet. Be the first to say hi.</p>';
-      return head('Hey ' + esc(me.name) + ' 👋', esc(pick(QUIPS))) +
+      return head(greeting() + ', ' + esc(me.name) + '.', esc(pick(QUIPS))) +
         '<div class="stats">' +
-        '<div class="stat hot"><b>🔥 ' + streak() + '</b><span>day streak</span></div>' +
+        '<div class="stat hot"><b>' + streak() + '</b><span>' + ico('flame') + 'Day streak</span></div>' +
         '<div class="stat"><b>' + done + '/' + total + '</b><span>tasks done today</span></div>' +
         '<div class="stat"><b>' + S.apps.length + '</b><span>jobs tracked</span></div>' +
         '<div class="stat"><b>' + countStage('Interview') + '</b><span>interviews</span></div>' +
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
-        (me.hasRecovery ? '' : '<p class="banner">🔑 <b>Protect your account:</b> get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></p>') +
-        '<p class="banner">🎉 Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></p>' +
+        (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
+        '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
         '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
@@ -288,7 +316,7 @@
 
     account: function () {
       var msg = ui.acctMsg ? '<p class="' + (ui.acctMsg.ok ? 'ok-msg' : 'err') + '" role="status">' + esc(ui.acctMsg.text) + '</p>' : '';
-      return head('Account ⚙️', 'Signed in as @' + esc(me.username) + '.') + msg +
+      return head('Account', 'Signed in as @' + esc(me.username) + '.') + msg +
         '<div class="grid2"><form class="card stack" data-form="recovery"><h2>Recovery code</h2>' +
         '<p class="small">' + (me.hasRecovery
           ? 'You have a recovery code. Lost it? Make a new one; the old code stops working.'
@@ -302,7 +330,7 @@
         '<button class="btn">Change password</button></form>' +
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
-        (me.isAdmin ? '<section class="card stack"><h2>Moderation 🛡️</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
         '</div>' +
         '<p class="small muted" style="margin-top:16px"><a href="#/home">← Back home</a> · <button class="link" data-act="logout">Log out</button></p>';
     },
@@ -315,21 +343,21 @@
     },
 
     fun: function () {
-      return head('Fun 🎉', 'A new question and puzzle every day at midnight (India time), plus bingo for the bad days.') +
+      return head('Fun &amp; games', 'A new question and puzzle every day at midnight (India time), plus bingo for the bad days.') +
         '<div class="fun-grid"><section class="card stack" id="puzzle">' + puzzleHtml() + '</section>' +
         '<section class="card stack" id="qotd">' + qotdHtml() + '</section>' +
         '<section class="card stack fun-wide" id="bingo">' + bingoHtml() + '</section></div>';
     },
 
     admin: function () {
-      if (!me.isAdmin) return head('Moderators only 🛡️', 'This page is for moderators.');
-      return head('Moderation 🛡️', 'Reports from members. A private message only shows up here when one of the two people in it reports it.') +
+      if (!me.isAdmin) return head('Moderators only', 'This page is for moderators.');
+      return head('Moderation', 'Reports from members. A private message only shows up here when one of the two people in it reports it.') +
         '<div id="adminbody"><p class="muted">Loading reports…</p></div>';
     },
 
     feed: function () {
-      return head('The Feed 💬', 'Wins, rants, questions and tips. No LinkedIn voice allowed.') +
-        '<div class="stack"><form class="card stack" data-form="post">' +
+      return head('The Feed', 'Wins, rants, questions and tips. No LinkedIn voice allowed.') +
+        '<div class="stack narrow"><form class="card stack" data-form="post">' +
         '<textarea name="text" maxlength="600" placeholder="What happened today?" aria-label="Write a post" required></textarea>' +
         '<div class="row between"><select class="auto" name="tag" aria-label="Post type">' +
         TAGS.map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select>' +
@@ -339,7 +367,7 @@
     },
 
     jobs: function () {
-      return head('Jobs 🔎', 'Find something, hit Track, and it lands on your board.') +
+      return head('Jobs', 'Find something, hit Track, and it lands on your board.') +
         '<div class="stack"><div class="row"><input class="grow" type="search" id="jobq" placeholder="Search title, company or skill" aria-label="Search jobs" value="' + esc(ui.jobQuery) + '">' +
         '<select class="auto" id="jobmode" aria-label="Work mode">' + ['All', 'Remote', 'Hybrid', 'On-site'].map(function (m) {
           return '<option' + (m === ui.jobMode ? ' selected' : '') + '>' + m + '</option>';
@@ -361,7 +389,7 @@
               '<button class="link" data-act="del-app" data-id="' + id + '">remove</button></div></div>';
           }).join('') + '</section>';
       }).join('');
-      return head('Tracker 📋', 'Every application in one place, so nothing gets lost in your inbox.') +
+      return head('Tracker', 'Every application in one place, so nothing gets lost in your inbox.') +
         '<div class="stack"><form class="card row" data-form="app">' +
         '<input class="grow" type="text" name="title" placeholder="Job title" aria-label="Job title" maxlength="80" required>' +
         '<input class="grow" type="text" name="company" placeholder="Company" aria-label="Company" maxlength="60" required>' +
@@ -374,7 +402,7 @@
       var q = QUESTIONS[ui.q];
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
-      return head('Prep 🎤', 'Check your resume and practice answers out loud before the real thing.') +
+      return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -386,9 +414,9 @@
         '<button class="btn" data-act="timer" id="timerbtn">Start timer</button>' +
         '<button class="btn ghost" data-act="next-q">Skip question</button></div>' +
         '<div><p class="small"><b>How did that go?</b></p><div class="row" style="margin-top:6px">' +
-        '<button class="btn ghost" data-act="rate" data-r="Nailed">😎 Nailed it</button>' +
-        '<button class="btn ghost" data-act="rate" data-r="Okay">🙂 Okay</button>' +
-        '<button class="btn ghost" data-act="rate" data-r="Rough">😬 Rough</button></div></div>' +
+        '<button class="btn ghost" data-act="rate" data-r="Nailed">Nailed it</button>' +
+        '<button class="btn ghost" data-act="rate" data-r="Okay">Okay</button>' +
+        '<button class="btn ghost" data-act="rate" data-r="Rough">Rough</button></div></div>' +
         '<p class="banner">Practiced ' + S.practice.length + ' so far: ' + tally.Nailed + ' nailed, ' + tally.Okay + ' okay, ' + tally.Rough + ' rough.</p>' +
         '</section></div>';
     },
@@ -402,8 +430,8 @@
         days.push('<div class="day' + (hit(k) ? ' hit' : '') + '"><i>' + (m || (hit(k) ? '✓' : '·')) + '</i>' +
           d.toLocaleDateString(undefined, { weekday: 'short' }) + '</div>');
       }
-      return head('Routine 🔥', 'Job hunting is a job. Tick at least one thing a day to keep the streak alive.') +
-        '<div class="stats"><div class="stat hot"><b>🔥 ' + streak() + '</b><span>day streak</span></div>' +
+      return head('Routine', 'Job hunting is a job. Tick at least one thing a day to keep the streak alive.') +
+        '<div class="stats"><div class="stat hot"><b>' + streak() + '</b><span>' + ico('flame') + 'Day streak</span></div>' +
         '<div class="stat"><b>' + doneOn(today()).length + '/' + S.routine.tasks.length + '</b><span>done today</span></div></div>' +
         '<div class="grid2"><section class="card"><h2>Today</h2>' + taskList() +
         '<form class="row" data-form="task" style="margin-top:12px"><input class="grow" type="text" name="text" placeholder="Add your own task" aria-label="New task" maxlength="80" required>' +
@@ -476,10 +504,10 @@
   function reportHtml() {
     var r = ui.report;
     if (!r) return '<p class="muted small">Paste your resume and hit Check it for a quick score and fixes.</p>';
-    var verdict = r.score >= 85 ? 'Send it. 🚀' : r.score >= 60 ? 'Close. A few fixes and it is ready.' : 'Good start. Work through the list below.';
+    var verdict = r.score >= 85 ? 'Ready to send.' : r.score >= 60 ? 'Close. A few fixes and it is ready.' : 'Good start. Work through the list below.';
     return '<div class="row"><span class="score">' + r.score + '</span><span><b>out of 100</b><br><span class="muted small">' + verdict + '</span></span></div>' +
       '<ul class="checks">' + r.checks.map(function (c) {
-        return '<li><span class="' + (c.ok ? 'ok' : 'no') + '">' + (c.ok ? '✓' : '✗') + '</span><span>' + esc(c.msg) + '</span></li>';
+        return '<li><span class="' + (c.ok ? 'ok' : 'no') + '">' + ico(c.ok ? 'check' : 'x') + '</span><span>' + esc(c.msg) + '</span></li>';
       }).join('') + '</ul><p class="muted small" style="margin-top:10px">This is a simple rule check, not an AI review.</p>';
   }
 
@@ -574,7 +602,7 @@
         b.celebrated = b.celebrated.concat(fresh);
         b.total += fresh.length;
         confetti();
-        toast('BINGO! 🎉 That is ' + b.total + ' all time. Laugh it off, you are doing great.');
+        toast('Bingo! That is ' + b.total + ' all time. Laugh it off, you are doing great.');
       }
       save();
       renderSection('bingo', bingoHtml());
@@ -724,7 +752,7 @@
         var box = document.getElementById('pguess');
         if (box) box.value = '';
         renderSection('puzzle', puzzleHtml());
-        if (p.solved) { confetti(); toast('🎉 Solved! Come back tomorrow for a new one.'); }
+        if (p.solved) { confetti(); toast('Solved. Come back tomorrow for a new one.'); }
         else if (p.done) toast('Out of tries. The word was ' + p.answer + '.');
         else { toast('Not quite. One more letter revealed.'); var nb = document.getElementById('pguess'); if (nb) nb.focus(); }
       }).catch(function (e) {
@@ -820,7 +848,6 @@
   // ---------- chat ----------
   // Rooms and DMs. Live updates arrive over one EventSource; history loads per channel.
   // Client-side channel names: 'room:<slug>' and 'dm:<other person's username>'.
-  var ROOM_EMOJI = { lobby: '👋', 'job-leads': '💼', 'interview-prep': '🎤', vent: '🌧️' };
   var BASE_TITLE = document.title;
   var chat = freshChat();
   function freshChat() {
@@ -895,7 +922,7 @@
     var rooms = s.rooms.map(function (r) {
       var ch = 'room:' + r.slug, un = ch !== active && isUnread(ch);
       return '<a class="ch' + (ch === active ? ' on' : '') + (un ? ' unread' : '') + '" href="#/chat/' + esc(r.slug) + '"' + (ch === active ? ' aria-current="page"' : '') + '>' +
-        '<span class="ch-icon" aria-hidden="true">' + (ROOM_EMOJI[r.slug] || '#') + '</span><span class="ch-text"><b># ' + esc(r.slug) + '</b></span>' +
+        '<span class="ch-icon" aria-hidden="true">#</span><span class="ch-text"><b>' + esc(r.slug) + '</b></span>' +
         (un ? '<i class="dot" aria-label="new messages"></i>' : '') + '</a>';
     }).join('');
     var dms = s.dms.map(function (d) {
@@ -914,7 +941,7 @@
   }
 
   function paneHtml(ch) {
-    var back = '<a class="back" href="#/chat" aria-label="All chats">←</a>';
+    var back = '<a class="back" href="#/chat" aria-label="All chats">' + ico('arrow-left') + '</a>';
     if (chat.errors[ch]) {
       return '<header class="pane-head">' + back + '<div><h2>Hmm</h2></div></header><div class="pane-empty"><p>' + esc(chat.errors[ch]) + '</p><a href="#/chat/lobby">Go to #lobby</a></div>';
     }
@@ -924,7 +951,7 @@
       var name = peer ? peer.name : (dmByUser(u) || {}).name || '@' + u;
       head = '<div class="grow"><h2>' + esc(name) + '</h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
         (peer ? '<button class="btn tiny ghost" data-act="' + (peer.blockedByMe ? 'unblock' : 'block') + '" data-u="' + esc(u) + '">' + (peer.blockedByMe ? 'Unblock' : 'Block') + '</button>' : '');
-      notice = '<p class="scam">🛡️ Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</p>';
+      notice = '<p class="scam">' + ico('shield') + '<span>Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span></p>';
       composer = peer && peer.blockedByMe
         ? '<p class="composer-note muted small">You blocked this person. Unblock them to send messages.</p>'
         : composerHtml('Message ' + name);
@@ -942,7 +969,7 @@
     var list = chat.msgs[ch];
     if (!list) return '<p class="muted small pad">Loading messages…</p>';
     var older = chat.more[ch] ? '<button class="btn tiny ghost older" data-act="older">Load older messages</button>' : '';
-    if (!list.length) return older + '<p class="muted pad empty">' + (isDm(ch) ? 'Say hi 👋' : 'No messages yet. Start the conversation!') + '</p>';
+    if (!list.length) return older + '<p class="muted pad empty">' + (isDm(ch) ? 'Say hello to start the conversation.' : 'No messages yet. Start the conversation.') + '</p>';
     return older + list.map(function (m) { return msgHtml(m, ch); }).join('');
   }
 
@@ -958,7 +985,7 @@
       : '<a class="who" href="#/dm/' + u + '" title="Message @' + u + ' privately">' + esc(m.name) + '</a>';
     return '<div class="msg' + (own ? ' own' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
       '<time class="muted small">' + clock(m.t) + '</time>' +
-      (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">⋯</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
       '</div><p class="msg-text">' + esc(m.text) + '</p></div>';
   }
 
@@ -1140,7 +1167,7 @@
         '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">Delete message</button>' +
         (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
         '</div></article>';
-    }).join('') || '<p class="card muted">No open reports. 🎉</p>';
+    }).join('') || '<p class="card muted">No open reports. All quiet.</p>';
     var banned = (j.banned || []).map(function (u) {
       return '<li class="row between"><span>' + esc(u.name) + ' <span class="muted small">@' + esc(u.username) + '</span></span>' +
         '<button class="btn tiny ghost" data-act="unban" data-u="' + esc(u.username) + '">Unban</button></li>';
@@ -1242,7 +1269,7 @@
 
   function confetti() {
     try { if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; } catch (e) { /* old browser */ }
-    var box = document.createElement('div'), colors = ['#e8502f', '#ffc93c', '#12877b', '#4fd1c1', '#ff7a5c', '#8a6cff'];
+    var box = document.createElement('div'), colors = ['#c4432b', '#1d1a16', '#b0832a', '#2e6b4b', '#e9b49f', '#f0e1c4'];
     box.className = 'confetti';
     box.setAttribute('aria-hidden', 'true');
     for (var i = 0; i < 90; i++) {
@@ -1271,7 +1298,7 @@
   // ----- puzzle -----
   function puzzleHtml() {
     var p = fun.data && fun.data.puzzle;
-    if (!p) return '<h2>🧩 Daily puzzle</h2><p class="muted">Loading today\'s puzzle…</p>';
+    if (!p) return '<h2>Daily puzzle</h2><p class="muted">Loading today\'s puzzle…</p>';
     var last = p.guesses.length - 1;
     var tiles = (fun.order || p.scrambled).split('').map(function (c) { return '<span class="tile">' + esc(c) + '</span>'; }).join('');
     var slots = p.reveal.split('').map(function (c) {
@@ -1279,7 +1306,7 @@
     }).join('');
     var tries = p.guesses.map(function (g, i) {
       var right = p.solved && i === last;
-      return '<li class="' + (right ? 'ok' : 'no') + '"><span aria-hidden="true">' + (right ? '✅' : '❌') + '</span> ' + esc(g) + '</li>';
+      return '<li class="' + (right ? 'ok' : 'no') + '">' + ico(right ? 'check' : 'x') + '<span>' + esc(g) + '</span></li>';
     }).join('');
     var board = p.leaderboard.length
       ? '<ol class="board-list">' + p.leaderboard.map(function (r) {
@@ -1290,18 +1317,18 @@
     var play = p.done ? '' :
       '<p class="small">Unscramble the word. Each wrong guess reveals one more letter. <b>' + p.triesLeft + ' of ' + p.maxTries + ' tries left.</b></p>' +
       '<form class="row" data-form="puzzle"><input id="pguess" class="grow" type="text" name="guess" maxlength="' + p.length + '" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Your guess (' + p.length + ' letters)" aria-label="Your guess" required>' +
-      '<button class="btn primary">Guess</button><button type="button" class="btn ghost" data-act="shuffle" aria-label="Shuffle the letters">🔀</button></form>';
+      '<button class="btn primary">Guess</button><button type="button" class="btn ghost" data-act="shuffle" aria-label="Shuffle the letters">' + ico('shuffle') + '</button></form>';
     var result = !p.done ? '' : p.solved
-      ? '<p class="win">🎉 Solved in ' + p.guesses.length + '/' + p.maxTries + '! The word was <b>' + esc(p.answer) + '</b>.</p>'
+      ? '<p class="win">Solved in ' + p.guesses.length + '/' + p.maxTries + '! The word was <b>' + esc(p.answer) + '</b>.</p>'
       : '<p class="lose">The word was <b>' + esc(p.answer) + '</b>. So close. A new puzzle arrives at midnight.</p>';
     var share = p.done ? '<button class="btn ghost tiny" data-act="share-puzzle">Share my result in #lobby</button>' : '';
 
-    return '<div class="row between"><h2>🧩 Puzzle #' + Number(p.number) + '</h2><span class="pill">🔥 ' + Number(p.streak) + ' day streak</span></div>' +
+    return '<div class="row between"><h2>Puzzle <span class="muted">No. ' + Number(p.number) + '</span></h2><span class="pill">' + ico('flame') + Number(p.streak) + ' day streak</span></div>' +
       '<p class="small"><b>Hint:</b> ' + esc(p.hint) + '</p>' +
       '<div class="tiles" aria-label="Scrambled letters: ' + esc((fun.order || p.scrambled).split('').join(' ')) + '">' + tiles + '</div>' +
       '<div class="slots" aria-label="' + (p.done ? 'Answer' : 'Letters revealed so far') + '">' + slots + '</div>' +
       play + (tries ? '<ul class="guesses">' + tries + '</ul>' : '') + result + share +
-      '<div class="lboard"><h3>🏆 This week</h3>' + board + '<p class="muted small">5 points for a first-try solve, down to 1 for the fifth. Resets every Monday.</p></div>';
+      '<div class="lboard"><h3>' + ico('trophy') + 'This week</h3>' + board + '<p class="muted small">5 points for a first-try solve, down to 1 for the fifth. Resets every Monday.</p></div>';
   }
 
   // ----- question of the day -----
@@ -1310,10 +1337,10 @@
     var tabs = '<div class="seg" role="group" aria-label="Which day">' +
       '<button type="button" data-act="qday" data-d="today" aria-pressed="' + today + '"' + (today ? ' class="on"' : '') + '>Today</button>' +
       '<button type="button" data-act="qday" data-d="yesterday" aria-pressed="' + !today + '"' + (!today ? ' class="on"' : '') + '>Yesterday</button></div>';
-    var top = '<div class="row between"><h2>💭 Question of the day</h2>' + tabs + '</div>';
+    var top = '<div class="row between"><h2>Question of the day</h2>' + tabs + '</div>';
     if (!d) return top + '<p class="muted">Loading…</p>';
     var form = !today ? '' : d.answered
-      ? '<p class="muted small">You answered today. 👍 Come back tomorrow for a new question.</p>'
+      ? '<p class="muted small">You answered today. Come back tomorrow for a new question.</p>'
       : '<form class="stack" data-form="qotd"><textarea id="qanswer" name="text" maxlength="300" placeholder="Your answer…" aria-label="Your answer" required></textarea>' +
         '<div class="row between"><span class="muted small">Everyone on The Bench can see answers.</span><button class="btn primary">Answer</button></div></form>';
     var list = d.answers.slice().reverse().map(answerHtml).join('') ||
@@ -1333,14 +1360,14 @@
     if (!a.own) opts.push('<button type="button" data-act="report" data-id="' + id + '">Report</button>');
     if (a.own || me.isAdmin) opts.push('<button type="button" data-act="qdel" data-id="' + id + '">Delete' + (a.own ? '' : ' (moderator)') + '</button>');
     return '<div class="answer"><div class="msg-head">' + who + '<span class="muted small">' + ago(a.t) + '</span>' +
-      (opts.length ? '<details class="msg-menu"><summary aria-label="Answer options">⋯</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Answer options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
       '</div><p class="msg-text">' + esc(a.text) + '</p><div class="row">' + reacts + '</div></div>';
   }
 
   // ----- rejection bingo -----
   function bingoHtml() {
     var b = S.bingo;
-    if (!b) return '<h2>🎯 Rejection Bingo</h2><p class="muted">Shuffling your card…</p>';
+    if (!b) return '<h2>Rejection Bingo</h2><p class="muted">Shuffling your card…</p>';
     var lines = fullLines(b), inLine = {};
     lines.forEach(function (n) { BINGO_LINES[n].forEach(function (i) { inLine[i] = true; }); });
     var cells = '';
@@ -1350,7 +1377,7 @@
         ? '<div class="cell on free' + (inLine[i] ? ' line' : '') + '">' + esc(cellText(b, i)) + '</div>'
         : '<button type="button" class="cell' + (on ? ' on' : '') + (inLine[i] ? ' line' : '') + '" data-act="bingo" data-i="' + i + '" aria-pressed="' + on + '">' + esc(cellText(b, i)) + '</button>';
     }
-    return '<div class="row between"><h2>🎯 Rejection Bingo</h2><span class="pill">🏅 ' + b.total + ' bingo' + (b.total === 1 ? '' : 's') + ' all time</span></div>' +
+    return '<div class="row between"><h2>Rejection Bingo</h2><span class="pill">' + ico('trophy') + b.total + ' bingo' + (b.total === 1 ? '' : 's') + ' all time</span></div>' +
       '<p class="small muted">Tick a square when it happens to you. Five in a row (across, down or corner to corner) is a bingo. Your card is private.</p>' +
       '<div class="bingo">' + cells + '</div>' +
       '<div class="row between"><span class="small">' + (lines.length ? '<b>' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on this card!</b>' : b.ticks.length + ' squares ticked') + '</span>' +
@@ -1473,6 +1500,7 @@
   });
   window.addEventListener('pagehide', function () { flush(true); });
 
+  document.querySelectorAll('[data-icon]').forEach(function (el) { el.innerHTML = ico(el.getAttribute('data-icon')); });
   render();
   api('GET', '/api/me')
     .then(function (j) { return enter(j, false); })

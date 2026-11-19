@@ -982,11 +982,16 @@ async function chatApi(req, res, route, user) {
 }
 
 // ---------- static files (fixed allow-list, so nothing else on disk is reachable) ----------
+const FOREVER = 'public, max-age=31536000, immutable'; // fonts never change; rename the file if they do
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
-  '/app.js': ['app.js', 'text/javascript; charset=utf-8']
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/fonts/inter.woff2': ['fonts/inter.woff2', 'font/woff2', FOREVER],
+  '/fonts/fraunces.woff2': ['fonts/fraunces.woff2', 'font/woff2', FOREVER],
+  '/fonts/fraunces-italic.woff2': ['fonts/fraunces-italic.woff2', 'font/woff2', FOREVER]
 };
 
 function serveStatic(req, res, pathname) {
@@ -999,7 +1004,7 @@ function serveStatic(req, res, pathname) {
     if (err) { res.writeHead(500); return res.end('Server error'); }
     res.writeHead(200, {
       'Content-Type': entry[1],
-      'Cache-Control': 'no-cache',
+      'Cache-Control': entry[2] || 'no-cache',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'same-origin',

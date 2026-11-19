@@ -2,32 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>The Bench — a clubhouse for the between-jobs crowd</title>
-  <meta name="description" content="A friendly space for people between jobs: community, job tracking, interview prep and daily routines.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>The Bench: a clubhouse for the between-jobs crowd</title>
+  <meta name="description" content="A friendly space for people between jobs: community, chat, job tracking, interview prep and daily routines.">
+  <meta name="theme-color" content="#f5efe6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14120f" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="shell">
     <aside class="side">
       <a class="brand" href="#/home">
-        <span class="brand-mark" aria-hidden="true">🪑</span>
+        <span class="brand-mark" data-icon="bench" aria-hidden="true"></span>
         <span>
-          <strong>The Bench</strong>
+          <strong>The <em>Bench</em></strong>
           <small>Everyone sits here sometimes</small>
         </span>
       </a>
       <nav id="nav" aria-label="Main">
-        <a href="#/home" data-view="home"><span aria-hidden="true">🏠</span><b>Home</b></a>
-        <a href="#/feed" data-view="feed"><span aria-hidden="true">📣</span><b>Feed</b></a>
-        <a href="#/chat" data-view="chat"><span aria-hidden="true">💬</span><b>Chat</b><i id="chatbadge" class="badge" hidden></i></a>
-        <a href="#/fun" data-view="fun"><span aria-hidden="true">🎉</span><b>Fun</b></a>
-        <a href="#/jobs" data-view="jobs"><span aria-hidden="true">🔎</span><b>Jobs</b></a>
-        <a href="#/tracker" data-view="tracker"><span aria-hidden="true">📋</span><b>Tracker</b></a>
-        <a href="#/prep" data-view="prep"><span aria-hidden="true">🎤</span><b>Prep</b></a>
-        <a href="#/routine" data-view="routine"><span aria-hidden="true">🔥</span><b>Routine</b></a>
+        <a href="#/home" data-view="home"><span data-icon="home" aria-hidden="true"></span><b>Home</b></a>
+        <a href="#/feed" data-view="feed"><span data-icon="feed" aria-hidden="true"></span><b>Feed</b></a>
+        <a href="#/chat" data-view="chat"><span data-icon="chat" aria-hidden="true"></span><b>Chat</b><i id="chatbadge" class="badge" hidden></i></a>
+        <a href="#/fun" data-view="fun"><span data-icon="fun" aria-hidden="true"></span><b>Fun</b></a>
+        <a href="#/jobs" data-view="jobs"><span data-icon="jobs" aria-hidden="true"></span><b>Jobs</b></a>
+        <a href="#/tracker" data-view="tracker"><span data-icon="tracker" aria-hidden="true"></span><b>Tracker</b></a>
+        <a href="#/prep" data-view="prep"><span data-icon="prep" aria-hidden="true"></span><b>Prep</b></a>
+        <a href="#/routine" data-view="routine"><span data-icon="routine" aria-hidden="true"></span><b>Routine</b></a>
       </nav>
-      <p class="side-note">Your tracker, routine and resume are private to your account. Posts are visible to all members.</p>
+      <p class="side-note">Your tracker, routine and resume are private to you. Posts and chat rooms are visible to all members.</p>
     </aside>
     <main id="main" tabindex="-1"></main>
   </div>

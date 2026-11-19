@@ -1899,17 +1899,32 @@ const server = http.createServer((req, res) => {
 // Render's free plan puts the app to sleep after ~15 minutes with no visitors, and waking takes 30-60 seconds.
 // Visiting our own public address every 10 minutes counts as a visitor, so it stays awake. Render sets
 // RENDER_EXTERNAL_URL automatically; set KEEP_AWAKE=off on the host to stop. It only touches /healthz (no database).
-// Note: one always-on free service uses ~720-744 of Render's 750 free instance hours a month.
+// Waking hours only (default 07:00-24:00 India time): overnight the pings stop, so the app sleeps as the free plan
+// intends and uses roughly 520 of Render's 750 free hours a month instead of ~740. A sleeping app cannot wake itself,
+// so the first visitor after the night wakes it; pings carry on from there. KEEP_AWAKE_HOURS=all keeps it on 24/7.
+const istHour = () => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
+function awakeWindow(spec) {
+  if (spec === 'all') return () => true;
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(spec || '7-24');
+  const from = m ? Number(m[1]) : 7, to = m ? Number(m[2]) : 24;
+  return (h) => (from <= to ? h >= from && h < to : h >= from || h < to); // also handles windows across midnight, e.g. 20-6
+}
 function startKeepAwake() {
   const target = (process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
   if (!target || process.env.KEEP_AWAKE === 'off') return;
   if (!/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(target)) { console.error('Keep-awake skipped: the address must use https.'); return; }
   const minutes = Math.max(Number(process.env.KEEP_AWAKE_MINUTES) || 10, 0.01);
-  const ping = () => fetch(target + '/healthz', { headers: { 'User-Agent': 'TheBench-KeepAwake/1.0' }, signal: AbortSignal.timeout(20000) })
-    .then((r) => { if (!r.ok) console.error('Keep-awake ping got HTTP ' + r.status); })
-    .catch((e) => console.error('Keep-awake ping failed: ' + e.message));
+  const hours = (process.env.KEEP_AWAKE_HOURS || '7-24').trim();
+  const inWindow = awakeWindow(hours);
+  const ping = () => {
+    if (!inWindow(istHour())) return; // night time: let the app sleep
+    fetch(target + '/healthz', { headers: { 'User-Agent': 'TheBench-KeepAwake/1.0' }, signal: AbortSignal.timeout(20000) })
+      .then((r) => { if (!r.ok) console.error('Keep-awake ping got HTTP ' + r.status); })
+      .catch((e) => console.error('Keep-awake ping failed: ' + e.message));
+  };
   setInterval(ping, minutes * 60000);
-  console.log('Keep-awake on: pinging ' + target + '/healthz every ' + minutes + ' minutes');
+  console.log('Keep-awake on: pinging ' + target + '/healthz every ' + minutes + ' minutes' +
+    (hours === 'all' ? ', all day' : ' between ' + hours.replace('-', ':00 and ') + ':00 India time'));
 }
 
 initDb().then(() => {

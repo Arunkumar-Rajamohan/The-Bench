@@ -43,7 +43,10 @@
     x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
     shuffle: '<path d="M3.5 7.5h3c1.8 0 2.9.9 3.9 2.5l2.4 4.2c.9 1.5 2 2.3 3.8 2.3h3.9"/><path d="M3.5 16.5h3c1.2 0 2.1-.4 2.8-1.2M14.3 8.7c.8-.8 1.7-1.2 2.9-1.2h3.3"/><path d="M18 4.5l2.5 3-2.5 3M18 13.5l2.5 3-2.5 3"/>',
     trophy: '<path d="M8 4h8v5.5a4 4 0 0 1-8 0z"/><path d="M8 6H5.5a2.5 2.5 0 0 0 2.6 3.5M16 6h2.5a2.5 2.5 0 0 1-2.6 3.5"/><path d="M12 13.5v3.5M8.5 20.5h7M10 17h4"/>',
-    'arrow-left': '<path d="M19 12H5.5M11 6l-6 6 6 6"/>'
+    'arrow-left': '<path d="M19 12H5.5M11 6l-6 6 6 6"/>',
+    pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+    link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
   function ico(name) {
     return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + (ICONS[name] || '') + '</svg>';
@@ -284,9 +287,7 @@
       '<form class="row" data-form="reply" style="margin-top:12px"><input type="hidden" name="id" value="' + id + '">' +
       '<input class="grow" type="text" name="text" placeholder="Say something nice…" maxlength="300" aria-label="Reply" required>' +
       '<button class="btn ghost">Reply</button></form>';
-    var who = p.own
-      ? '<span class="who">' + esc(p.name) + '</span>'
-      : '<a class="who" href="#/dm/' + esc(p.username) + '" title="Message @' + esc(p.username) + ' privately">' + esc(p.name) + '</a>';
+    var who = '<a class="who" href="#/u/' + esc(p.username) + '">' + esc(p.name) + '</a>';
     return '<article class="card post"><div class="row between"><div class="row">' + who +
       '<span class="muted small">@' + esc(p.username) + '</span>' +
       '<span class="pill ' + tag + '">' + tag + '</span><span class="muted small">' + ago(p.t) + '</span></div>' +
@@ -308,10 +309,11 @@
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
+        (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
         '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
-        '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
+        '<p class="small muted">Signed in as @' + esc(me.username) + ' · <a href="#/u/' + esc(me.username) + '">Your profile</a> · <a href="#/people">People</a> · <a href="#/account">Account</a> · <button class="link" data-act="logout">Log out</button></p></div>';
     },
 
     account: function () {
@@ -340,6 +342,19 @@
       return '<div class="chat' + (ch ? ' has-ch' : '') + '"><aside class="chat-list card" id="chatlist">' + chatListHtml(ch) + '</aside>' +
         '<section class="chat-pane card" id="chatpane">' +
         (ch ? paneHtml(ch) : '<div class="pane-empty"><p>Pick a room or a person to chat with.</p></div>') + '</section></div>';
+    },
+
+    profile: function () { return '<div id="profilebody"><p class="muted">Loading profile…</p></div>'; },
+
+    'edit-profile': function () {
+      return head('Edit your profile', 'Members see this when they tap your name. Only your name is required.') +
+        '<div id="editbody"><p class="muted">Loading…</p></div>';
+    },
+
+    people: function () {
+      return head('People', 'Everyone on The Bench. Find someone hunting for the same kind of role, or just say hello.') +
+        '<div class="stack"><input type="search" id="peopleq" placeholder="Search by name, role, skill or city" aria-label="Search people" value="' + esc(prof.query) + '">' +
+        '<div class="people-grid" id="peoplelist">' + peopleHtml() + '</div></div>';
     },
 
     fun: function () {
@@ -558,6 +573,13 @@
       catch (e) { done(false); }
       return false;
     },
+    'report-profile': function (d) {
+      var reason = window.prompt('Report this profile to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/profile/' + encodeURIComponent(d.u) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
+      return false;
+    },
     shuffle: function () {
       var p = fun.data && fun.data.puzzle;
       if (!p) return false;
@@ -647,7 +669,7 @@
       closeMenus();
       if (!window.confirm('Block @' + d.u + '?\n\nThey will not be able to message you, and you will not see their messages in rooms. You can unblock them from your Account page.')) return false;
       api('POST', '/api/blocks/' + encodeURIComponent(d.u))
-        .then(function () { toast('Blocked @' + d.u + '.'); chatBlocked(d.u, true); }).catch(fail);
+        .then(function () { toast('Blocked @' + d.u + '.'); chatBlocked(d.u, true); if (currentView() === 'profile') loadProfile(); }).catch(fail);
       return false;
     },
     unblock: function (d) {
@@ -655,6 +677,7 @@
         toast('Unblocked @' + d.u + '.');
         chatBlocked(d.u, false);
         if (currentView() === 'account') loadBlocks();
+        if (currentView() === 'profile') loadProfile();
       }).catch(fail);
       return false;
     },
@@ -742,6 +765,23 @@
   };
 
   var forms = {
+    profile: function (f, form) {
+      var btn = form.querySelector('button.primary');
+      btn.disabled = true;
+      var body = {
+        name: String(f.get('name') || ''), status: f.get('status'), headline: f.get('headline'), since: f.get('since'),
+        location: f.get('location'), openTo: f.getAll('openTo'), skills: String(f.get('skills') || ''),
+        bio: f.get('bio'), link: String(f.get('link') || '').trim(), color: f.get('color')
+      };
+      api('PUT', '/api/profile', body).then(function (j) {
+        me.name = j.name;
+        me.profileDone = !!(j.profile.headline || j.profile.bio || j.profile.location || j.profile.skills.length || j.profile.link);
+        prof.people = null;
+        toast('Profile saved.');
+        location.hash = '#/u/' + me.username;
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); btn.disabled = false; });
+      return false;
+    },
     puzzle: function (f, form) {
       var guess = String(f.get('guess') || '').trim();
       if (!guess || fun.busy) return false;
@@ -932,7 +972,7 @@
         '<span class="ch-text"><b>' + esc(d.name) + '</b><small>' + esc((d.lastFromMe ? 'You: ' : '') + (d.lastText || '')) + '</small></span>' +
         (un ? '<i class="dot" aria-label="unread"></i>' : '') + '</a>';
     }).join('') || '<p class="muted small pad">No private chats yet. Tap someone\'s name in a room or on the feed to message them.</p>';
-    return '<h3>Rooms</h3><nav class="chs" aria-label="Rooms">' + rooms + '</nav><h3>Direct messages</h3><nav class="chs" aria-label="Direct messages">' + dms + '</nav>';
+    return '<h3>Rooms</h3><nav class="chs" aria-label="Rooms">' + rooms + '</nav><h3 class="between">Direct messages <a class="h3-link" href="#/people">Find people</a></h3><nav class="chs" aria-label="Direct messages">' + dms + '</nav>';
   }
 
   function composerHtml(label) {
@@ -949,7 +989,7 @@
     if (isDm(ch)) {
       var u = ch.slice(3), peer = chat.peers[ch];
       var name = peer ? peer.name : (dmByUser(u) || {}).name || '@' + u;
-      head = '<div class="grow"><h2>' + esc(name) + '</h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
+      head = '<div class="grow"><h2><a class="plain-link" href="#/u/' + esc(u) + '">' + esc(name) + '</a></h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
         (peer ? '<button class="btn tiny ghost" data-act="' + (peer.blockedByMe ? 'unblock' : 'block') + '" data-u="' + esc(u) + '">' + (peer.blockedByMe ? 'Unblock' : 'Block') + '</button>' : '');
       notice = '<p class="scam">' + ico('shield') + '<span>Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span></p>';
       composer = peer && peer.blockedByMe
@@ -976,13 +1016,12 @@
   function msgHtml(m, ch) {
     var own = m.username === me.username, room = !isDm(ch), u = esc(m.username), id = Number(m.id);
     var opts = [];
+    if (!own) opts.push('<a href="#/u/' + u + '">View profile</a>');
     if (!own && room) opts.push('<a href="#/dm/' + u + '">Message privately</a>');
     if (!own) opts.push('<button type="button" data-act="report" data-id="' + id + '">Report</button>');
     if (!own && room) opts.push('<button type="button" data-act="block" data-u="' + u + '">Block @' + u + '</button>');
     if (own || me.isAdmin) opts.push('<button type="button" data-act="del-msg" data-id="' + id + '">Delete' + (own ? '' : ' (moderator)') + '</button>');
-    var who = own || !room
-      ? '<b class="who">' + esc(m.name) + '</b>'
-      : '<a class="who" href="#/dm/' + u + '" title="Message @' + u + ' privately">' + esc(m.name) + '</a>';
+    var who = own ? '<b class="who">' + esc(m.name) + '</b>' : '<a class="who" href="#/u/' + u + '">' + esc(m.name) + '</a>';
     return '<div class="msg' + (own ? ' own' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
       '<time class="muted small">' + clock(m.t) + '</time>' +
       (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
@@ -1164,7 +1203,7 @@
         (r.deleted ? '<p class="muted small">The author has already deleted this message.</p>' : '') +
         '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
         '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
-        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">Delete message</button>' +
+        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : 'Delete message') + '</button>' +
         (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
         '</div></article>';
     }).join('') || '<p class="card muted">No open reports. All quiet.</p>';
@@ -1310,7 +1349,7 @@
     }).join('');
     var board = p.leaderboard.length
       ? '<ol class="board-list">' + p.leaderboard.map(function (r) {
-          return '<li class="' + (r.me ? 'me' : '') + '"><span>' + esc(r.name) + (r.me ? ' (you)' : '') + '</span><b>' + Number(r.points) + ' pts</b></li>';
+          return '<li class="' + (r.me ? 'me' : '') + '"><a class="plain-link" href="#/u/' + esc(r.username) + '">' + esc(r.name) + (r.me ? ' (you)' : '') + '</a><b>' + Number(r.points) + ' pts</b></li>';
         }).join('') + '</ol>'
       : '<p class="muted small">Nobody has solved one this week yet. Be the first!</p>';
 
@@ -1350,8 +1389,7 @@
   }
   function answerHtml(a) {
     var id = Number(a.id), u = esc(a.username);
-    var who = a.own ? '<b class="who">' + esc(a.name) + '</b>'
-      : '<a class="who" href="#/dm/' + u + '" title="Message @' + u + ' privately">' + esc(a.name) + '</a>';
+    var who = a.own ? '<b class="who">' + esc(a.name) + '</b>' : '<a class="who" href="#/u/' + u + '">' + esc(a.name) + '</a>';
     var reacts = REACTS.map(function (r) {
       var n = Number(a.reacts[r]) || 0;
       return '<button class="react' + (a.mine[r] ? ' on' : '') + '" data-act="qreact" data-id="' + id + '" data-r="' + r + '">' + r + (n ? ' ' + n : '') + '</button>';
@@ -1405,6 +1443,143 @@
       .then(function () { toast('Shared in #' + room + '.'); }).catch(fail);
   }
 
+  // ---------- profiles + people ----------
+  var STATUS_LABEL = { looking: 'Looking for work', interviewing: 'Interviewing', hired: 'Got a job!', break: 'Taking a break' };
+  var OPEN_TO = ['Remote', 'Hybrid', 'On-site'];
+  var COLORS = ['tomato', 'ink', 'gold', 'sage', 'blue', 'plum'];
+  var prof = { people: null, query: '' };
+
+  function profileRoute() {
+    var p = location.hash.replace(/^#\/?/, '').split('/');
+    return p[0] === 'u' && /^[a-z0-9_]{3,20}$/i.test(p[1] || '') ? p[1].toLowerCase() : '';
+  }
+  function avatarHtml(name, color, size) {
+    return '<span class="avatar' + (size ? ' ' + size : '') + ' c-' + (COLORS.indexOf(color) > -1 ? color : 'tomato') + '" aria-hidden="true">' + esc(initial(name)) + '</span>';
+  }
+  function monthsSince(ym) {
+    var p = ym.split('-'), now = new Date();
+    return (now.getFullYear() - Number(p[0])) * 12 + (now.getMonth() + 1 - Number(p[1]));
+  }
+  function monthName(ym) {
+    var p = ym.split('-');
+    return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleDateString([], { month: 'long', year: 'numeric' });
+  }
+  function howLong(ym) {
+    var n = monthsSince(ym);
+    return n <= 0 ? 'started this month' : n === 1 ? '1 month' : n < 24 ? n + ' months' : Math.floor(n / 12) + ' years';
+  }
+  function statusLabel(s) { return '<span class="status s-' + (STATUS_LABEL[s] ? s : 'looking') + '">' + esc(STATUS_LABEL[s] || STATUS_LABEL.looking) + '</span>'; }
+  function linkLabel(href) {
+    try { var u = new URL(href); return (u.hostname.replace(/^www\./, '') + (u.pathname.length > 1 ? u.pathname.replace(/\/$/, '') : '')).slice(0, 44); }
+    catch (e) { return 'Link'; }
+  }
+  function thisMonth() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }
+
+  // ----- one profile -----
+  function loadProfile() {
+    var u = profileRoute();
+    if (!u) return;
+    api('GET', '/api/profile/' + encodeURIComponent(u)).then(function (j) {
+      var el = document.getElementById('profilebody');
+      if (el && profileRoute() === u) el.innerHTML = profileHtml(j);
+    }, function (e) {
+      var el = document.getElementById('profilebody');
+      if (e.status === 404 && el) el.innerHTML = head('Not here', esc(e.message)) + '<a class="btn" href="#/people">See everyone</a>';
+      else fail(e);
+    });
+  }
+
+  function profileHtml(j) {
+    var p = j.profile, u = esc(j.username);
+    var meta = [statusLabel(p.status)];
+    if (p.location) meta.push('<span class="meta-item">' + ico('pin') + esc(p.location) + '</span>');
+    if (p.openTo.length) meta.push('<span class="meta-item">' + ico('jobs') + esc(p.openTo.join(' · ')) + '</span>');
+    var role = p.headline
+      ? '<p class="headline">' + (p.status === 'hired' ? 'Now working as ' : 'Looking for ') + '<b>' + esc(p.headline) + '</b></p>'
+      : j.me ? '<p class="headline muted"><a href="#/edit-profile">Add the role you are looking for</a></p>' : '';
+    var actions = j.me
+      ? '<a class="btn primary" href="#/edit-profile">Edit profile</a>'
+      : '<a class="btn primary" href="#/dm/' + u + '">' + ico('chat') + 'Message</a>' +
+        '<button class="btn ghost" data-act="' + (j.blockedByMe ? 'unblock' : 'block') + '" data-u="' + u + '">' + (j.blockedByMe ? 'Unblock' : 'Block') + '</button>';
+    var about = p.bio
+      ? '<p class="bio">' + esc(p.bio) + '</p>'
+      : '<p class="muted">' + (j.me ? 'Nothing here yet. <a href="#/edit-profile">Write a line or two about yourself.</a>' : 'Nothing here yet.') + '</p>';
+    var skills = p.skills.length ? '<div class="row skills">' + p.skills.map(function (s) { return '<span class="pill">' + esc(s) + '</span>'; }).join('') + '</div>' : '';
+    var link = p.link ? '<p><a class="ext" href="' + esc(p.link) + '" target="_blank" rel="noopener noreferrer nofollow ugc">' + ico('link') + '<span>' + esc(linkLabel(p.link)) + '</span></a></p>' : '';
+    var fact = function (label, value) { return '<div><dt>' + label + '</dt><dd>' + value + '</dd></div>'; };
+    var facts = '<dl class="facts">' +
+      (p.since ? fact('Looking since', esc(monthName(p.since)) + ' <span class="muted">· ' + esc(howLong(p.since)) + '</span>') : '') +
+      fact('Member since', esc(new Date(j.joined).toLocaleDateString([], { month: 'long', year: 'numeric' }))) +
+      fact('Feed posts', Number(j.stats.posts)) +
+      fact('Daily answers', Number(j.stats.answers)) +
+      fact('Puzzles solved', Number(j.stats.solved)) + '</dl>';
+    return '<header class="profile-head">' + avatarHtml(j.name, p.color, 'xl') +
+      '<div class="grow"><h1>' + esc(j.name) + '</h1><p class="muted handle">@' + u + '</p>' + role +
+      '<div class="row meta">' + meta.join('') + '</div></div>' +
+      '<div class="row actions">' + actions + '</div></header>' +
+      '<div class="grid2"><section class="card stack"><h3>About</h3>' + about + skills + link + '</section>' +
+      '<section class="card stack"><h3>On The Bench</h3>' + facts + '</section></div>' +
+      (j.me ? '' : '<p class="small muted profile-foot"><button class="link" data-act="report-profile" data-u="' + u + '">Report this profile</button></p>');
+  }
+
+  // ----- edit -----
+  function loadEditor() {
+    api('GET', '/api/profile/' + encodeURIComponent(me.username)).then(function (j) {
+      var el = document.getElementById('editbody');
+      if (el) el.innerHTML = editorHtml(j);
+    }).catch(fail);
+  }
+  function editorHtml(j) {
+    var p = j.profile;
+    var swatches = COLORS.map(function (c) {
+      return '<label class="swatch c-' + c + '"><input type="radio" name="color" value="' + c + '"' + (p.color === c ? ' checked' : '') + '><span class="sr">' + c + '</span></label>';
+    }).join('');
+    var statuses = Object.keys(STATUS_LABEL).map(function (s) {
+      return '<option value="' + s + '"' + (p.status === s ? ' selected' : '') + '>' + STATUS_LABEL[s] + '</option>';
+    }).join('');
+    var open = OPEN_TO.map(function (o) {
+      return '<label class="check"><input type="checkbox" name="openTo" value="' + o + '"' + (p.openTo.indexOf(o) > -1 ? ' checked' : '') + '> ' + o + '</label>';
+    }).join('');
+    return '<form class="card stack narrow editor" data-form="profile">' +
+      '<div class="row avatar-row"><span id="avprev">' + avatarHtml(j.name, p.color, 'lg') + '</span>' +
+      '<fieldset class="swatches"><legend>Avatar colour</legend>' + swatches + '</fieldset></div>' +
+      '<label>Display name<input id="pf-name" type="text" name="name" maxlength="24" value="' + esc(j.name) + '" required></label>' +
+      '<div class="grid2 tight"><label>Status<select name="status">' + statuses + '</select></label>' +
+      '<label>Looking since <span class="muted">(optional)</span><input type="month" name="since" min="1990-01" max="' + thisMonth() + '" value="' + esc(p.since) + '"></label></div>' +
+      '<label>The role you want<input type="text" name="headline" maxlength="60" placeholder="e.g. Junior frontend developer" value="' + esc(p.headline) + '"></label>' +
+      '<div class="grid2 tight"><label>City or area<input type="text" name="location" maxlength="40" placeholder="e.g. Chennai" value="' + esc(p.location) + '"></label>' +
+      '<fieldset><legend>Open to</legend><div class="row">' + open + '</div></fieldset></div>' +
+      '<label>Skills <span class="muted">(separate with commas, up to 8)</span><input type="text" name="skills" maxlength="230" placeholder="e.g. Excel, Customer support, React" value="' + esc(p.skills.join(', ')) + '"></label>' +
+      '<label>About you <span class="muted" id="biocount">' + p.bio.length + '/280</span><textarea id="pf-bio" name="bio" maxlength="280" placeholder="A line or two: what you did before, what you are learning, what you are hoping for.">' + esc(p.bio) + '</textarea></label>' +
+      '<label>One link <span class="muted">(LinkedIn, portfolio, GitHub…)</span><input type="url" name="link" maxlength="200" placeholder="https://" value="' + esc(p.link) + '"></label>' +
+      '<p class="muted small">Every member can see your profile. Keep your phone number, email and address out of it. Share those privately, and only with people you trust.</p>' +
+      '<div class="row"><button class="btn primary">Save profile</button><a class="btn ghost" href="#/u/' + esc(me.username) + '">Cancel</a></div></form>';
+  }
+
+  // ----- people -----
+  function loadPeople() {
+    api('GET', '/api/people').then(function (j) {
+      prof.people = Array.isArray(j.people) ? j.people : [];
+      var el = document.getElementById('peoplelist');
+      if (el) el.innerHTML = peopleHtml();
+    }).catch(fail);
+  }
+  function peopleHtml() {
+    if (!prof.people) return '<p class="muted">Loading…</p>';
+    var q = prof.query.trim().toLowerCase();
+    var list = prof.people.filter(function (p) {
+      return !q || [p.name, p.username, p.headline, p.location, p.skills.join(' ')].join(' ').toLowerCase().indexOf(q) > -1;
+    });
+    if (!list.length) return '<p class="muted">Nobody matches that yet.</p>';
+    return list.map(function (p) {
+      return '<a class="person card" href="#/u/' + esc(p.username) + '">' + avatarHtml(p.name, p.color, 'lg') +
+        '<span class="person-text"><b>' + esc(p.name) + (p.me ? ' <span class="muted">(you)</span>' : '') + '</b>' +
+        '<span class="muted small">@' + esc(p.username) + (p.location ? ' · ' + esc(p.location) : '') + '</span>' +
+        (p.headline ? '<span class="person-role">' + esc(p.headline) + '</span>' : '') +
+        statusLabel(p.status) + '</span></a>';
+    }).join('');
+  }
+
   var afterRender = {
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
@@ -1420,7 +1595,10 @@
     fun: function () {
       if (!S.bingo) { S.bingo = newBingo(0); save(); renderSection('bingo', bingoHtml()); }
       loadFun();
-    }
+    },
+    profile: loadProfile,
+    'edit-profile': loadEditor,
+    people: loadPeople
   };
 
   // ---------- wiring ----------
@@ -1429,6 +1607,7 @@
   function currentView() {
     var v = location.hash.replace(/^#\/?/, '').split('/')[0];
     if (v === 'dm') return 'chat';
+    if (v === 'u') return 'profile';
     return views[v] ? v : 'home';
   }
   function render() {
@@ -1481,6 +1660,10 @@
   });
   document.addEventListener('change', function (e) {
     if (e.target.id === 'saved') document.getElementById('codedone').disabled = !e.target.checked;
+    if (e.target.name === 'color' && document.getElementById('avprev')) {
+      var nm = document.getElementById('pf-name');
+      document.getElementById('avprev').innerHTML = avatarHtml(nm ? nm.value : me.name, e.target.value, 'lg');
+    }
   });
   document.addEventListener('input', function (e) {
     if (e.target.id === 'jobq' || e.target.id === 'jobmode') {
@@ -1489,6 +1672,14 @@
       document.getElementById('joblist').innerHTML = jobList();
     } else if (e.target.id === 'resume') {
       S.resume = e.target.value; save();
+    } else if (e.target.id === 'peopleq') {
+      prof.query = e.target.value;
+      document.getElementById('peoplelist').innerHTML = peopleHtml();
+    } else if (e.target.id === 'pf-bio') {
+      document.getElementById('biocount').textContent = e.target.value.length + '/280';
+    } else if (e.target.id === 'pf-name') {
+      var c = document.querySelector('input[name="color"]:checked');
+      document.getElementById('avprev').innerHTML = avatarHtml(e.target.value || '?', c ? c.value : 'tomato', 'lg');
     } else if (e.target.id === 'chatbox') {
       autosize(e.target);
     }

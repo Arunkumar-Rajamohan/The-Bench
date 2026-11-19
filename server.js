@@ -114,6 +114,12 @@ const SCHEMA = [
     updated INTEGER NOT NULL,
     PRIMARY KEY (day, user_id)
   )`,
+  // Profiles: one JSON blob per member, validated by cleanProfile() before it is stored.
+  `CREATE TABLE IF NOT EXISTS profiles (
+    user_id INTEGER PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -278,7 +284,20 @@ const q = {
   leaderboard: stmt(`SELECT u.name, u.username, SUM(6 - p.tries) AS points, COUNT(*) AS solved
     FROM puzzle_plays p JOIN users u ON u.id = p.user_id
     WHERE p.solved = 1 AND p.day >= ? AND p.day <= ? AND u.banned = 0
-    GROUP BY p.user_id ORDER BY points DESC, solved DESC, MIN(p.updated) ASC LIMIT 10`)
+    GROUP BY p.user_id ORDER BY points DESC, solved DESC, MIN(p.updated) ASC LIMIT 10`),
+
+  // profiles
+  profile: stmt('SELECT data, updated FROM profiles WHERE user_id = ?'),
+  saveProfile: stmt(`INSERT INTO profiles (user_id, data, updated) VALUES (?, ?, ?)
+    ON CONFLICT (user_id) DO UPDATE SET data = excluded.data, updated = excluded.updated`),
+  clearProfile: stmt('DELETE FROM profiles WHERE user_id = ?'),
+  setName: stmt('UPDATE users SET name = ? WHERE id = ?'),
+  profileStats: stmt(`SELECT
+      (SELECT COUNT(*) FROM posts WHERE user_id = ?) AS posts,
+      (SELECT COUNT(*) FROM messages WHERE user_id = ? AND channel LIKE 'qotd:%' AND deleted = 0) AS answers,
+      (SELECT COUNT(*) FROM puzzle_plays WHERE user_id = ? AND solved = 1) AS solved`),
+  people: stmt(`SELECT u.username, u.name, u.created, p.data FROM users u LEFT JOIN profiles p ON p.user_id = u.id
+    WHERE u.banned = 0 ORDER BY COALESCE(p.updated, 0) DESC, u.id DESC LIMIT 300`)
 };
 
 // ---------- helpers ----------
@@ -495,7 +514,7 @@ async function api(req, res, route) {
     const u = await q.userByName.get(username);
     if (!(await checkPassword(u, b.password))) throw new HttpError(401, 'Wrong username or password.');
     if (u.banned) throw new HttpError(403, 'This account has been suspended.');
-    return send(res, 200, { user: publicUser(u), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
+    return send(res, 200, { user: Object.assign(publicUser(u), { profileDone: await profileDone(u.id) }), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
   }
 
   // Forgot password: username + one-time recovery code -> new password.
@@ -532,7 +551,7 @@ async function api(req, res, route) {
   if (!user) throw new HttpError(401, 'Please log in.');
 
   if (method === 'GET' && route === '/me') {
-    return send(res, 200, { user: publicUser(user), data: parseData(user.data) });
+    return send(res, 200, { user: Object.assign(publicUser(user), { profileDone: await profileDone(user.id) }), data: parseData(user.data) });
   }
 
   // Account changes ask for the current password, so a borrowed logged-in device cannot take over the account.
@@ -624,7 +643,139 @@ async function api(req, res, route) {
 
   if (await chatApi(req, res, route, user)) return;
   if (await funApi(req, res, route, user)) return;
+  if (await profileApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
+}
+
+// ---------- profiles ----------
+// Visible to signed-in members only. Everything is optional except the display name.
+
+const STATUSES = ['looking', 'interviewing', 'hired', 'break'];
+const OPEN_TO = ['Remote', 'Hybrid', 'On-site'];
+const COLORS = ['tomato', 'ink', 'gold', 'sage', 'blue', 'plum'];
+const blankProfile = () => ({ status: 'looking', headline: '', since: '', location: '', openTo: [], skills: [], bio: '', link: '', color: 'tomato' });
+
+function line(v, max, label) {
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v !== 'string') throw new HttpError(400, label + ' should be text.');
+  const t = v.replace(/\s+/g, ' ').trim();
+  if (t.length > max) throw new HttpError(400, label + ' is too long (max ' + max + ' characters).');
+  return t;
+}
+
+function cleanProfile(b) {
+  const p = blankProfile();
+  p.status = STATUSES.includes(b.status) ? b.status : 'looking';
+  p.headline = line(b.headline, 60, 'The role you want');
+  p.location = line(b.location, 40, 'Location');
+  if (typeof b.bio === 'string') {
+    p.bio = b.bio.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    if (p.bio.length > 280) throw new HttpError(400, 'About you is too long (max 280 characters).');
+  }
+  if (b.since) {
+    const thisMonth = dayKey().slice(0, 7);
+    if (typeof b.since !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.since) || b.since < '1990-01' || b.since > thisMonth) {
+      throw new HttpError(400, 'Pick a month between 1990 and now for when you started looking.');
+    }
+    p.since = b.since;
+  }
+  p.openTo = OPEN_TO.filter((o) => Array.isArray(b.openTo) && b.openTo.includes(o));
+  const skills = Array.isArray(b.skills) ? b.skills : typeof b.skills === 'string' ? b.skills.split(',') : [];
+  const seen = new Set();
+  for (const s of skills) {
+    if (typeof s !== 'string') continue;
+    const t = s.replace(/\s+/g, ' ').trim();
+    if (!t || seen.has(t.toLowerCase())) continue;
+    if (t.length > 24) throw new HttpError(400, 'Each skill can be up to 24 characters ("' + t.slice(0, 24) + '…").');
+    seen.add(t.toLowerCase());
+    p.skills.push(t);
+  }
+  if (p.skills.length > 8) throw new HttpError(400, 'Up to 8 skills, please.');
+  if (b.link) {
+    let url;
+    try { url = new URL(String(b.link).trim()); } catch (e) { throw new HttpError(400, 'That link does not look right. Start it with https://'); }
+    if (!/^https?:$/.test(url.protocol) || !url.hostname.includes('.') || url.username || url.password) {
+      throw new HttpError(400, 'Links must be normal web addresses starting with https://');
+    }
+    if (url.href.length > 200) throw new HttpError(400, 'That link is too long.');
+    p.link = url.href;
+  }
+  p.color = COLORS.includes(b.color) ? b.color : 'tomato';
+  return p;
+}
+
+// Read stored JSON defensively: anything unexpected falls back to the blank value.
+function readProfile(row) {
+  const p = blankProfile();
+  if (!row || !row.data) return p;
+  let d;
+  try { d = JSON.parse(row.data); } catch (e) { return p; }
+  if (!d || typeof d !== 'object') return p;
+  for (const k of Object.keys(p)) {
+    if (Array.isArray(p[k]) ? Array.isArray(d[k]) : typeof d[k] === typeof p[k]) p[k] = d[k];
+  }
+  return p;
+}
+const isEmptyProfile = (p) => !p.headline && !p.bio && !p.location && !p.skills.length && !p.link;
+const profileDone = async (userId) => !isEmptyProfile(readProfile(await q.profile.get(userId)));
+
+async function profileApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+
+  if (method === 'GET' && route === '/people') {
+    const people = (await q.people.all()).map((r) => {
+      const p = readProfile(r);
+      return { username: r.username, name: r.name, joined: r.created, headline: p.headline, location: p.location,
+        status: p.status, color: p.color, skills: p.skills, me: r.username === user.username };
+    });
+    send(res, 200, { people });
+    return true;
+  }
+
+  if (method === 'PUT' && route === '/profile') {
+    limit('profile:' + user.id, 20, 10 * 60000);
+    const b = await readBody(req);
+    const name = text(b.name, 24, 'Name');
+    const p = cleanProfile(b);
+    await q.setName.run(name, user.id);
+    await q.saveProfile.run(user.id, JSON.stringify(p), Date.now());
+    send(res, 200, { name, profile: p });
+    return true;
+  }
+
+  if ((m = /^\/profile\/([a-z0-9_]{3,20})(\/report)?$/.exec(route))) {
+    const u = await q.userByName.get(m[1]);
+    if (!u || u.banned) throw new HttpError(404, 'That person is not here.');
+    const p = readProfile(await q.profile.get(u.id));
+
+    if (method === 'GET' && !m[2]) {
+      const s = await q.profileStats.get(u.id, u.id, u.id);
+      send(res, 200, {
+        username: u.username, name: u.name, joined: u.created, profile: p, me: u.id === user.id,
+        blockedByMe: u.id !== user.id && !!(await q.isBlocked.get(user.id, u.id)),
+        stats: { posts: s.posts, answers: s.answers, solved: s.solved }
+      });
+      return true;
+    }
+
+    if (method === 'POST' && m[2]) {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (u.id === user.id) throw new HttpError(400, 'You cannot report your own profile.');
+      if (isEmptyProfile(p)) throw new HttpError(400, 'This profile is empty, so there is nothing to report.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      // Snapshot what the profile said right now, so moderators see exactly what was reported.
+      const snapshot = [u.name, p.headline && 'Looking for: ' + p.headline, p.location, p.bio,
+        p.skills.length && 'Skills: ' + p.skills.join(', '), p.link].filter(Boolean).join('\n');
+      const info = await q.addMsg.run('profile:' + u.id, u.id, snapshot, Date.now());
+      await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ---------- fun tab: question of the day + daily word puzzle ----------
@@ -795,7 +946,8 @@ async function peerByName(name, me) {
   if (u.id === me.id) throw new HttpError(400, 'That is you!');
   return u;
 }
-const isPublicChannel = (channel) => channel.startsWith('room:') || channel.startsWith('qotd:');
+// 'profile:<id>' messages are snapshots of a reported profile: never listed anywhere, only shown to moderators.
+const isPublicChannel = (channel) => channel.startsWith('room:') || channel.startsWith('qotd:') || channel.startsWith('profile:');
 // Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
   if (isPublicChannel(channel)) return true;
@@ -814,7 +966,9 @@ async function broadcastDelete(channel, id) {
 }
 async function removeMessage(m) {
   await q.delMsg.run(m.id);
-  await broadcastDelete(m.channel, m.id);
+  // Removing a reported profile snapshot clears that member's profile (their name and account stay).
+  if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
+  else await broadcastDelete(m.channel, m.id);
 }
 
 async function chatApi(req, res, route, user) {
@@ -934,7 +1088,8 @@ async function chatApi(req, res, route, user) {
       const reports = (await q.openReports.all()).map((r) => ({
         id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted,
         where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5)
-          : r.channel.startsWith('qotd:') ? 'Question of the Day' : 'a private message',
+          : r.channel.startsWith('qotd:') ? 'Question of the Day'
+          : r.channel.startsWith('profile:') ? 'a profile' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });

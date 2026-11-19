@@ -51,6 +51,7 @@
     settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>',
     phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     download: '<path d="M12 4v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>',
+    mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -135,7 +136,8 @@
       resume: '',
       practice: [],
       bingo: null, // made the first time the Fun tab opens
-      cv: null // resume builder, made the first time it opens
+      cv: null, // resume builder, made the first time it opens
+      cl: null // cover letter helper, made the first time it opens
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -147,6 +149,7 @@
     if (typeof raw.resume === 'string') b.resume = raw.resume;
     b.bingo = cleanBingo(raw.bingo);
     b.cv = cleanCv(raw.cv);
+    b.cl = cleanCl(raw.cl);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -360,9 +363,20 @@
       return head('Resume builder', 'Fill it in once, pick a look, and download a clean PDF. It saves privately to your account as you type.') +
         '<div class="row cv-actions"><button class="btn primary" data-act="cv-print">' + ico('download') + 'Download PDF</button>' +
         '<button class="btn ghost" data-act="cv-check">Check it with the resume checker</button>' +
+        '<a class="btn ghost" href="#/cover">' + ico('mail') + 'Write a cover letter</a>' +
         '<span class="muted small">In the print window, choose “Save as PDF”.</span></div>' +
         '<div class="cv-layout"><div id="cveditor">' + (S.cv ? cvEditor() : '<p class="muted">Getting your details…</p>') + '</div>' +
         '<div class="cv-preview-wrap"><p class="muted small cv-preview-label">Live preview</p><div id="cvpreview">' + (S.cv ? cvPreview() : '') + '</div></div></div>';
+    },
+
+    cover: function () {
+      var ready = S.cl && S.cv;
+      return head('Cover letter helper', 'Answer a few questions and get a letter built from your resume. Paste the job post to see which key words to mention.') +
+        '<div class="row cv-actions"><button class="btn primary" data-act="cl-print">' + ico('download') + 'Download PDF</button>' +
+        '<button class="btn ghost" data-act="cl-copy">Copy the text</button>' +
+        '<span class="muted small">In the print window, choose “Save as PDF”.</span></div>' +
+        '<div class="cv-layout"><div id="cleditor">' + (ready ? clEditor() : '<p class="muted">Getting your details…</p>') + '</div>' +
+        '<div class="cv-preview-wrap"><p class="muted small cv-preview-label">Live preview</p><div id="clpreview">' + (ready ? clPreview() : '') + '</div></div></div>';
     },
 
     buddy: function () {
@@ -439,7 +453,7 @@
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
       return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
-        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a></span></p>' +
+        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a></span></p>' +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -990,6 +1004,33 @@
       return false;
     },
     'cv-print': function () { window.print(); return false; },
+    'cl-tone': function (d) { S.cl.tone = d.t; save(); refreshCl(true); return false; },
+    'cl-edit': function () {
+      S.cl.custom = clGenerated();
+      save();
+      refreshCl(true);
+      var box = document.getElementById('cl-custom');
+      if (box) box.focus();
+      return false;
+    },
+    'cl-reset': function () {
+      if (!window.confirm('Go back to the letter built from the form? Your own edits to the wording will be lost.')) return false;
+      S.cl.custom = '';
+      save();
+      refreshCl(true);
+      return false;
+    },
+    'cl-print': function () { window.print(); return false; },
+    'cl-copy': function () {
+      var text = clText();
+      var done = function () { toast('Letter copied. Paste it into the application or an email.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { toast('Could not copy. Select the text in the preview instead.'); });
+      } else {
+        toast('Copying is blocked here. Select the text in the preview instead.');
+      }
+      return false;
+    },
     'cv-check': function () {
       S.resume = cvText();
       ui.report = analyze(S.resume);
@@ -2166,6 +2207,7 @@
       '<div class="ab-links">' + link('#/people', 'users', 'People') + link('#/buddy', 'buddy', 'Buddy') + link('#/account', 'settings', 'Account') +
       (canInstall() ? '<button type="button" class="ql" data-act="install-app">' + ico('phone') + '<span>Install app</span></button>' : '') +
       '<a class="ql" href="#/resume">' + ico('feed') + '<span>Resume</span></a>' +
+      '<a class="ql" href="#/cover">' + ico('mail') + '<span>Cover letter</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -2362,6 +2404,203 @@
     if (pv) pv.innerHTML = cvPreview();
   }
 
+  // ---------- cover letter helper ----------
+  // Stored privately as S.cl. The letter is built from a few answers plus your resume (S.cv); you can then take over
+  // the wording yourself (S.cl.custom). "Download PDF" uses the same print trick as the resume builder.
+  var CL_TONES = [['warm', 'Friendly'], ['formal', 'Formal'], ['short', 'Short']];
+  var CL_FIELDS = ['company', 'role', 'manager', 'source', 'why', 'highlight', 'post', 'custom'];
+  var CL_STOP = {};
+  ('the and for with you your our ours are will have has had that this these those from they them their what who whom how all any can able about into such ' +
+    'more most other also than then its it\'s we us as an at by of on or to in is be been being if not but do does did should would could must may might ' +
+    'year years experience experienced role roles team teams work working company companies candidate candidates job jobs position positions looking ' +
+    'strong good great excellent ability abilities skills skill knowledge including include includes etc well new across within responsibilities ' +
+    'responsibility requirements requirement required preferred qualifications qualification plus like help join day days time based using use make ensure ' +
+    'related relevant opportunity opportunities per one two three four five every each both where when while which without minimum least high highly level ' +
+    'equal employer apply applicants application applications please environment provide providing location full part fast paced proven demonstrated ' +
+    'understanding way ways get got want need needs needed through over under out who\'s you\'ll we\'re you\'re we\'ll there here very just only own same ' +
+    'some many much who what why want looking seeking hiring hire run ideal ideally key core around along among upon via end per day-to-day hands-on 100 able')
+    .split(' ').forEach(function (w) { CL_STOP[w] = 1; });
+
+  function blankCl() { return { tone: 'warm', company: '', role: '', manager: '', source: '', why: '', highlight: '', post: '', custom: '' }; }
+  function cleanCl(raw) {
+    if (!isObj(raw)) return null;
+    var b = blankCl();
+    if (typeof raw.tone === 'string') b.tone = raw.tone;
+    CL_FIELDS.forEach(function (k) { if (typeof raw[k] === 'string') b[k] = raw[k].slice(0, k === 'post' ? 8000 : k === 'custom' ? 6000 : 1000); });
+    if (!CL_TONES.some(function (t) { return t[0] === b.tone; })) b.tone = 'warm';
+    return b;
+  }
+  function trimDot(s) { return String(s || '').trim().replace(/[.!\s]+$/, ''); }
+  // "Resolved 60+ queries" -> "resolved 60+ queries", but leave "SQL" or "iOS" alone.
+  function lowerFirst(s) { s = String(s || ''); return /^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+  // For titles and skills: "Customer support" -> "customer support", but keep "Senior Data Analyst" or "Zendesk" as typed.
+  function lowerPhrase(s, single) {
+    s = trimDot(s);
+    var w = s.split(/\s+/);
+    if (w.length > 1 ? /^[a-z]/.test(w[1]) : single) return lowerFirst(s);
+    return s;
+  }
+  function joinAnd(a) { return a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]; }
+  function hasWord(hay, needle) {
+    var n = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + n + '($|[^a-z0-9])').test(hay);
+  }
+  // Resume skills the job post asks for (or your top three, when there is no post yet).
+  function clSkills() {
+    var all = cvList(S.cv.skills), low = S.cl.post.toLowerCase();
+    var hit = low.trim() ? all.filter(function (s) { return hasWord(low, s.toLowerCase()); }) : [];
+    return hit.length ? { list: hit.slice(0, 4), matched: true } : { list: all.slice(0, 3), matched: false };
+  }
+  function clName() { return S.cv.name || me.name; }
+  // The generated letter, as plain text. Gaps you still need to fill show as [square brackets].
+  function clGenerated() {
+    var c = S.cl, cv = S.cv, t = c.tone;
+    var gap = function (v, label) { return trimDot(v) || '[' + label + ']'; };
+    var company = gap(c.company, 'company'), role = gap(c.role, 'job title'), src = trimDot(c.source);
+    var paras = [];
+
+    var open = t === 'formal' ? 'I am writing to apply for the position of ' + role + ' at ' + company + (src ? ', which I learned about via ' + src : '') + '.'
+      : t === 'short' ? 'I\'d like to apply for the ' + role + ' role at ' + company + (src ? ' (found via ' + src + ')' : '') + '.'
+      : 'I\'m excited to apply for the ' + role + ' role at ' + company + (src ? ', which I came across via ' + src : '') + '.';
+    var hl = trimDot(cv.headline);
+    if (hl && t !== 'short') {
+      var who = (/^[aeiou]/i.test(hl) ? 'an ' : 'a ') + lowerPhrase(hl, true) + (cv.city ? ' based in ' + trimDot(cv.city) : '');
+      open += t === 'formal' ? ' I am ' + who + ', and I believe my background is a strong match for this role.'
+        : ' I\'m ' + who + ', and this role feels like a great fit.';
+    }
+    paras.push(open);
+
+    var exp = cv.experience.filter(function (e) { return e.role || e.company; })[0];
+    var edu = cv.education.filter(function (e) { return e.degree || e.school; })[0];
+    var story;
+    if (exp) {
+      var current = !exp.end || /present|now|current|till date|ongoing/i.test(exp.end);
+      var as = (exp.role ? (/^[aeiou]/i.test(exp.role) ? 'an ' : 'a ') + lowerPhrase(exp.role, true) : 'part of the team') + (exp.company ? ' at ' + trimDot(exp.company) : '');
+      var b = cvLines(exp.bullets).slice(0, 2).map(function (x) { return lowerFirst(trimDot(x)); });
+      story = b.length ? (current ? 'In my current role as ' : 'Most recently, as ') + as + ', I ' + b[0] + '.' + (b[1] ? ' I also ' + b[1] + '.' : '')
+        : (current ? 'I currently work as ' : 'Most recently, I worked as ') + as + '.';
+    } else if (edu) {
+      story = 'I recently completed ' + (edu.degree ? 'my ' + trimDot(edu.degree) : 'my studies') + (edu.school ? ' at ' + trimDot(edu.school) : '') + '.';
+    } else {
+      story = '[One or two lines about your most relevant experience]';
+    }
+    if (trimDot(c.highlight)) {
+      var h = trimDot(c.highlight);
+      story += t === 'formal' ? ' One achievement I am particularly proud of: ' + lowerFirst(h) + '.'
+        : t === 'short' ? ' ' + h.charAt(0).toUpperCase() + h.slice(1) + '.'
+        : ' One thing I\'m especially proud of: ' + lowerFirst(h) + '.';
+    }
+    var sk = clSkills(), skills = '', skl = sk.list.map(function (x) { return lowerPhrase(x, false); });
+    if (sk.list.length) {
+      skills = t === 'formal' ? 'I would bring strong skills in ' + joinAnd(skl) + (sk.matched ? ', each of which your job description highlights' : '') + '.'
+        : t === 'short' ? (sk.matched ? 'Skills you asked for that I have: ' : 'Key skills: ') + joinAnd(sk.list) + '.'
+        : 'I\'d bring hands-on experience with ' + joinAnd(skl) + (sk.matched ? ', all of which your posting asks for' : '') + '.';
+    }
+    if (t === 'short') paras.push(story + (skills ? ' ' + skills : ''));
+    else { paras.push(story); if (skills) paras.push(skills); }
+
+    var why = trimDot(c.why) ? lowerFirst(trimDot(c.why)) : '[your reason, in one line]';
+    var whyLine = t === 'formal' ? 'I am keen to join ' + company + ' because ' + why + '.'
+      : t === 'short' ? 'I want to join ' + company + ' because ' + why + '.'
+      : 'I\'d love to join ' + company + ' because ' + why + '.';
+    if (t === 'short') paras[paras.length - 1] += ' ' + whyLine; else paras.push(whyLine);
+
+    paras.push(t === 'formal' ? 'Thank you for considering my application. I would welcome the opportunity to discuss how my experience can contribute to ' + company + '.'
+      : t === 'short' ? 'Thanks for reading. I\'d be glad to talk whenever it suits you.'
+      : 'I\'d love to chat about how I can help ' + company + '. Thank you for your time, and I look forward to hearing from you.');
+
+    var greet = 'Dear ' + (trimDot(c.manager) || (t === 'formal' ? 'Hiring Manager' : 'Hiring Team')) + ',';
+    var sign = t === 'formal' ? 'Yours sincerely,' : t === 'short' ? 'Best,' : 'Warm regards,';
+    return greet + '\n\n' + paras.join('\n\n') + '\n\n' + sign + '\n' + clName();
+  }
+  function clText() { return S.cl.custom.trim() ? S.cl.custom : clGenerated(); }
+
+  // Key words from the pasted job post, and whether your resume or letter already uses them.
+  function clKeywords() {
+    var low = S.cl.post.toLowerCase();
+    if (!low.trim()) return [];
+    var counts = {}, order = [];
+    (low.match(/[a-z][a-z0-9+#.'’-]*/g) || []).forEach(function (w) {
+      w = w.replace(/[.'’-]+$/, '').replace(/['’]s$/, '');
+      if (w.length < 3 || CL_STOP[w]) return;
+      if (!counts[w]) { counts[w] = 0; order.push(w); }
+      counts[w]++;
+    });
+    var firm = S.cl.company.toLowerCase();
+    var words = order.filter(function (w) { return !hasWord(firm, w); }).sort(function (a, b) { return counts[b] - counts[a]; });
+    var phrases = cvList(S.cv.skills).map(function (s) { return s.toLowerCase(); }).filter(function (s) { return s.length > 1 && hasWord(low, s); });
+    var out = [];
+    phrases.concat(words).forEach(function (w) {
+      if (out.length < 14 && out.indexOf(w) === -1 && !out.some(function (p) { return p.indexOf(' ') > -1 && hasWord(p, w); })) out.push(w);
+    });
+    var mine = (cvText() + '\n' + clText()).toLowerCase();
+    return out.map(function (w) { return { w: w, ok: hasWord(mine, w) }; });
+  }
+  function clKeywordsHtml() {
+    var k = clKeywords();
+    if (!k.length) return '<p class="muted small">Paste the job post above and the key words it repeats will show here.</p>';
+    var got = k.filter(function (x) { return x.ok; }).length;
+    return '<p class="small"><b>' + got + ' of ' + k.length + '</b> key words from the post appear in your resume or letter.' +
+      (got < k.length ? ' Work the grey ones in where they are true for you.' : ' Nicely matched.') + '</p>' +
+      '<div class="kw-list">' + k.map(function (x) {
+        return '<span class="kw' + (x.ok ? ' yes' : '') + '">' + (x.ok ? ico('check') : '') + esc(x.w) + '</span>';
+      }).join('') + '</div>';
+  }
+
+  function clField(key, label, opts) {
+    opts = opts || {};
+    var v = S.cl[key] || '';
+    var attrs = ' id="cl-' + key + '" data-cl="' + key + '" maxlength="' + (opts.max || 200) + '" placeholder="' + esc(opts.ph || '') + '"';
+    return '<label class="cvf' + (opts.wide ? ' wide' : '') + '"><span>' + label + (opts.hint ? ' <span class="muted">' + opts.hint + '</span>' : '') + '</span>' +
+      (opts.area ? '<textarea' + attrs + ' rows="' + (opts.rows || 3) + '">' + esc(v) + '</textarea>' : '<input type="text"' + attrs + ' value="' + esc(v) + '">') + '</label>';
+  }
+  function clEditor() {
+    var c = S.cl;
+    var tones = '<div class="chips">' + CL_TONES.map(function (t) {
+      return '<button type="button" class="chip' + (c.tone === t[0] ? ' on' : '') + '" data-act="cl-tone" data-t="' + t[0] + '" aria-pressed="' + (c.tone === t[0]) + '">' + t[1] + '</button>';
+    }).join('') + '</div>';
+    var apps = S.apps.filter(function (a) { return a.company || a.title; });
+    var pick = apps.length ? '<label class="cvf wide"><span>Fill in from your tracker</span><select id="cl-pick"><option value="">Choose a job you saved…</option>' +
+      apps.slice().reverse().map(function (a) { return '<option value="' + esc(a.id) + '">' + esc([a.company, a.title].filter(Boolean).join(' · ')) + '</option>'; }).join('') +
+      '</select></label>' : '';
+    var custom = c.custom.trim();
+    return '<div class="card stack cv-editor">' +
+      '<section class="cv-sec"><h3>Tone</h3>' + tones + (custom ? '<p class="muted small">Tone only changes the letter built from the form. You are editing the wording yourself right now.</p>' : '') + '</section>' +
+      '<section class="cv-sec"><h3>The job</h3><div class="cv-grid">' + pick +
+        clField('company', 'Company', { ph: 'e.g. Freshworks' }) + clField('role', 'Job title', { ph: 'e.g. Customer success associate' }) +
+        clField('manager', 'Hiring manager', { hint: '(if you know the name)', ph: 'e.g. Ms. Priya Raman' }) + clField('source', 'Where you saw it', { ph: 'e.g. LinkedIn, a friend' }) + '</div></section>' +
+      '<section class="cv-sec"><h3>The job post</h3>' + clField('post', 'Paste the job post', { area: 1, wide: 1, rows: 6, max: 8000, hint: '(optional, stays private)', ph: 'Paste the full job description here to match your skills against it.' }) +
+        '<div id="clkeys" class="cl-keys">' + clKeywordsHtml() + '</div></section>' +
+      '<section class="cv-sec"><h3>Your pitch</h3><div class="cv-grid">' +
+        clField('highlight', 'Something you are proud of', { area: 1, wide: 1, rows: 2, max: 400, hint: '(one result, with a number if you can)', ph: 'e.g. Cut average resolution time by 30% by writing a shared answer library' }) +
+        clField('why', 'Why this company?', { area: 1, wide: 1, rows: 2, max: 400, hint: '(finish the line “I want to join because…”)', ph: 'e.g. your product helps small shops grow, and I want to support those customers' }) + '</div>' +
+        '<p class="muted small">Your name, contact details, experience and skills come from your resume. <a href="#/resume">Edit your resume</a></p></section>' +
+      '<section class="cv-sec"><h3>Wording</h3>' + (custom
+        ? clField('custom', 'Your letter', { area: 1, wide: 1, rows: 18, max: 6000 }) +
+          '<div class="row"><button type="button" class="btn tiny ghost" data-act="cl-reset">Go back to the letter built from the form</button></div>'
+        : '<p class="muted small">Happy with the draft? Copy or download it. Want to change a sentence? Take over the wording.</p>' +
+          '<div class="row"><button type="button" class="btn tiny ghost" data-act="cl-edit">Edit the wording myself</button></div>') + '</section></div>';
+  }
+  function clPreview() {
+    var cv = S.cv, c = S.cl;
+    var fmt = function (s) { return esc(s).replace(/\[[^\]\n]{1,80}\]/g, function (m) { return '<mark class="clp-gap">' + m + '</mark>'; }).replace(/\n/g, '<br>'); };
+    var contact = [cv.email, cv.phone, cv.city].concat(cvList(cv.links)).filter(Boolean).map(esc).join(' <span class="cvp-dot">·</span> ');
+    var date = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+    var to = [trimDot(c.manager), trimDot(c.company)].filter(Boolean).map(esc).join('<br>');
+    var body = clText().split(/\n\s*\n/).map(function (p) { return p.trim() ? '<p>' + fmt(p.trim()) + '</p>' : ''; }).join('');
+    return '<article class="cv cv-letter" id="clpaper"><header class="cvp-head"><h1>' + esc(clName() || 'Your name') + '</h1>' +
+      (contact ? '<p class="cvp-contact">' + contact + '</p>' : '') + '</header>' +
+      '<p class="clp-date">' + esc(date) + '</p>' + (to ? '<p class="clp-to">' + to + '</p>' : '') +
+      '<div class="clp-body">' + body + '</div></article>';
+  }
+  function refreshCl(editorToo) {
+    if (editorToo) renderSection('cleditor', clEditor());
+    var pv = document.getElementById('clpreview');
+    if (pv) pv.innerHTML = clPreview();
+    var kw = document.getElementById('clkeys');
+    if (kw) kw.innerHTML = clKeywordsHtml();
+  }
+
   var afterRender = {
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
@@ -2386,7 +2625,14 @@
     'edit-profile': loadEditor,
     people: loadPeople,
     buddy: function () { loadBuddy(); loadSuggestions(); },
-    resume: function () { if (!S.cv) ensureCv().then(function () { if (currentView() === 'resume') render(); }); }
+    resume: function () { if (!S.cv) ensureCv().then(function () { if (currentView() === 'resume') render(); }); },
+    cover: function () {
+      var fresh = !S.cl;
+      if (fresh) { S.cl = blankCl(); save(); }
+      (S.cv ? Promise.resolve() : ensureCv()).then(function () {
+        if (currentView() === 'cover' && !document.getElementById('clpaper')) render();
+      });
+    }
   };
 
   // ---------- splash ----------
@@ -2485,6 +2731,15 @@
     if (ch) { markLatest(ch); refreshChatList(); updateBadge(); }
   });
   document.addEventListener('change', function (e) {
+    if (e.target.id === 'cl-pick' && e.target.value && S.cl) {
+      var app = find(S.apps, e.target.value);
+      if (app) {
+        S.cl.company = app.company || ''; S.cl.role = app.title || ''; save(); refreshCl(true);
+        // renderSection keeps what was typed in the boxes, so put the picked job in them directly.
+        ['company', 'role'].forEach(function (k) { var el = document.getElementById('cl-' + k); if (el) el.value = S.cl[k]; });
+      }
+      return;
+    }
     if (e.target.id === 'saved') document.getElementById('codedone').disabled = !e.target.checked;
     if (e.target.name === 'color' && document.getElementById('avprev')) {
       var nm = document.getElementById('pf-name');
@@ -2499,6 +2754,10 @@
       save();
       var pv = document.getElementById('cvpreview');
       if (pv) pv.innerHTML = cvPreview();
+    } else if (e.target.dataset && e.target.dataset.cl && S.cl && S.cv) {
+      S.cl[e.target.dataset.cl] = e.target.value;
+      save();
+      refreshCl(false);
     } else if (e.target.id === 'peopleq') {
       prof.query = e.target.value;
       document.getElementById('peoplelist').innerHTML = peopleHtml();

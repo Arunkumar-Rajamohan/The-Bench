@@ -749,24 +749,39 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 /* Print = "Download PDF": only the resume, on A4, nothing else on the page. */
 @media print {
   @page { size: A4; margin: 14mm; }
-  body[data-view="resume"] { background: #fff !important; }
-  body[data-view="resume"] .side, body[data-view="resume"] #toast, body[data-view="resume"] #splash, body[data-view="resume"] .confetti { display: none !important; }
-  body[data-view="resume"] .shell { display: block !important; }
-  body[data-view="resume"] main { padding: 0 !important; margin: 0 !important; max-width: none !important; }
-  body[data-view="resume"] main > *:not(.cv-layout) { display: none !important; }
-  body[data-view="resume"] main.enter > * { animation: none !important; }
-  body[data-view="resume"] .cv-layout { display: block !important; }
-  body[data-view="resume"] #cveditor, body[data-view="resume"] .cv-preview-label { display: none !important; }
-  body[data-view="resume"] .cv-preview-wrap { position: static !important; }
-  body[data-view="resume"] .cv { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; padding: 0 !important; min-height: 0 !important; }
-  body[data-view="resume"] .cv-modern { border-left: 0 !important; }
-  body[data-view="resume"] .cvp-empty { display: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) { background: #fff !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .side, body:is([data-view="resume"], [data-view="cover"]) #toast, body:is([data-view="resume"], [data-view="cover"]) #splash, body:is([data-view="resume"], [data-view="cover"]) .confetti { display: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .shell { display: block !important; }
+  body:is([data-view="resume"], [data-view="cover"]) main { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) main > *:not(.cv-layout) { display: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) main.enter > * { animation: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv-layout { display: block !important; }
+  body:is([data-view="resume"], [data-view="cover"]) #cveditor, body:is([data-view="resume"], [data-view="cover"]) #cleditor, body:is([data-view="resume"], [data-view="cover"]) .cv-preview-label { display: none !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv-preview-wrap { position: static !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; padding: 0 !important; min-height: 0 !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv-modern { border-left: 0 !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cvp-empty { display: none !important; }
   /* An A4 page is narrower than the phone breakpoint: keep the desktop resume layout when printing. */
-  body[data-view="resume"] .cv { font-size: 13.5px !important; }
-  body[data-view="resume"] .cv-compact { font-size: 12.5px !important; }
-  body[data-view="resume"] .cvp-cols { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) !important; }
-  body[data-view="resume"] .cvp-cols aside { border-left: 1px solid var(--cv-line) !important; padding-left: 16px !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv { font-size: 13.5px !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cv-compact { font-size: 12.5px !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cvp-cols { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) !important; }
+  body:is([data-view="resume"], [data-view="cover"]) .cvp-cols aside { border-left: 1px solid var(--cv-line) !important; padding-left: 16px !important; }
 }
+
+/* Cover letter helper */
+.cv-letter { font-size: 14px; line-height: 1.6; }
+.cv-letter .cvp-head { padding-bottom: 12px; border-bottom: 1px solid var(--cv-line); }
+.cv-letter .cvp-head h1 { font-size: 22px; }
+.clp-date, .clp-to { color: var(--cv-soft); margin-bottom: 14px !important; }
+.clp-body p { margin: 0 0 12px; }
+.clp-body p:last-child { margin-bottom: 0; }
+mark.clp-gap { background: #fbe3c4; color: var(--cv-ink); border-radius: 3px; padding: 0 3px; }
+.cl-keys { display: grid; gap: 8px; }
+.kw-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.kw { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--paper); }
+.kw.yes { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, transparent); background: color-mix(in srgb, var(--good) 10%, var(--paper)); }
+.kw .ico { width: 12px; height: 12px; }
+.cvf select { width: 100%; }
 
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }

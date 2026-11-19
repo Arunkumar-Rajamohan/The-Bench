@@ -137,6 +137,26 @@ const SCHEMA = [
     user_id INTEGER NOT NULL,
     PRIMARY KEY (lead_id, user_id)
   )`,
+  // Referral board: members who can refer people into a company (kind 'refer') or know people there (kind 'contact').
+  `CREATE TABLE IF NOT EXISTS referral_offers (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    company TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'refer',
+    roles TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    open INTEGER NOT NULL DEFAULT 1,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  // Who asked which offer, and when (one ask per offer per person every 30 days).
+  `CREATE TABLE IF NOT EXISTS referral_asks (
+    offer_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY (offer_id, user_id)
+  )`,
   // Saved job searches ("alerts"). last_seen = when the member last looked at the results.
   `CREATE TABLE IF NOT EXISTS job_alerts (
     id INTEGER PRIMARY KEY,
@@ -373,6 +393,22 @@ const q = {
   hasLeadVote: stmt('SELECT 1 AS x FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
   addLeadVote: stmt('INSERT OR IGNORE INTO lead_votes (lead_id, user_id) VALUES (?, ?)'),
   delLeadVote: stmt('DELETE FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
+  refOffers: stmt(`SELECT o.id, o.user_id, o.company, o.kind, o.roles, o.note, o.open, o.updated, u.name, u.username,
+      (SELECT COUNT(*) FROM referral_asks a WHERE a.offer_id = o.id AND a.created > ?) AS asks,
+      (SELECT a.created FROM referral_asks a WHERE a.offer_id = o.id AND a.user_id = ?) AS my_ask
+    FROM referral_offers o JOIN users u ON u.id = o.user_id
+    WHERE o.deleted = 0 AND u.banned = 0
+      AND o.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+      AND o.user_id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = ?)
+    ORDER BY o.open DESC, o.updated DESC LIMIT 300`),
+  refOffer: stmt('SELECT * FROM referral_offers WHERE id = ?'),
+  refOffersOf: stmt('SELECT id, company, kind, open FROM referral_offers WHERE user_id = ? AND deleted = 0 ORDER BY updated DESC'),
+  addRefOffer: stmt('INSERT INTO referral_offers (user_id, company, kind, roles, note, open, created, updated) VALUES (?, ?, ?, ?, ?, 1, ?, ?)'),
+  setRefOpen: stmt('UPDATE referral_offers SET open = ?, updated = ? WHERE id = ?'),
+  delRefOffer: stmt('UPDATE referral_offers SET deleted = 1 WHERE id = ?'),
+  refAsk: stmt('SELECT created FROM referral_asks WHERE offer_id = ? AND user_id = ?'),
+  saveRefAsk: stmt(`INSERT INTO referral_asks (offer_id, user_id, created) VALUES (?, ?, ?)
+    ON CONFLICT (offer_id, user_id) DO UPDATE SET created = excluded.created`),
   alertsFor: stmt('SELECT * FROM job_alerts WHERE user_id = ? ORDER BY id'),
   alert: stmt('SELECT * FROM job_alerts WHERE id = ?'),
   addAlert: stmt('INSERT INTO job_alerts (user_id, what, place, remote, field, created, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'),
@@ -758,6 +794,7 @@ async function api(req, res, route) {
   if (await funApi(req, res, route, user)) return;
   if (await profileApi(req, res, route, user)) return;
   if (await jobsApi(req, res, route, user)) return;
+  if (await referralApi(req, res, route, user)) return;
   if (await buddyApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
 }
@@ -1129,6 +1166,108 @@ async function jobsApi(req, res, route, user) {
   return false;
 }
 
+// ---------- referral board ----------
+// Members say where they can refer people (or know people). Asking sends the offerer a private message.
+const REF_KINDS = ['refer', 'contact'];
+const MAX_REF_OFFERS = 8;
+const REF_ASK_DAYS = 30;
+// Referrals here are favours between members. Anything that smells of charging for one is refused.
+const PAID_REFERRAL = /(₹|\brs\.?\s*\d|\binr\s*\d|\bfees?\b|\bcharges?\b|\bpaid referral|\bpay (me|us|first|upfront|for|before))/i;
+
+function refView(r, me) {
+  return {
+    id: r.id, company: r.company, kind: r.kind, roles: r.roles, note: r.note, open: !!r.open, t: r.updated,
+    name: r.name, username: r.username, own: r.user_id === me.id, asks: r.asks || 0, myAsk: r.my_ask || null
+  };
+}
+
+async function referralApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+
+  if (method === 'GET' && route === '/referrals') {
+    const rows = await q.refOffers.all(Date.now() - REF_ASK_DAYS * 864e5, user.id, user.id, user.id);
+    send(res, 200, { offers: rows.map((r) => refView(r, user)), maxOffers: MAX_REF_OFFERS, askDays: REF_ASK_DAYS });
+    return true;
+  }
+
+  if (method === 'POST' && route === '/referrals') {
+    limit('write:' + user.id, 20, 60000);
+    const b = await readBody(req);
+    const company = line(b.company, 60, 'Company');
+    if (!company) throw new HttpError(400, 'Which company can you help with?');
+    const kind = REF_KINDS.includes(b.kind) ? b.kind : 'refer';
+    const roles = line(b.roles, 120, 'Roles');
+    const note = line(b.note, 280, 'Note');
+    if (PAID_REFERRAL.test(company + ' ' + roles + ' ' + note)) {
+      throw new HttpError(400, 'Referrals on The Bench are always free. Please remove anything about fees or payment.');
+    }
+    const mine = await q.refOffersOf.all(user.id);
+    if (mine.some((o) => o.company.toLowerCase() === company.toLowerCase())) throw new HttpError(409, 'You already have an offer for ' + company + '.');
+    if (mine.length >= MAX_REF_OFFERS) throw new HttpError(400, 'You can list up to ' + MAX_REF_OFFERS + ' companies. Remove one to add another.');
+    const t = Date.now();
+    await q.addRefOffer.run(user.id, company, kind, roles, note, t, t);
+    send(res, 201, { ok: true });
+    return true;
+  }
+
+  if ((m = /^\/referrals\/(\d{1,15})(\/ask|\/report|\/open)?$/.exec(route))) {
+    const offer = await q.refOffer.get(Number(m[1]));
+    if (!offer || offer.deleted) throw new HttpError(404, 'That offer is gone.');
+
+    if (method === 'POST' && m[2] === '/open') {
+      if (offer.user_id !== user.id) throw new HttpError(403, 'Only the person who listed it can change it.');
+      const b = await readBody(req);
+      await q.setRefOpen.run(b.open ? 1 : 0, Date.now(), offer.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+
+    if (method === 'DELETE' && !m[2]) {
+      if (offer.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only remove your own offers.');
+      await q.delRefOffer.run(offer.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+
+    if (method === 'POST' && m[2] === '/ask') {
+      if (offer.user_id === user.id) throw new HttpError(400, 'That is your own offer.');
+      if (!offer.open) throw new HttpError(400, 'This member has paused referrals for now.');
+      const peer = await q.userById.get(offer.user_id);
+      if (!peer || peer.banned) throw new HttpError(404, 'That offer is gone.');
+      const prev = await q.refAsk.get(offer.id, user.id);
+      if (prev && prev.created > Date.now() - REF_ASK_DAYS * 864e5) {
+        throw new HttpError(409, 'You already asked about ' + offer.company + ' recently. Carry on the conversation in your messages.');
+      }
+      limit('refask:' + user.id, 10, 864e5);
+      const b = await readBody(req);
+      const role = line(b.role, 100, 'Role');
+      if (!role) throw new HttpError(400, 'Which role are you asking about?');
+      const url = b.url ? leadUrl(b.url) : '';
+      const message = text(b.message, 700, 'Message');
+      const body = 'Referral request for ' + offer.company + ': ' + role + (url ? '\n' + url : '') + '\n\n' + message + '\n\n(Sent from the Referral board)';
+      await sendDm(user, peer, body);
+      await q.saveRefAsk.run(offer.id, user.id, Date.now());
+      send(res, 201, { ok: true, username: peer.username });
+      return true;
+    }
+
+    if (method === 'POST' && m[2] === '/report') {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (offer.user_id === user.id) throw new HttpError(400, 'You cannot report your own offer.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      const snapshot = [(offer.kind === 'refer' ? 'Can refer at ' : 'Knows people at ') + offer.company, offer.roles, offer.note].filter(Boolean).join('\n');
+      const info = await q.addMsg.run('ref:' + offer.id, offer.user_id, snapshot, Date.now());
+      await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ---------- profiles ----------
 // Visible to signed-in members only. Everything is optional except the display name.
 
@@ -1241,7 +1380,8 @@ async function profileApi(req, res, route, user) {
         username: u.username, name: u.name, joined: u.created, profile: p, me: u.id === user.id,
         blockedByMe: u.id !== user.id && !!(await q.isBlocked.get(user.id, u.id)),
         stats: { posts: s.posts, answers: s.answers, solved: s.solved },
-        buddy: Object.assign(await prefsOf(u.id), { paired: !!(await currentPair(u.id)) })
+        buddy: Object.assign(await prefsOf(u.id), { paired: !!(await currentPair(u.id)) }),
+        referrals: (await q.refOffersOf.all(u.id)).filter((o) => o.open).map((o) => ({ company: o.company, kind: o.kind }))
       });
       return true;
     }
@@ -1434,7 +1574,7 @@ async function peerByName(name, me) {
   return u;
 }
 // 'profile:<id>' messages are snapshots of a reported profile: never listed anywhere, only shown to moderators.
-const isPublicChannel = (channel) => /^(room|qotd|profile|lead):/.test(channel);
+const isPublicChannel = (channel) => /^(room|qotd|profile|lead|ref):/.test(channel);
 // Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
   if (isPublicChannel(channel)) return true;
@@ -1456,7 +1596,29 @@ async function removeMessage(m) {
   // Removing a reported profile snapshot clears that member's profile (their name and account stay).
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
   else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
+  else if (m.channel.startsWith('ref:')) await q.delRefOffer.run(Number(m.channel.slice(4)));
   else await broadcastDelete(m.channel, m.id);
+}
+
+// Send a private message (checks blocks and the new-conversations limit). Used by chat and by referral requests.
+async function sendDm(user, peer, body) {
+  const key = dmKey(user.id, peer.id);
+  if (await q.isBlocked.get(user.id, peer.id)) throw new HttpError(403, 'You blocked this person. Unblock them to send a message.');
+  if (await q.isBlocked.get(peer.id, user.id)) throw new HttpError(403, 'You cannot message this person.');
+  if (!(await q.dm.get(key))) {
+    const started = await q.dmsStartedSince.get(user.id, Date.now() - 864e5);
+    if (started.n >= NEW_DMS_PER_DAY) {
+      throw new HttpError(429, 'You have started ' + NEW_DMS_PER_DAY + ' new conversations today. Try again tomorrow.');
+    }
+    await q.addDm.run(key, Math.min(user.id, peer.id), Math.max(user.id, peer.id), user.id, Date.now());
+  }
+  const now = Date.now();
+  const info = await q.addMsg.run('dm:' + key, user.id, body, now);
+  await q.touchDm.run(info.lastId, key);
+  const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
+  push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
+  push(user.id, { type: 'msg', channel: 'dm:' + peer.username, msg, peer: { username: peer.username, name: peer.name } });
+  return msg;
 }
 
 async function chatApi(req, res, route, user) {
@@ -1515,22 +1677,7 @@ async function chatApi(req, res, route, user) {
       limit('chat:' + user.id, 20, 60000);
       const b = await readBody(req);
       const body = text(b.text, MSG_MAX, 'Message');
-      if (await q.isBlocked.get(user.id, peer.id)) throw new HttpError(403, 'You blocked this person. Unblock them to send a message.');
-      if (await q.isBlocked.get(peer.id, user.id)) throw new HttpError(403, 'You cannot message this person.');
-      if (!(await q.dm.get(key))) {
-        const started = await q.dmsStartedSince.get(user.id, Date.now() - 864e5);
-        if (started.n >= NEW_DMS_PER_DAY) {
-          throw new HttpError(429, 'You have started ' + NEW_DMS_PER_DAY + ' new conversations today. Try again tomorrow.');
-        }
-        await q.addDm.run(key, Math.min(user.id, peer.id), Math.max(user.id, peer.id), user.id, Date.now());
-      }
-      const now = Date.now();
-      const info = await q.addMsg.run(channel, user.id, body, now);
-      await q.touchDm.run(info.lastId, key);
-      const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
-      push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
-      push(user.id, { type: 'msg', channel: 'dm:' + peer.username, msg, peer: { username: peer.username, name: peer.name } });
-      send(res, 201, { msg });
+      send(res, 201, { msg: await sendDm(user, peer, body) });
       return true;
     }
   }
@@ -1578,7 +1725,8 @@ async function chatApi(req, res, route, user) {
         where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5)
           : r.channel.startsWith('qotd:') ? 'Question of the Day'
           : r.channel.startsWith('profile:') ? 'a profile'
-          : r.channel.startsWith('lead:') ? 'a job lead' : 'a private message',
+          : r.channel.startsWith('lead:') ? 'a job lead'
+          : r.channel.startsWith('ref:') ? 'a referral offer' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });

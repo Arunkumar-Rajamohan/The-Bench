@@ -606,12 +606,13 @@
     },
 
     jobs: function () {
-      var emp = jobs.tab === 'employers';
-      return head('Jobs', 'Real openings in India, straight from the companies hiring, plus leads members have spotted. No middlemen, no ads.') +
-        '<div class="seg big" role="group" aria-label="Which jobs">' +
-        '<button type="button" data-act="jobs-tab" data-t="employers" aria-pressed="' + emp + '"' + (emp ? ' class="on"' : '') + '>From employers</button>' +
-        '<button type="button" data-act="jobs-tab" data-t="leads" aria-pressed="' + !emp + '"' + (!emp ? ' class="on"' : '') + '>Shared by members</button></div>' +
-        '<div id="jobpane">' + (emp ? employersPane() : leadsPane()) + '</div>';
+      var tab = function (t, label) {
+        var on = jobs.tab === t;
+        return '<button type="button" data-act="jobs-tab" data-t="' + t + '" aria-pressed="' + on + '"' + (on ? ' class="on"' : '') + '>' + label + '</button>';
+      };
+      return head('Jobs', 'Real openings in India, straight from the companies hiring, plus leads and referrals from members. No middlemen, no ads.') +
+        '<div class="seg big" role="group" aria-label="Which jobs">' + tab('employers', 'From employers') + tab('leads', 'Shared by members') + tab('refs', 'Referrals') + '</div>' +
+        '<div id="jobpane">' + (jobs.tab === 'leads' ? leadsPane() : jobs.tab === 'refs' ? refsPane() : employersPane()) + '</div>';
     },
 
     tracker: function () {
@@ -871,6 +872,114 @@
       var form = document.querySelector('details.share-lead');
       if (form && jobs.leads && !jobs.leads.length) form.open = true; // nothing to read yet, so invite a share
     });
+  }
+
+  // ----- referral board -----
+  // Members list companies where they can refer people (or know people). Asking sends them a private message.
+  var refs = { list: null, error: '', q: '', kind: 'all', asking: null, askDays: 30, maxOffers: 8 };
+  var REF_KIND = { refer: 'Can refer', contact: 'Knows people there' };
+  function loadRefs() {
+    return api('GET', '/api/referrals').then(function (j) {
+      refs.list = Array.isArray(j.offers) ? j.offers : [];
+      refs.askDays = j.askDays || 30;
+      refs.maxOffers = j.maxOffers || 8;
+      refs.error = '';
+    }, function (e) {
+      if (e.status === 401) return fail(e);
+      refs.error = e.message;
+    }).then(function () {
+      if (currentView() !== 'jobs' || jobs.tab !== 'refs') return;
+      var mine = document.getElementById('refmine'); if (mine) mine.innerHTML = refMineHtml();
+      var el = document.getElementById('reflist'); if (el) el.innerHTML = refsHtml();
+    });
+  }
+  function refAskedRecently(o) { return o.myAsk && o.myAsk > Date.now() - refs.askDays * 864e5; }
+  function refMessage(o) {
+    var first = String(o.name || '').split(' ')[0] || 'there';
+    var hl = S.cv && S.cv.headline ? S.cv.headline.trim() : '';
+    var who = hl ? (/^[aeiou]/i.test(hl) ? 'an ' : 'a ') + hl.charAt(0).toLowerCase() + hl.slice(1) : 'looking for my next role';
+    return 'Hi ' + first + ', I saw on The Bench that you can help with referrals at ' + o.company + '. I am ' + who +
+      ', and I think I would be a good fit because [one line about why]. Would you be open to referring me? I can send my resume. Thank you!';
+  }
+  function refAskForm(o) {
+    return '<form class="stack ref-ask" data-form="refask" data-id="' + Number(o.id) + '">' +
+      '<div class="grid2 tight"><label>Role you want<input type="text" name="role" maxlength="100" required placeholder="e.g. Customer success associate"></label>' +
+      '<label>Link to the job post <span class="muted">(optional)</span><input type="url" name="url" maxlength="300" placeholder="https://"></label></div>' +
+      '<label>Message<textarea name="message" rows="5" maxlength="700" required>' + esc(refMessage(o)) + '</textarea></label>' +
+      '<p class="muted small">This goes to ' + esc(o.name) + ' as a private message. Keep it short, fill in the part in [brackets], and share your resume if they say yes.</p>' +
+      '<div class="row"><button class="btn primary">Send request</button><button type="button" class="btn ghost" data-act="ref-cancel">Cancel</button></div></form>';
+  }
+  function refCard(o) {
+    var id = Number(o.id), u = esc(o.username);
+    var opts = [];
+    if (!o.own) opts.push('<button type="button" data-act="ref-report" data-id="' + id + '">Report</button>');
+    if (o.own || me.isAdmin) opts.push('<button type="button" data-act="ref-del" data-id="' + id + '">Remove' + (o.own ? '' : ' (moderator)') + '</button>');
+    var action;
+    if (o.own) action = '<span class="muted small">Your offer' + (o.open ? '' : ' · paused') + '</span>';
+    else if (!o.open) action = '<span class="muted small">Paused for now</span>';
+    else if (refAskedRecently(o)) action = '<span class="muted small">' + ico('check') + ' Asked ' + new Date(o.myAsk).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' · <a href="#/dm/' + u + '">Open chat</a></span>';
+    else action = '<button class="btn tiny primary" data-act="ref-ask" data-id="' + id + '"' + (refs.asking === id ? ' aria-expanded="true"' : '') + '>' + ico('chat') + 'Ask for a referral</button>';
+    return '<article class="card job ref' + (o.open ? '' : ' paused') + '"><div class="row between job-top"><h3>' + esc(o.company) + '</h3>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Offer options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') + '</div>' +
+      '<p class="meta"><span class="ref-kind ' + esc(o.kind) + '">' + (REF_KIND[o.kind] || '') + '</span>' + (o.roles ? ' · ' + esc(o.roles) : '') + '</p>' +
+      (o.note ? '<p class="snippet">“' + esc(o.note) + '”</p>' : '') +
+      '<div class="row between job-foot"><span class="muted small">Listed by <a class="plain-link" href="#/u/' + u + '"><b>' + esc(o.name) + '</b></a> · ' + ago(o.t) +
+      (o.asks ? ' · asked ' + o.asks + (o.asks === 1 ? ' time' : ' times') + ' this month' : '') + '</span>' + action + '</div>' +
+      (refs.asking === id && !o.own && o.open && !refAskedRecently(o) ? refAskForm(o) : '') + '</article>';
+  }
+  function refMatches() {
+    var q = refs.q.trim().toLowerCase();
+    return (refs.list || []).filter(function (o) {
+      if (o.own) return false;
+      if (refs.kind !== 'all' && o.kind !== refs.kind) return false;
+      return !q || (o.company + ' ' + o.roles + ' ' + o.note).toLowerCase().indexOf(q) > -1;
+    });
+  }
+  function refsHtml() {
+    if (refs.error && !refs.list) return '<p class="card muted">' + esc(refs.error) + '</p>';
+    if (!refs.list) return '<p class="muted">Loading the referral board…</p>';
+    var list = refMatches();
+    if (!list.length) {
+      return '<p class="card muted">' + (refs.list.some(function (o) { return !o.own; })
+        ? 'No offers match that. Try another company or clear the search.'
+        : 'No offers yet. If you work somewhere, or still know people at an old company, be the first to offer help.') + '</p>';
+    }
+    return '<div class="jobs-list">' + list.map(refCard).join('') + '</div>';
+  }
+  function refMineHtml() {
+    var mine = (refs.list || []).filter(function (o) { return o.own; });
+    if (!mine.length) return '';
+    return '<section class="card stack ref-mine"><h3>Your offers</h3><ul class="ref-mine-list">' + mine.map(function (o) {
+      var id = Number(o.id);
+      return '<li><span class="grow"><b>' + esc(o.company) + '</b> <span class="muted small">' + (REF_KIND[o.kind] || '') + (o.open ? '' : ' · paused') +
+        (o.asks ? ' · ' + o.asks + ' asked this month' : '') + '</span></span>' +
+        '<button type="button" class="btn tiny ghost" data-act="ref-open" data-id="' + id + '" data-open="' + (o.open ? 0 : 1) + '">' + (o.open ? 'Pause' : 'Resume') + '</button>' +
+        '<button type="button" class="link" data-act="ref-del" data-id="' + id + '">Remove</button></li>';
+    }).join('') + '</ul><p class="muted small">Requests arrive in your Chat messages. Pause an offer any time you need a break.</p></section>';
+  }
+  function refControls() {
+    var chip = function (k, label) {
+      return '<button type="button" class="chip' + (refs.kind === k ? ' on' : '') + '" data-act="ref-kind" data-k="' + k + '" aria-pressed="' + (refs.kind === k) + '">' + label + '</button>';
+    };
+    return '<div class="row ref-tools"><input class="grow" type="search" id="refq" placeholder="Search a company or role" aria-label="Search referral offers" value="' + esc(refs.q) + '">' +
+      '<div class="chips" role="group" aria-label="Kind of help">' + chip('all', 'All') + chip('refer', 'Can refer') + chip('contact', 'Knows people') + '</div></div>';
+  }
+  function refsPane() {
+    return '<p class="banner">' + ico('users') + '<span><b>Referral board.</b> Members list companies where they can refer you or know people. Ask for one company at a time, only for roles you fit, and say thank you either way.</span></p>' +
+      '<details class="card share-lead share-ref"><summary><b>Offer to refer</b> <span class="muted small">Work somewhere, or know people at a company? Help someone get noticed.</span></summary>' +
+      '<form class="stack lead-form" data-form="refoffer">' +
+      '<div class="grid2 tight"><label>Company<input type="text" name="company" maxlength="60" required placeholder="e.g. Freshworks"></label>' +
+      '<label>Roles or teams <span class="muted">(optional)</span><input type="text" name="roles" maxlength="120" placeholder="e.g. Support and sales roles in Chennai"></label></div>' +
+      '<fieldset class="ref-kinds"><legend class="small"><b>How can you help?</b></legend>' +
+      '<label class="row small"><input type="radio" name="kind" value="refer" checked> I work there and can refer people</label>' +
+      '<label class="row small"><input type="radio" name="kind" value="contact"> I know people there and can share tips or connect people</label></fieldset>' +
+      '<label>Note <span class="muted">(optional)</span><input type="text" name="note" maxlength="280" placeholder="e.g. Send the job link and your resume. Freshers welcome."></label>' +
+      '<p class="muted small">You choose who to refer. Requests come to your messages, and you can pause or remove your offer any time.</p>' +
+      '<div class="row"><button class="btn primary">List my offer</button></div></form></details>' +
+      '<div id="refmine">' + refMineHtml() + '</div>' +
+      refControls() +
+      '<p class="scam">' + ico('shield') + '<span>Referrals on The Bench are always free. Nobody should ask you for money, OTPs or bank details for a referral. Report anyone who does.</span></p>' +
+      '<div id="reflist">' + refsHtml() + '</div>';
   }
 
   // ---------- resume checker (simple rules, runs in the browser) ----------
@@ -1329,7 +1438,7 @@
       return false;
     },
     'jobs-tab': function (d) {
-      jobs.tab = d.t === 'leads' ? 'leads' : 'employers';
+      jobs.tab = d.t === 'leads' || d.t === 'refs' ? d.t : 'employers';
       render();
       return false;
     },
@@ -1341,6 +1450,50 @@
       closeMenus();
       if (!window.confirm('Delete this job lead?')) return false;
       api('DELETE', '/api/leads/' + Number(d.id)).then(function () { toast('Lead deleted.'); loadLeads(); }).catch(fail);
+      return false;
+    },
+    'ref-ask': function (d) {
+      var id = Number(d.id);
+      refs.asking = refs.asking === id ? null : id;
+      var el = document.getElementById('reflist'); if (el) el.innerHTML = refsHtml();
+      var box = document.querySelector('form.ref-ask input[name="role"]');
+      if (box) box.focus();
+      return false;
+    },
+    'ref-cancel': function () {
+      refs.asking = null;
+      var el = document.getElementById('reflist'); if (el) el.innerHTML = refsHtml();
+      return false;
+    },
+    'ref-kind': function (d) {
+      refs.kind = d.k;
+      document.querySelectorAll('[data-act="ref-kind"]').forEach(function (b) { var on = b.dataset.k === d.k; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+      var el = document.getElementById('reflist'); if (el) el.innerHTML = refsHtml();
+      return false;
+    },
+    'ref-open': function (d) {
+      api('POST', '/api/referrals/' + Number(d.id) + '/open', { open: d.open === '1' })
+        .then(function () { toast(d.open === '1' ? 'Your offer is open again.' : 'Paused. Nobody can ask until you resume.'); return loadRefs(); }).catch(fail);
+      return false;
+    },
+    'ref-del': function (d) {
+      closeMenus();
+      if (!window.confirm('Remove this referral offer?')) return false;
+      api('DELETE', '/api/referrals/' + Number(d.id)).then(function () { toast('Offer removed.'); return loadRefs(); }).catch(fail);
+      return false;
+    },
+    'ref-report': function (d) {
+      closeMenus();
+      var reason = window.prompt('Report this referral offer to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/referrals/' + Number(d.id) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
+      return false;
+    },
+    'open-refs': function (d) {
+      jobs.tab = 'refs';
+      refs.q = d.q || '';
+      if (currentView() === 'jobs') render(); else location.hash = '#/jobs';
       return false;
     },
     'lead-report': function (d) {
@@ -1415,6 +1568,32 @@
       jobs.remote = f.get('remote') === '1';
       jobs.newSince = 0; jobs.activeAlert = null;
       loadJobs(false);
+      return false;
+    },
+    refoffer: function (f, form) {
+      var btn = form.querySelector('button.primary');
+      btn.disabled = true;
+      api('POST', '/api/referrals', { company: f.get('company'), kind: f.get('kind'), roles: f.get('roles'), note: f.get('note') })
+        .then(function () {
+          form.reset();
+          form.closest('details').open = false;
+          toast('Thank you! Your offer is on the board.');
+          return loadRefs();
+        }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); })
+        .then(function () { btn.disabled = false; });
+      return false;
+    },
+    refask: function (f, form) {
+      var message = String(f.get('message') || '');
+      if (/\[[^\]]*\]/.test(message)) { toast('Fill in the part in [brackets] first, in your own words.'); return false; }
+      var btn = form.querySelector('button.primary');
+      btn.disabled = true;
+      api('POST', '/api/referrals/' + Number(form.dataset.id) + '/ask', { role: f.get('role'), url: String(f.get('url') || '').trim(), message: message })
+        .then(function (j) {
+          refs.asking = null;
+          toast('Sent! Your request is in your messages.');
+          location.hash = '#/dm/' + encodeURIComponent(j.username);
+        }).catch(function (e) { if (e.status === 401) fail(e); else { toast(e.message); btn.disabled = false; } });
       return false;
     },
     lead: function (f, form) {
@@ -2182,6 +2361,10 @@
       ? '<p class="bio">' + esc(p.bio) + '</p>'
       : '<p class="muted">' + (j.me ? 'Nothing here yet. <a href="#/edit-profile">Write a line or two about yourself.</a>' : 'Nothing here yet.') + '</p>';
     var skills = p.skills.length ? '<div class="row skills">' + p.skills.map(function (s) { return '<span class="pill">' + esc(s) + '</span>'; }).join('') + '</div>' : '';
+    var refHelp = j.referrals && j.referrals.length
+      ? '<div class="stack ref-profile"><p class="small"><b>' + ico('users') + ' Can help with referrals at</b></p><div class="row skills">' + j.referrals.map(function (r) {
+        return '<button type="button" class="pill ref-pill" data-act="open-refs" data-q="' + esc(r.company) + '">' + esc(r.company) + (r.kind === 'contact' ? ' <span class="muted">(knows people)</span>' : '') + '</button>';
+      }).join('') + '</div></div>' : '';
     var link = p.link ? '<p><a class="ext" href="' + esc(p.link) + '" target="_blank" rel="noopener noreferrer nofollow ugc">' + ico('link') + '<span>' + esc(linkLabel(p.link)) + '</span></a></p>' : '';
     var fact = function (label, value) { return '<div><dt>' + label + '</dt><dd>' + value + '</dd></div>'; };
     var facts = '<dl class="facts">' +
@@ -2194,7 +2377,7 @@
       '<div class="grow"><h1>' + esc(j.name) + '</h1><p class="muted handle">@' + u + '</p>' + role +
       '<div class="row meta">' + meta.join('') + '</div></div>' +
       '<div class="row actions">' + actions + '</div></header>' +
-      '<div class="grid2"><section class="card stack"><h3>About</h3>' + about + skills + link + '</section>' +
+      '<div class="grid2"><section class="card stack"><h3>About</h3>' + about + skills + link + refHelp + '</section>' +
       '<section class="card stack"><h3>On The Bench</h3>' + facts + '</section></div>' +
       (j.me ? '' : '<p class="small muted profile-foot"><button class="link" data-act="report-profile" data-u="' + u + '">Report this profile</button></p>');
   }
@@ -2937,6 +3120,7 @@
     profile: loadProfile,
     jobs: function () {
       if (jobs.tab === 'leads') loadLeads();
+      else if (jobs.tab === 'refs') loadRefs();
       else if (!jobs.loaded && !jobs.loading) loadJobs(false);
     },
     'edit-profile': loadEditor,
@@ -3079,6 +3263,9 @@
     } else if (e.target.id === 'ivnote' && iv.cur) {
       if (e.target.value.trim()) S.qnotes[iv.cur] = e.target.value; else delete S.qnotes[iv.cur];
       save();
+    } else if (e.target.id === 'refq') {
+      refs.q = e.target.value;
+      var rl = document.getElementById('reflist'); if (rl) rl.innerHTML = refsHtml();
     } else if (e.target.id === 'learnq') {
       learn.q = e.target.value;
       refreshLearn(false);

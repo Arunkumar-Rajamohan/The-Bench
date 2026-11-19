@@ -825,6 +825,26 @@ mark.clp-gap { background: #fbe3c4; color: var(--cv-ink); border-radius: 3px; pa
 .iv-r.Rough { color: var(--bad); }
 @media (max-width: 860px) { .iv-grid { grid-template-columns: minmax(0, 1fr); } .star-grid { grid-template-columns: minmax(0, 1fr); } }
 
+/* Referral board */
+.ref-kind { font-weight: 600; color: var(--ink-2); }
+.ref-kind.refer { color: var(--good); }
+.ref.paused { opacity: .7; }
+.ref-ask { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ref-ask textarea { min-height: 0; }
+.ref-kinds { border: 0; padding: 0; margin: 0; display: grid; gap: 6px; }
+.ref-kinds legend { margin-bottom: 4px; }
+.ref-kinds label { gap: 8px; align-items: flex-start; font-weight: 400; }
+.ref-tools { gap: 12px; margin: 16px 0 4px; flex-wrap: wrap; align-items: center; }
+.ref-tools input[type="search"] { flex: 1 1 240px; min-width: 0; }
+.ref-tools .chips { margin: 0; }
+.ref-mine { margin-top: 14px; }
+.ref-mine-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.ref-mine-list li { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.ref-mine-list li:first-child { border-top: 0; }
+.ref-profile b .ico { width: 14px; height: 14px; vertical-align: -2px; color: var(--accent); }
+.ref-pill { cursor: pointer; }
+.ref-pill:hover { border-color: var(--line-2); background: var(--sunk); }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

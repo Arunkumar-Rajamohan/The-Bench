@@ -120,6 +120,23 @@ const SCHEMA = [
     data TEXT NOT NULL,
     updated INTEGER NOT NULL
   )`,
+  // Job leads shared by members (a link to the original post), plus 'useful' votes.
+  `CREATE TABLE IF NOT EXISTS job_leads (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    company TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS lead_votes (
+    lead_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (lead_id, user_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -296,6 +313,21 @@ const q = {
       (SELECT COUNT(*) FROM posts WHERE user_id = ?) AS posts,
       (SELECT COUNT(*) FROM messages WHERE user_id = ? AND channel LIKE 'qotd:%' AND deleted = 0) AS answers,
       (SELECT COUNT(*) FROM puzzle_plays WHERE user_id = ? AND solved = 1) AS solved`),
+  leads: stmt(`SELECT l.id, l.user_id, l.title, l.company, l.location, l.url, l.note, l.created, u.name, u.username,
+      (SELECT COUNT(*) FROM lead_votes v WHERE v.lead_id = l.id) AS votes,
+      (SELECT COUNT(*) FROM lead_votes v WHERE v.lead_id = l.id AND v.user_id = ?) AS mine
+    FROM job_leads l JOIN users u ON u.id = l.user_id
+    WHERE l.deleted = 0 AND u.banned = 0
+      AND l.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+      AND l.created > ?
+    ORDER BY l.id DESC LIMIT 100`),
+  lead: stmt('SELECT * FROM job_leads WHERE id = ?'),
+  leadsSince: stmt('SELECT COUNT(*) AS n FROM job_leads WHERE user_id = ? AND created > ?'),
+  addLead: stmt('INSERT INTO job_leads (user_id, title, company, location, url, note, created) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  delLead: stmt('UPDATE job_leads SET deleted = 1 WHERE id = ?'),
+  hasLeadVote: stmt('SELECT 1 AS x FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
+  addLeadVote: stmt('INSERT OR IGNORE INTO lead_votes (lead_id, user_id) VALUES (?, ?)'),
+  delLeadVote: stmt('DELETE FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
   people: stmt(`SELECT u.username, u.name, u.created, p.data FROM users u LEFT JOIN profiles p ON p.user_id = u.id
     WHERE u.banned = 0 ORDER BY COALESCE(p.updated, 0) DESC, u.id DESC LIMIT 300`)
 };
@@ -648,21 +680,7 @@ async function api(req, res, route) {
   throw new HttpError(404, 'Not found.');
 }
 
-// ---------- job listings (Adzuna) ----------
-// Switched on by setting ADZUNA_APP_ID and ADZUNA_APP_KEY on the host. Results are cached for an hour
-// per search, and a daily cap protects the free quota. Each listing must be credited to Adzuna.
-
-const ADZUNA_ID = (process.env.ADZUNA_APP_ID || '').trim();
-const ADZUNA_KEY = (process.env.ADZUNA_APP_KEY || '').trim();
-const ADZUNA_COUNTRY = (process.env.ADZUNA_COUNTRY || 'in').trim().toLowerCase();
-const ADZUNA_BASE = (process.env.ADZUNA_BASE_URL || 'https://api.adzuna.com').trim().replace(/\/+$/, '');
-const ADZUNA_SITE = { in: 'https://www.adzuna.in', gb: 'https://www.adzuna.co.uk', us: 'https://www.adzuna.com' }[ADZUNA_COUNTRY] || 'https://www.adzuna.com';
-const JOBS_TTL = 60 * 60000;
-const JOBS_DAILY_CAP = Number(process.env.JOBS_DAILY_CAP) || 200;
-const jobsCache = new Map(); // search key -> { t, data }
-const jobsBudget = { day: '', used: 0 };
-if (ADZUNA_ID && !/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(ADZUNA_BASE)) throw new Error('ADZUNA_BASE_URL must use https.');
-
+// ---------- text cleanup for listings from outside ----------
 const ENTITIES = {
   amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–',
   lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', bull: '•', middot: '·', copy: '©', reg: '®', trade: '™', rupee: '₹'
@@ -677,81 +695,216 @@ function plainText(s) {
     .replace(/\s+/g, ' ').trim();
 }
 
-function normaliseJob(r) {
-  const url = typeof r.redirect_url === 'string' && /^https?:\/\//.test(r.redirect_url) ? r.redirect_url : null;
-  if (!url || !r.title) return null;
-  const predicted = String(r.salary_is_predicted) === '1';
-  const min = Number(r.salary_min) || 0, max = Number(r.salary_max) || 0;
+// ---------- jobs: straight from employers' careers feeds ----------
+// Public Greenhouse, Lever and Ashby job-board feeds for the companies in employers.js.
+// Refreshed every 3 hours, filtered to roles in India, searched in memory. No keys, no middlemen.
+
+const EMPLOYERS = require('./employers');
+const JOBS_REFRESH = 3 * 60 * 60000;
+const JOBS_PAGE = 20;
+const FEED_BASE = { // overridable for local testing only
+  greenhouse: (process.env.GREENHOUSE_BASE_URL || 'https://boards-api.greenhouse.io').replace(/\/+$/, ''),
+  lever: (process.env.LEVER_BASE_URL || 'https://api.lever.co').replace(/\/+$/, ''),
+  ashby: (process.env.ASHBY_BASE_URL || 'https://api.ashbyhq.com').replace(/\/+$/, '')
+};
+for (const b of Object.values(FEED_BASE)) {
+  if (!/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(b)) throw new Error('Job feed URLs must use https.');
+}
+const INDIA_PLACES = /\b(india|bengaluru|bangalore|mumbai|delhi|gurgaon|gurugram|noida|hyderabad|chennai|pune|kolkata|ahmedabad|jaipur|kochi|cochin|coimbatore|chandigarh|indore|trivandrum|thiruvananthapuram|mysore|mysuru|vadodara|surat|nagpur|bhubaneswar|lucknow|goa|visakhapatnam)\b/i;
+const jobsStore = { jobs: [], updated: 0, refreshing: null, failed: [] };
+
+const isWebUrl = (u) => typeof u === 'string' && /^https:\/\/[^\s]+$/.test(u) && u.length < 600;
+const uniq = (list) => [...new Set(list.map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean))];
+const indiaPlaces = (list) => uniq(list).filter((s) => INDIA_PLACES.test(s));
+
+async function getJson(url) {
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'TheBench-JobBoard/1.0' }, signal: AbortSignal.timeout(20000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+const FEEDS = {
+  async greenhouse(e) {
+    const j = await getJson(FEED_BASE.greenhouse + '/v1/boards/' + encodeURIComponent(e.token) + '/jobs');
+    return (Array.isArray(j.jobs) ? j.jobs : []).map((x) => {
+      const places = indiaPlaces([x.location && x.location.name]);
+      return places.length && isWebUrl(x.absolute_url) && {
+        id: 'gh:' + e.token + ':' + x.id, title: x.title, url: x.absolute_url, places,
+        posted: Date.parse(x.first_published || x.updated_at) || null, team: '', type: '',
+        remote: /remote/i.test((x.location && x.location.name) || '')
+      };
+    });
+  },
+  async lever(e) {
+    const j = await getJson(FEED_BASE.lever + '/v0/postings/' + encodeURIComponent(e.token) + '?mode=json');
+    return (Array.isArray(j) ? j : []).map((x) => {
+      const c = x.categories || {};
+      const places = indiaPlaces([c.location].concat(c.allLocations || []));
+      const inIndia = places.length || (x.country === 'IN');
+      return inIndia && isWebUrl(x.hostedUrl) && {
+        id: 'lv:' + e.token + ':' + x.id, title: x.text, url: x.hostedUrl, places: places.length ? places : ['India'],
+        posted: Number(x.createdAt) || null, team: c.team || c.department || '', type: c.commitment || '',
+        remote: x.workplaceType === 'remote'
+      };
+    });
+  },
+  async ashby(e) {
+    const j = await getJson(FEED_BASE.ashby + '/posting-api/job-board/' + encodeURIComponent(e.token));
+    return (Array.isArray(j.jobs) ? j.jobs : []).filter((x) => x.isListed !== false).map((x) => {
+      const country = x.address && x.address.postalAddress && x.address.postalAddress.addressCountry;
+      const places = indiaPlaces([x.location, country].concat((x.secondaryLocations || []).map((s) => s.location)));
+      const types = { FullTime: 'Full-time', PartTime: 'Part-time', Intern: 'Internship', Contract: 'Contract', Temporary: 'Temporary' };
+      return places.length && isWebUrl(x.jobUrl) && {
+        id: 'ab:' + e.token + ':' + (x.id || x.jobUrl), title: x.title, url: x.jobUrl, places,
+        posted: Date.parse(x.publishedAt) || null, team: x.department || x.team || '', type: types[x.employmentType] || '',
+        remote: !!x.isRemote || x.workplaceType === 'Remote'
+      };
+    });
+  }
+};
+
+function tidyJob(raw, employer) {
   return {
-    id: 'adz:' + String(r.id || url).slice(0, 40),
-    title: plainText(r.title).slice(0, 140),
-    company: plainText(r.company && r.company.display_name).slice(0, 80),
-    location: plainText(r.location && r.location.display_name).slice(0, 80),
-    posted: Date.parse(r.created) || null,
-    url,
-    salary: !predicted && (min || max) ? { min, max } : null, // estimated salaries need extra Adzuna branding, so skip them
-    contract: r.contract_time === 'part_time' ? 'Part-time' : r.contract_time === 'full_time' ? 'Full-time' : '',
-    type: r.contract_type === 'contract' ? 'Contract' : r.contract_type === 'permanent' ? 'Permanent' : '',
-    category: plainText(r.category && r.category.label).replace(/ Jobs$/, '').slice(0, 60),
-    snippet: plainText(r.description).slice(0, 280)
+    id: raw.id.slice(0, 120),
+    title: plainText(raw.title).slice(0, 140),
+    company: employer.name,
+    location: raw.places.filter((p) => !/^india$/i.test(p) || raw.places.length === 1).slice(0, 3).join(' · ').slice(0, 120),
+    remote: !!raw.remote,
+    url: raw.url,
+    posted: raw.posted,
+    team: plainText(raw.team).slice(0, 60),
+    type: plainText(raw.type).slice(0, 30)
   };
 }
 
-async function adzunaSearch(what, where, page) {
-  const key = [what.toLowerCase(), where.toLowerCase(), page].join('|');
-  const hit = jobsCache.get(key);
-  if (hit && Date.now() - hit.t < JOBS_TTL) return hit.data;
+async function refreshJobs() {
+  const all = [], failed = [];
+  for (let i = 0; i < EMPLOYERS.length; i += 4) { // a few at a time, to be polite
+    await Promise.all(EMPLOYERS.slice(i, i + 4).map(async (e) => {
+      try {
+        const rows = await FEEDS[e.ats](e);
+        for (const r of rows) if (r && r.title) all.push(tidyJob(r, e));
+      } catch (err) {
+        failed.push(e.name);
+      }
+    }));
+  }
+  const seen = new Set();
+  const jobs = all.filter((j) => (seen.has(j.id) ? false : seen.add(j.id))).sort((a, b) => (b.posted || 0) - (a.posted || 0));
+  if (jobs.length || !jobsStore.jobs.length) jobsStore.jobs = jobs; // keep the last good copy if every feed failed
+  jobsStore.updated = Date.now();
+  jobsStore.failed = failed;
+  if (failed.length) console.error('Job feeds failed: ' + failed.join(', '));
+}
 
-  const today = dayKey();
-  if (jobsBudget.day !== today) { jobsBudget.day = today; jobsBudget.used = 0; }
-  if (jobsBudget.used >= JOBS_DAILY_CAP) {
-    if (hit) return hit.data; // an older copy beats nothing
-    throw new HttpError(503, 'Job search has had a busy day and is resting until midnight. Try a search you have run before, or come back tomorrow.');
+function ensureJobs() {
+  const stale = Date.now() - jobsStore.updated > JOBS_REFRESH;
+  if (stale && !jobsStore.refreshing) {
+    jobsStore.refreshing = refreshJobs().catch((e) => console.error('Job refresh failed: ' + e.message)).finally(() => { jobsStore.refreshing = null; });
   }
-  jobsBudget.used++;
+  // First load: wait for it. Later refreshes happen in the background while the old list is served.
+  return jobsStore.jobs.length ? Promise.resolve() : (jobsStore.refreshing || Promise.resolve());
+}
 
-  const params = new URLSearchParams({
-    app_id: ADZUNA_ID, app_key: ADZUNA_KEY, results_per_page: '20', max_days_old: '30',
-    sort_by: what ? 'relevance' : 'date', 'content-type': 'application/json'
-  });
-  if (what) params.set('what', what);
-  if (where) params.set('where', where);
-  let r;
-  try {
-    r = await fetch(ADZUNA_BASE + '/v1/api/jobs/' + encodeURIComponent(ADZUNA_COUNTRY) + '/search/' + page + '?' + params, {
-      headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000)
-    });
-  } catch (e) {
-    if (hit) return hit.data;
-    throw new HttpError(502, 'Could not reach the job listings just now. Try again in a minute.');
+// ---------- community job leads ----------
+const LEAD_DAYS = 45;
+const LEADS_PER_DAY = 5;
+
+function leadUrl(v) {
+  let url;
+  try { url = new URL(String(v || '').trim()); } catch (e) { throw new HttpError(400, 'Add the link to the job post, starting with https://'); }
+  if (!/^https?:$/.test(url.protocol) || !url.hostname.includes('.') || url.username || url.password) {
+    throw new HttpError(400, 'The link must be a normal web address starting with https://');
   }
-  if (!r.ok) {
-    console.error('Adzuna responded ' + r.status);
-    if (hit) return hit.data;
-    throw new HttpError(502, 'The job listings service is having trouble right now. Try again later.');
-  }
-  const j = await r.json().catch(() => ({}));
-  const data = {
-    total: Number(j.count) || 0,
-    jobs: (Array.isArray(j.results) ? j.results : []).map(normaliseJob).filter(Boolean)
-  };
-  jobsCache.set(key, { t: Date.now(), data });
-  if (jobsCache.size > 300) jobsCache.delete(jobsCache.keys().next().value); // drop the oldest entry
-  return data;
+  if (url.href.length > 300) throw new HttpError(400, 'That link is too long.');
+  return url.href;
 }
 
 async function jobsApi(req, res, route, user) {
-  if (req.method !== 'GET' || route !== '/jobs') return false;
-  const configured = !!(ADZUNA_ID && ADZUNA_KEY);
-  if (!configured) { send(res, 200, { configured: false, jobs: [], total: 0 }); return true; }
-  limit('jobs:' + user.id, 30, 60000);
-  const sp = new URL(req.url, 'http://x').searchParams;
-  const what = (sp.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-  const where = (sp.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-  const page = Math.min(Math.max(parseInt(sp.get('page'), 10) || 1, 1), 10);
-  const data = await adzunaSearch(what, where, page);
-  send(res, 200, { configured: true, page, total: data.total, jobs: data.jobs, source: { name: 'Adzuna', url: ADZUNA_SITE, currency: { in: 'INR', gb: 'GBP', us: 'USD' }[ADZUNA_COUNTRY] || '' } });
-  return true;
+  const method = req.method;
+  let m;
+
+  if (method === 'GET' && route === '/jobs') {
+    limit('jobs:' + user.id, 60, 60000);
+    await ensureJobs();
+    const sp = new URL(req.url, 'http://x').searchParams;
+    const what = (sp.get('what') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
+    const where = (sp.get('where') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
+    const remote = sp.get('remote') === '1';
+    const page = Math.min(Math.max(parseInt(sp.get('page'), 10) || 1, 1), 50);
+    const words = what.split(' ').filter(Boolean);
+    const cityAliases = { bangalore: 'bengaluru', bengaluru: 'bangalore', gurgaon: 'gurugram', gurugram: 'gurgaon', bombay: 'mumbai', madras: 'chennai' };
+    const list = jobsStore.jobs.filter((j) => {
+      if (remote && !j.remote) return false;
+      const loc = j.location.toLowerCase();
+      if (where && !loc.includes(where) && !(cityAliases[where] && loc.includes(cityAliases[where]))) return false;
+      const hay = (j.title + ' ' + j.company + ' ' + j.team).toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+    send(res, 200, {
+      jobs: list.slice((page - 1) * JOBS_PAGE, page * JOBS_PAGE), total: list.length, page,
+      companies: EMPLOYERS.length, updated: jobsStore.updated || null
+    });
+    return true;
+  }
+
+  if (method === 'GET' && route === '/leads') {
+    const rows = await q.leads.all(user.id, user.id, Date.now() - LEAD_DAYS * 864e5);
+    send(res, 200, {
+      leads: rows.map((r) => ({
+        id: r.id, title: r.title, company: r.company, location: r.location, url: r.url, note: r.note, t: r.created,
+        name: r.name, username: r.username, votes: r.votes, mine: !!r.mine, own: r.user_id === user.id
+      }))
+    });
+    return true;
+  }
+
+  if (method === 'POST' && route === '/leads') {
+    limit('write:' + user.id, 20, 60000);
+    const b = await readBody(req);
+    const title = text(b.title, 100, 'Job title');
+    const company = text(b.company, 80, 'Company');
+    const location = line(b.location, 60, 'Location');
+    const note = line(b.note, 280, 'Note');
+    const url = leadUrl(b.url);
+    const recent = await q.leadsSince.get(user.id, Date.now() - 864e5);
+    if (recent.n >= LEADS_PER_DAY) throw new HttpError(429, 'You have shared ' + LEADS_PER_DAY + ' leads today. Thank you! Share more tomorrow.');
+    await q.addLead.run(user.id, title, company, location, url, note, Date.now());
+    send(res, 201, { ok: true });
+    return true;
+  }
+
+  if ((m = /^\/leads\/(\d{1,15})(\/vote|\/report)?$/.exec(route))) {
+    const lead = await q.lead.get(Number(m[1]));
+    if (!lead || lead.deleted) throw new HttpError(404, 'That lead is gone.');
+
+    if (method === 'POST' && m[2] === '/vote') {
+      limit('react:' + user.id, 120, 60000);
+      if (await q.hasLeadVote.get(lead.id, user.id)) await q.delLeadVote.run(lead.id, user.id);
+      else await q.addLeadVote.run(lead.id, user.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'DELETE' && !m[2]) {
+      if (lead.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete leads you shared.');
+      await q.delLead.run(lead.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'POST' && m[2] === '/report') {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (lead.user_id === user.id) throw new HttpError(400, 'You cannot report your own lead.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      const snapshot = [lead.title + ' at ' + lead.company, lead.location, lead.note, lead.url].filter(Boolean).join('\n');
+      const info = await q.addMsg.run('lead:' + lead.id, lead.user_id, snapshot, Date.now());
+      await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ---------- profiles ----------
@@ -1054,7 +1207,7 @@ async function peerByName(name, me) {
   return u;
 }
 // 'profile:<id>' messages are snapshots of a reported profile: never listed anywhere, only shown to moderators.
-const isPublicChannel = (channel) => channel.startsWith('room:') || channel.startsWith('qotd:') || channel.startsWith('profile:');
+const isPublicChannel = (channel) => /^(room|qotd|profile|lead):/.test(channel);
 // Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
   if (isPublicChannel(channel)) return true;
@@ -1075,6 +1228,7 @@ async function removeMessage(m) {
   await q.delMsg.run(m.id);
   // Removing a reported profile snapshot clears that member's profile (their name and account stay).
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
+  else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
   else await broadcastDelete(m.channel, m.id);
 }
 
@@ -1196,7 +1350,8 @@ async function chatApi(req, res, route, user) {
         id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted,
         where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5)
           : r.channel.startsWith('qotd:') ? 'Question of the Day'
-          : r.channel.startsWith('profile:') ? 'a profile' : 'a private message',
+          : r.channel.startsWith('profile:') ? 'a profile'
+          : r.channel.startsWith('lead:') ? 'a job lead' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });
@@ -1296,6 +1451,7 @@ const server = http.createServer((req, res) => {
 initDb().then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
+    ensureJobs(); // warm the job listings so the first visitor does not wait
   });
 }).catch((e) => {
   console.error('Could not start: ' + e.message);

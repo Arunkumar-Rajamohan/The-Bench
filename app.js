@@ -72,8 +72,9 @@
   }
 
   // ---------- fixed content ----------
-  // Live listings come from the server (/api/jobs), which credits and caches Adzuna results.
-  var jobs = { list: [], total: 0, page: 1, what: '', where: '', configured: null, loading: false, error: '', source: null };
+  // Jobs come straight from employers' careers feeds (/api/jobs); leads are shared by members (/api/leads).
+  var jobs = { tab: 'employers', list: [], total: 0, page: 1, what: '', where: '', remote: false, companies: 0, loaded: false, loading: false, error: '',
+    leads: null, leadsError: '' };
 
   var STAGES = ['Wishlist', 'Applied', 'Interview', 'Offer', 'Rejected'];
   var TAGS = ['Win', 'Rant', 'Question', 'Tip'];
@@ -372,12 +373,12 @@
     },
 
     jobs: function () {
-      return head('Jobs', 'Fresh listings from across India. Found one you like? Hit Track and it lands on your board.') +
-        '<div class="stack"><form class="card job-search" data-form="jobsearch">' +
-        '<label class="grow">Role or keyword<input type="search" name="what" maxlength="60" placeholder="e.g. customer support, React, accountant" value="' + esc(jobs.what) + '"></label>' +
-        '<label class="grow">City <span class="muted">(optional)</span><input type="search" name="where" maxlength="60" placeholder="e.g. Chennai" value="' + esc(jobs.where) + '"></label>' +
-        '<button class="btn primary">Search</button></form>' +
-        '<div id="joblist">' + jobsHtml() + '</div></div>';
+      var emp = jobs.tab === 'employers';
+      return head('Jobs', 'Real openings in India, straight from the companies hiring, plus leads members have spotted. No middlemen, no ads.') +
+        '<div class="seg big" role="group" aria-label="Which jobs">' +
+        '<button type="button" data-act="jobs-tab" data-t="employers" aria-pressed="' + emp + '"' + (emp ? ' class="on"' : '') + '>From employers</button>' +
+        '<button type="button" data-act="jobs-tab" data-t="leads" aria-pressed="' + !emp + '"' + (!emp ? ' class="on"' : '') + '>Shared by members</button></div>' +
+        '<div id="jobpane">' + (emp ? employersPane() : leadsPane()) + '</div>';
     },
 
     tracker: function () {
@@ -451,74 +452,114 @@
     }
   };
 
-  function money(n, currency) {
-    if (currency === 'INR') {
-      if (n >= 1e7) return '₹' + (n / 1e7).toFixed(1).replace(/\.0$/, '') + 'Cr';
-      if (n >= 1e5) return '₹' + (n / 1e5).toFixed(n >= 1e6 ? 0 : 1).replace(/\.0$/, '') + 'L';
-      return '₹' + Math.round(n / 1000) + 'k';
-    }
-    var sym = { GBP: '£', USD: '$' }[currency] || '';
-    return sym + (n >= 1000 ? Math.round(n / 1000) + 'k' : Math.round(n));
+  function trackBtn(id) {
+    var tracked = S.apps.some(function (a) { return a.jobId === id; });
+    return '<button class="btn tiny' + (tracked ? ' ghost' : '') + '" data-act="track-job" data-id="' + esc(id) + '"' + (tracked ? ' disabled' : '') + '>' + (tracked ? 'Tracked' : 'Track') + '</button>';
   }
-  function salaryText(sal, currency) {
-    if (!sal) return '';
-    var lo = sal.min, hi = sal.max;
-    if (lo && hi && Math.round(lo) !== Math.round(hi)) return money(lo, currency) + '–' + money(hi, currency).replace(/^[₹£$]/, '') + ' a year';
-    return money(lo || hi, currency) + ' a year';
+
+  // ----- from employers -----
+  function employersPane() {
+    return '<form class="card job-search" data-form="jobsearch">' +
+      '<label class="grow">Role, team or company<input type="search" name="what" maxlength="60" placeholder="e.g. support, finance, Stripe" value="' + esc(jobs.what) + '"></label>' +
+      '<label class="grow">City <span class="muted">(optional)</span><input type="search" name="where" maxlength="60" placeholder="e.g. Bengaluru" value="' + esc(jobs.where) + '"></label>' +
+      '<label class="check remote-check"><input type="checkbox" name="remote" value="1"' + (jobs.remote ? ' checked' : '') + '> Remote only</label>' +
+      '<button class="btn primary">Search</button></form>' +
+      '<div id="joblist">' + jobsHtml() + '</div>';
   }
   function jobHtml(j) {
-    var tracked = S.apps.some(function (a) { return a.jobId === j.id; });
-    var src = jobs.source || { name: 'Adzuna', url: 'https://www.adzuna.in' };
-    var meta = [j.company, j.location].filter(Boolean).map(esc).join(' · ');
-    var tags = [j.contract, j.type, j.category].filter(Boolean).map(function (t) { return '<span class="pill">' + esc(t) + '</span>'; }).join('');
-    var sal = salaryText(j.salary, src.currency);
+    var tags = [j.remote ? 'Remote' : '', j.type, j.team].filter(Boolean).map(function (t) { return '<span class="pill">' + esc(t) + '</span>'; }).join('');
     return '<article class="card job"><div class="row between job-top"><h3>' + esc(j.title) + '</h3>' +
       (j.posted ? '<span class="muted small nowrap">' + ago(j.posted) + '</span>' : '') + '</div>' +
-      '<p class="meta">' + meta + (sal ? ' · <b class="salary">' + esc(sal) + '</b>' : '') + '</p>' +
-      (j.snippet ? '<p class="snippet">' + esc(j.snippet) + (j.snippet.length >= 280 ? '…' : '') + '</p>' : '') +
+      '<p class="meta"><b class="company">' + esc(j.company) + '</b>' + (j.location ? ' · ' + esc(j.location) : '') + '</p>' +
       '<div class="row between job-foot"><div class="row">' + tags + '</div>' +
-      '<div class="row"><a class="via" href="' + esc(src.url) + '" target="_blank" rel="noopener">Jobs by <b>' + esc(src.name) + '</b></a>' +
-      '<button class="btn tiny' + (tracked ? ' ghost' : '') + '" data-act="track-job" data-id="' + esc(j.id) + '"' + (tracked ? ' disabled' : '') + '>' + (tracked ? 'Tracked' : 'Track') + '</button>' +
-      '<a class="btn tiny primary" href="' + esc(j.url) + '" target="_blank" rel="noopener">View &amp; apply</a></div></div></article>';
+      '<div class="row">' + trackBtn(j.id) +
+      '<a class="btn tiny primary" href="' + esc(j.url) + '" target="_blank" rel="noopener">Apply on ' + esc(j.company) + '\'s site</a></div></div></article>';
   }
   function jobsHtml() {
-    if (jobs.configured === false) {
-      return '<div class="card stack"><h2>Live job listings are not switched on yet</h2>' +
-        '<p class="muted">They need a free key from Adzuna, added in the site settings.' + (me && me.isAdmin ? ' As a moderator, see the setup steps you were given (ADZUNA_APP_ID and ADZUNA_APP_KEY).' : ' Check back soon.') + '</p>' +
-        '<p class="muted small">Meanwhile you can add jobs you find elsewhere on your <a href="#/tracker">Tracker</a>.</p></div>';
-    }
     if (jobs.error && !jobs.list.length) return '<p class="card muted">' + esc(jobs.error) + '</p>';
-    if (jobs.loading && !jobs.list.length) return '<p class="muted">Finding fresh listings…</p>';
-    if (jobs.configured === null) return '<p class="muted">Loading…</p>';
-    if (!jobs.list.length) return '<p class="card muted">No listings match that. Try a broader word, or leave the city empty.</p>';
-    var shown = jobs.list.length, more = shown < jobs.total && jobs.page < 10;
-    return '<p class="muted small results-count">' + (jobs.total > shown ? 'Showing ' + shown + ' of ' + jobs.total.toLocaleString() : shown + ' listing' + (shown === 1 ? '' : 's')) +
-      (jobs.what || jobs.where ? ' for <b>' + esc([jobs.what, jobs.where].filter(Boolean).join(' in ')) + '</b>' : ', newest first') + '</p>' +
+    if (!jobs.loaded) return '<p class="muted">Gathering openings from ' + (jobs.companies || 'the') + ' companies… the first load can take a few seconds.</p>';
+    if (!jobs.list.length) return '<p class="card muted">No openings match that right now. Try a broader word, another city, or check <a href="#" data-act="jobs-tab" data-t="leads">Shared by members</a>.</p>';
+    var shown = jobs.list.length, more = shown < jobs.total;
+    var filters = [jobs.what && '“' + esc(jobs.what) + '”', jobs.where && 'in ' + esc(jobs.where), jobs.remote && 'remote'].filter(Boolean).join(' ');
+    return '<p class="muted small results-count">' + jobs.total.toLocaleString() + ' opening' + (jobs.total === 1 ? '' : 's') + (filters ? ' for ' + filters : '') +
+      ' from the careers pages of ' + jobs.companies + ' companies hiring in India. Newest first.</p>' +
       '<div class="jobs-list">' + jobs.list.map(jobHtml).join('') + '</div>' +
-      (more ? '<div class="row center"><button class="btn" data-act="jobs-more"' + (jobs.loading ? ' disabled' : '') + '>' + (jobs.loading ? 'Loading…' : 'Load more') + '</button></div>' : '') +
+      (more ? '<div class="row center"><button class="btn" data-act="jobs-more"' + (jobs.loading ? ' disabled' : '') + '>' + (jobs.loading ? 'Loading…' : 'Show more') + '</button></div>' : '') +
       (jobs.error ? '<p class="err">' + esc(jobs.error) + '</p>' : '');
   }
-  function renderJobs() { var el = document.getElementById('joblist'); if (el && currentView() === 'jobs') el.innerHTML = jobsHtml(); }
+  function renderJobs() {
+    var el = document.getElementById('joblist');
+    if (el && currentView() === 'jobs' && jobs.tab === 'employers') el.innerHTML = jobsHtml();
+  }
   function loadJobs(more) {
     if (jobs.loading) return;
     jobs.loading = true; jobs.error = '';
     var page = more ? jobs.page + 1 : 1;
-    if (!more) { jobs.list = []; jobs.total = 0; }
+    if (!more) { jobs.list = []; jobs.total = 0; jobs.loaded = false; }
     renderJobs();
-    var qs = '?page=' + page + (jobs.what ? '&what=' + encodeURIComponent(jobs.what) : '') + (jobs.where ? '&where=' + encodeURIComponent(jobs.where) : '');
+    var qs = '?page=' + page + (jobs.what ? '&what=' + encodeURIComponent(jobs.what) : '') +
+      (jobs.where ? '&where=' + encodeURIComponent(jobs.where) : '') + (jobs.remote ? '&remote=1' : '');
     api('GET', '/api/jobs' + qs).then(function (j) {
-      jobs.configured = !!j.configured;
-      jobs.source = j.source || null;
       var seen = {};
       jobs.list.forEach(function (x) { seen[x.id] = true; });
       jobs.list = jobs.list.concat((j.jobs || []).filter(function (x) { return !seen[x.id]; }));
-      jobs.total = Number(j.total) || jobs.list.length;
+      jobs.total = Number(j.total) || 0;
+      jobs.companies = Number(j.companies) || 0;
       jobs.page = page;
+      jobs.loaded = true;
     }, function (e) {
       if (e.status === 401) return fail(e);
       jobs.error = e.message;
-      if (jobs.configured === null) jobs.configured = true;
     }).then(function () { jobs.loading = false; renderJobs(); });
+  }
+
+  // ----- shared by members -----
+  function leadsPane() {
+    return '<details class="card share-lead"' + (jobs.leads && !jobs.leads.length ? ' open' : '') + '><summary><b>Share a job lead</b> <span class="muted small">Spotted an opening? Post the link so others can apply.</span></summary>' +
+      '<form class="stack lead-form" data-form="lead">' +
+      '<div class="grid2 tight"><label>Job title<input type="text" name="title" maxlength="100" required placeholder="e.g. Customer support executive"></label>' +
+      '<label>Company<input type="text" name="company" maxlength="80" required placeholder="e.g. Kettle &amp; Co"></label></div>' +
+      '<div class="grid2 tight"><label>City or Remote <span class="muted">(optional)</span><input type="text" name="location" maxlength="60" placeholder="e.g. Chennai"></label>' +
+      '<label>Link to the job post<input type="url" name="url" maxlength="300" required placeholder="https://"></label></div>' +
+      '<label>Note <span class="muted">(optional)</span><input type="text" name="note" maxlength="280" placeholder="e.g. I can refer you, or: freshers welcome, closes Friday"></label>' +
+      '<p class="muted small">Only share real openings with a link to the employer or a trusted job site. Never post anything that asks people to pay.</p>' +
+      '<div class="row"><button class="btn primary">Share lead</button></div></form></details>' +
+      '<p class="scam">' + ico('shield') + '<span>Leads are shared by members, not checked by The Bench. Real employers never charge to apply. Report anything that asks for money, OTPs or bank details.</span></p>' +
+      '<div id="leadlist">' + leadsHtml() + '</div>';
+  }
+  function leadHtml(l) {
+    var id = Number(l.id), u = esc(l.username);
+    var opts = [];
+    if (!l.own) opts.push('<button type="button" data-act="lead-report" data-id="' + id + '">Report</button>');
+    if (l.own || me.isAdmin) opts.push('<button type="button" data-act="lead-del" data-id="' + id + '">Delete' + (l.own ? '' : ' (moderator)') + '</button>');
+    return '<article class="card job lead"><div class="row between job-top"><h3>' + esc(l.title) + '</h3>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Lead options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') + '</div>' +
+      '<p class="meta"><b class="company">' + esc(l.company) + '</b>' + (l.location ? ' · ' + esc(l.location) : '') + '</p>' +
+      (l.note ? '<p class="snippet">“' + esc(l.note) + '”</p>' : '') +
+      '<div class="row between job-foot"><span class="muted small">Shared by <a class="plain-link" href="#/u/' + u + '"><b>' + esc(l.name) + '</b></a> · ' + ago(l.t) + '</span>' +
+      '<div class="row"><button class="react' + (l.mine ? ' on' : '') + '" data-act="lead-vote" data-id="' + id + '" aria-pressed="' + !!l.mine + '" title="Mark as useful">👍 ' + (l.votes ? l.votes : 'Useful') + '</button>' +
+      trackBtn('lead:' + id) +
+      '<a class="btn tiny primary" href="' + esc(l.url) + '" target="_blank" rel="noopener nofollow ugc">Open job post</a></div></div></article>';
+  }
+  function leadsHtml() {
+    if (jobs.leadsError && !jobs.leads) return '<p class="card muted">' + esc(jobs.leadsError) + '</p>';
+    if (!jobs.leads) return '<p class="muted">Loading leads…</p>';
+    if (!jobs.leads.length) return '<p class="card muted">No leads yet. Be the first to share an opening you found.</p>';
+    return '<div class="jobs-list">' + jobs.leads.map(leadHtml).join('') + '</div><p class="muted small center-text">Leads disappear after 45 days.</p>';
+  }
+  function loadLeads() {
+    api('GET', '/api/leads').then(function (j) {
+      jobs.leads = Array.isArray(j.leads) ? j.leads : [];
+      jobs.leadsError = '';
+    }, function (e) {
+      if (e.status === 401) return fail(e);
+      jobs.leadsError = e.message;
+    }).then(function () {
+      var el = document.getElementById('leadlist');
+      if (el && currentView() === 'jobs' && jobs.tab === 'leads') el.innerHTML = leadsHtml();
+      var form = document.querySelector('details.share-lead');
+      if (form && jobs.leads && !jobs.leads.length) form.open = true; // nothing to read yet, so invite a share
+    });
   }
 
   // ---------- resume checker (simple rules, runs in the browser) ----------
@@ -778,15 +819,40 @@
       return feedCall(api('DELETE', '/api/posts/' + Number(d.id)));
     },
     'track-job': function (d) {
-      var j = find(jobs.list, d.id);
+      var j = d.id.indexOf('lead:') === 0
+        ? (function (l) { return l && { id: d.id, title: l.title, company: l.company, url: l.url }; })(find(jobs.leads || [], Number(d.id.slice(5))))
+        : find(jobs.list, d.id);
       if (!j || S.apps.some(function (a) { return a.jobId === j.id; })) return false;
       S.apps.push({ id: uid(), jobId: j.id, title: j.title, company: j.company || 'Unknown company', url: j.url, stage: 'Wishlist', t: Date.now() });
       save();
-      renderJobs();
+      document.querySelectorAll('[data-act="track-job"][data-id="' + j.id.replace(/"/g, '') + '"]').forEach(function (b) { b.disabled = true; b.textContent = 'Tracked'; b.classList.add('ghost'); });
       toast('Added to your tracker under Wishlist.');
       return false;
     },
     'jobs-more': function () { loadJobs(true); return false; },
+    'jobs-tab': function (d) {
+      jobs.tab = d.t === 'leads' ? 'leads' : 'employers';
+      render();
+      return false;
+    },
+    'lead-vote': function (d) {
+      api('POST', '/api/leads/' + Number(d.id) + '/vote', {}).then(loadLeads).catch(fail);
+      return false;
+    },
+    'lead-del': function (d) {
+      closeMenus();
+      if (!window.confirm('Delete this job lead?')) return false;
+      api('DELETE', '/api/leads/' + Number(d.id)).then(function () { toast('Lead deleted.'); loadLeads(); }).catch(fail);
+      return false;
+    },
+    'lead-report': function (d) {
+      closeMenus();
+      var reason = window.prompt('Report this job lead to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/leads/' + Number(d.id) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
+      return false;
+    },
     'move-app': function (d) {
       var a = find(S.apps, d.id); if (!a) return;
       var i = STAGES.indexOf(a.stage) + Number(d.dir);
@@ -818,7 +884,23 @@
     jobsearch: function (f) {
       jobs.what = String(f.get('what') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
       jobs.where = String(f.get('where') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      jobs.remote = f.get('remote') === '1';
       loadJobs(false);
+      return false;
+    },
+    lead: function (f, form) {
+      var btn = form.querySelector('button.primary');
+      btn.disabled = true;
+      api('POST', '/api/leads', {
+        title: f.get('title'), company: f.get('company'), location: f.get('location'),
+        url: String(f.get('url') || '').trim(), note: f.get('note')
+      }).then(function () {
+        form.reset();
+        form.closest('details').open = false;
+        toast('Thanks! Your lead is up.');
+        loadLeads();
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); })
+        .then(function () { btn.disabled = false; });
       return false;
     },
     profile: function (f, form) {
@@ -1259,7 +1341,7 @@
         (r.deleted ? '<p class="muted small">The author has already deleted this message.</p>' : '') +
         '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
         '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
-        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : 'Delete message') + '</button>' +
+        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : 'Delete message') + '</button>' +
         (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
         '</div></article>';
     }).join('') || '<p class="card muted">No open reports. All quiet.</p>';
@@ -1653,7 +1735,10 @@
       loadFun();
     },
     profile: loadProfile,
-    jobs: function () { if (jobs.configured === null || (!jobs.list.length && !jobs.loading && !jobs.error)) loadJobs(false); },
+    jobs: function () {
+      if (jobs.tab === 'leads') loadLeads();
+      else if (!jobs.loaded && !jobs.loading) loadJobs(false);
+    },
     'edit-profile': loadEditor,
     people: loadPeople
   };

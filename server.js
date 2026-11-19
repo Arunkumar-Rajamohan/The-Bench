@@ -1895,10 +1895,28 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// ---------- keep-awake ----------
+// Render's free plan puts the app to sleep after ~15 minutes with no visitors, and waking takes 30-60 seconds.
+// Visiting our own public address every 10 minutes counts as a visitor, so it stays awake. Render sets
+// RENDER_EXTERNAL_URL automatically; set KEEP_AWAKE=off on the host to stop. It only touches /healthz (no database).
+// Note: one always-on free service uses ~720-744 of Render's 750 free instance hours a month.
+function startKeepAwake() {
+  const target = (process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
+  if (!target || process.env.KEEP_AWAKE === 'off') return;
+  if (!/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(target)) { console.error('Keep-awake skipped: the address must use https.'); return; }
+  const minutes = Math.max(Number(process.env.KEEP_AWAKE_MINUTES) || 10, 0.01);
+  const ping = () => fetch(target + '/healthz', { headers: { 'User-Agent': 'TheBench-KeepAwake/1.0' }, signal: AbortSignal.timeout(20000) })
+    .then((r) => { if (!r.ok) console.error('Keep-awake ping got HTTP ' + r.status); })
+    .catch((e) => console.error('Keep-awake ping failed: ' + e.message));
+  setInterval(ping, minutes * 60000);
+  console.log('Keep-awake on: pinging ' + target + '/healthz every ' + minutes + ' minutes');
+}
+
 initDb().then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
     ensureJobs(); // warm the job listings so the first visitor does not wait
+    startKeepAwake();
   });
 }).catch((e) => {
   console.error('Could not start: ' + e.message);

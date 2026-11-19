@@ -49,6 +49,8 @@
     bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
     buddy: '<circle cx="8" cy="8" r="3"/><circle cx="16.5" cy="8" r="3"/><path d="M2.5 19.5c0-3.1 2.4-5.5 5.5-5.5s5.5 2.4 5.5 5.5"/><path d="M13.6 14.6a5.5 5.5 0 0 1 8.4 4.9"/>',
     settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>',
+    phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+    download: '<path d="M12 4v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -132,7 +134,8 @@
       },
       resume: '',
       practice: [],
-      bingo: null // made the first time the Fun tab opens
+      bingo: null, // made the first time the Fun tab opens
+      cv: null // resume builder, made the first time it opens
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -143,6 +146,7 @@
     if (Array.isArray(raw.practice)) b.practice = raw.practice.filter(isObj);
     if (typeof raw.resume === 'string') b.resume = raw.resume;
     b.bingo = cleanBingo(raw.bingo);
+    b.cv = cleanCv(raw.cv);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -308,6 +312,7 @@
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
         (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
+        installBanner() +
         homeBuddyHtml() +
         alertBanner() +
         '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
@@ -349,6 +354,15 @@
     'edit-profile': function () {
       return head('Edit your profile', 'Members see this when they tap your name. Only your name is required.') +
         '<div id="editbody"><p class="muted">Loading…</p></div>';
+    },
+
+    resume: function () {
+      return head('Resume builder', 'Fill it in once, pick a look, and download a clean PDF. It saves privately to your account as you type.') +
+        '<div class="row cv-actions"><button class="btn primary" data-act="cv-print">' + ico('download') + 'Download PDF</button>' +
+        '<button class="btn ghost" data-act="cv-check">Check it with the resume checker</button>' +
+        '<span class="muted small">In the print window, choose “Save as PDF”.</span></div>' +
+        '<div class="cv-layout"><div id="cveditor">' + (S.cv ? cvEditor() : '<p class="muted">Getting your details…</p>') + '</div>' +
+        '<div class="cv-preview-wrap"><p class="muted small cv-preview-label">Live preview</p><div id="cvpreview">' + (S.cv ? cvPreview() : '') + '</div></div></div>';
     },
 
     buddy: function () {
@@ -425,6 +439,7 @@
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
       return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
+        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a></span></p>' +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -931,6 +946,58 @@
       return false;
     },
     'jobs-more': function () { loadJobs(true); return false; },
+    'install-app': function () {
+      if (install.prompt) {
+        var p = install.prompt;
+        p.prompt();
+        p.userChoice.then(function (c) { if (c && c.outcome === 'accepted') toast('Installing…'); install.prompt = null; updateInstallUi(); }).catch(function () {});
+      } else if (install.ios) {
+        showIosInstallHelp();
+      }
+      return false;
+    },
+    'install-dismiss': function () {
+      try { localStorage.setItem('bench:install-dismissed', '1'); } catch (e) { /* storage blocked */ }
+      updateInstallUi();
+      return false;
+    },
+    'cv-template': function (d) { S.cv.template = d.t; save(); refreshCv(true); return false; },
+    'cv-add': function (d) {
+      var blank = {};
+      CV_ITEM[d.k].forEach(function (f) { blank[f] = ''; });
+      S.cv[d.k].push(blank);
+      save();
+      refreshCv(true);
+      var first = document.getElementById('cv-' + d.k + '-' + (S.cv[d.k].length - 1) + '-' + CV_ITEM[d.k][0]);
+      if (first) first.focus();
+      return false;
+    },
+    'cv-del': function (d) {
+      var i = Number(d.i), item = S.cv[d.k][i];
+      var filled = item && Object.keys(item).some(function (k) { return item[k]; });
+      if (filled && !window.confirm('Remove this entry?')) return false;
+      S.cv[d.k].splice(i, 1);
+      save();
+      refreshCv(true);
+      return false;
+    },
+    'cv-move': function (d) {
+      var i = Number(d.i), list = S.cv[d.k];
+      if (i < 1) return false;
+      var t = list[i - 1]; list[i - 1] = list[i]; list[i] = t;
+      save();
+      refreshCv(true);
+      return false;
+    },
+    'cv-print': function () { window.print(); return false; },
+    'cv-check': function () {
+      S.resume = cvText();
+      ui.report = analyze(S.resume);
+      save();
+      location.hash = '#/prep';
+      toast('Your resume is in the checker. Scroll down for the score and tips.');
+      return false;
+    },
     'people-buddy': function () {
       prof.buddyOnly = !prof.buddyOnly;
       render();
@@ -2097,6 +2164,8 @@
       '<a class="ab-me" href="#/u/' + u + '">' + avatarHtml(me.name, me.color, 'lg') +
       '<span><b>' + esc(me.name) + '</b><small>@' + u + ' · View your profile</small></span></a>' +
       '<div class="ab-links">' + link('#/people', 'users', 'People') + link('#/buddy', 'buddy', 'Buddy') + link('#/account', 'settings', 'Account') +
+      (canInstall() ? '<button type="button" class="ql" data-act="install-app">' + ico('phone') + '<span>Install app</span></button>' : '') +
+      '<a class="ql" href="#/resume">' + ico('feed') + '<span>Resume</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -2107,6 +2176,190 @@
     el.href = '#/u/' + me.username;
     el.classList.toggle('on', currentView() === 'profile' && profileRoute() === me.username);
     el.innerHTML = avatarHtml(me.name, me.color, '') + '<span class="mc-text"><b>' + esc(me.name) + '</b><small>@' + esc(me.username) + '</small></span>' + ico('settings');
+  }
+
+  // ---------- install as an app ----------
+  var install = { prompt: null, standalone: false, ios: false };
+  try {
+    install.standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    install.ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  } catch (e) { /* old browser */ }
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () { /* not essential */ }); });
+  }
+  window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); install.prompt = e; updateInstallUi(); });
+  window.addEventListener('appinstalled', function () {
+    install.prompt = null; install.standalone = true;
+    toast('Installed! Open The Bench from your home screen.');
+    updateInstallUi();
+  });
+  function canInstall() { return !install.standalone && (!!install.prompt || install.ios); }
+  function installDismissed() { try { return localStorage.getItem('bench:install-dismissed') === '1'; } catch (e) { return false; } }
+  function installBanner() {
+    if (!canInstall() || installDismissed()) return '<span id="installbanner" hidden></span>';
+    return '<p class="banner" id="installbanner">' + ico('phone') + '<span><b>Get The Bench on your phone.</b> Install it like an app: its own icon, full screen and quicker to open. ' +
+      '<button class="link big" data-act="install-app">Install</button> · <button class="link" data-act="install-dismiss">Not now</button></span></p>';
+  }
+  function updateInstallUi() {
+    if (currentView() !== 'home') return;
+    var b = document.getElementById('installbanner');
+    if (b) b.outerHTML = installBanner();
+    var bar = document.querySelector('.account-bar');
+    if (bar) bar.outerHTML = accountBar();
+  }
+  function showIosInstallHelp() {
+    var d = document.getElementById('iosinstall');
+    if (!d) {
+      document.body.insertAdjacentHTML('beforeend', '<dialog id="iosinstall" class="sheet"><h2>' + ico('phone') + ' Add to your Home Screen</h2>' +
+        '<ol class="steps"><li>Open The Bench in <b>Safari</b>.</li><li>Tap the <b>Share</b> button (the square with an arrow pointing up).</li>' +
+        '<li>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>' +
+        '<p class="muted small">The Bench then opens full screen from its own icon, like any other app.</p>' +
+        '<form method="dialog"><button class="btn primary">Got it</button></form></dialog>');
+      d = document.getElementById('iosinstall');
+    }
+    if (d.showModal) d.showModal(); else toast('In Safari: tap Share, then "Add to Home Screen".');
+  }
+
+  // ---------- resume builder ----------
+  // Stored privately with the rest of your data (S.cv). The preview is plain HTML; "Download PDF" uses the
+  // browser's print dialog ("Save as PDF"), with print styles that show only the resume page.
+  var CV_TEMPLATES = [['classic', 'Classic'], ['modern', 'Modern'], ['compact', 'Compact']];
+  var CV_ITEM = { experience: ['role', 'company', 'place', 'start', 'end', 'bullets'], education: ['degree', 'school', 'year', 'details'], projects: ['name', 'link', 'description'] };
+  function blankCv() {
+    return { template: 'classic', name: '', headline: '', email: '', phone: '', city: '', links: '', summary: '', experience: [], education: [], skills: '', projects: [], certs: '', languages: '' };
+  }
+  function cleanCv(raw) {
+    if (!isObj(raw)) return null;
+    var b = blankCv();
+    Object.keys(b).forEach(function (k) {
+      if (CV_ITEM[k]) {
+        b[k] = (Array.isArray(raw[k]) ? raw[k] : []).filter(isObj).slice(0, 15).map(function (it) {
+          var o = {};
+          CV_ITEM[k].forEach(function (f) { o[f] = typeof it[f] === 'string' ? it[f].slice(0, 2000) : ''; });
+          return o;
+        });
+      } else if (typeof raw[k] === 'string') b[k] = raw[k].slice(0, 3000);
+    });
+    if (!CV_TEMPLATES.some(function (t) { return t[0] === b.template; })) b.template = 'classic';
+    return b;
+  }
+  // First visit: start from your profile so there is less to type.
+  function ensureCv() {
+    if (S.cv) return Promise.resolve();
+    S.cv = blankCv();
+    S.cv.name = me.name;
+    return api('GET', '/api/profile/' + encodeURIComponent(me.username)).then(function (j) {
+      var p = j.profile;
+      S.cv.headline = p.headline; S.cv.city = p.location; S.cv.skills = p.skills.join(', '); S.cv.links = p.link; S.cv.summary = p.bio;
+    }).catch(function () { /* start blank */ }).then(save);
+  }
+  function getPath(p) {
+    var parts = p.split('.'), o = S.cv;
+    for (var i = 0; i < parts.length; i++) { if (o == null) return ''; o = o[parts[i]]; }
+    return o == null ? '' : String(o);
+  }
+  function setPath(p, v) {
+    var parts = p.split('.'), o = S.cv;
+    for (var i = 0; i < parts.length - 1; i++) { o = o[parts[i]]; if (!o) return; }
+    o[parts[parts.length - 1]] = v;
+  }
+  function cvField(path, label, opts) {
+    opts = opts || {};
+    var v = getPath(path), id = 'cv-' + path.replace(/\./g, '-');
+    var attrs = ' id="' + id + '" data-cv="' + path + '" maxlength="' + (opts.max || 200) + '" placeholder="' + esc(opts.ph || '') + '"';
+    return '<label class="cvf' + (opts.wide ? ' wide' : '') + '"><span>' + label + (opts.hint ? ' <span class="muted">' + opts.hint + '</span>' : '') + '</span>' +
+      (opts.area ? '<textarea' + attrs + ' rows="' + (opts.rows || 3) + '">' + esc(v) + '</textarea>' : '<input type="text"' + attrs + ' value="' + esc(v) + '">') + '</label>';
+  }
+  function cvEditor() {
+    var c = S.cv;
+    var tpl = '<div class="chips">' + CV_TEMPLATES.map(function (t) {
+      return '<button type="button" class="chip' + (c.template === t[0] ? ' on' : '') + '" data-act="cv-template" data-t="' + t[0] + '" aria-pressed="' + (c.template === t[0]) + '">' + t[1] + '</button>';
+    }).join('') + '</div>';
+    var list = function (key, title, one, addLabel, fields) {
+      return '<section class="cv-sec"><h3>' + title + '</h3>' + c[key].map(function (it, i) {
+        return '<div class="cv-item"><div class="row between"><b class="small">' + one + ' ' + (i + 1) + '</b><span class="row">' +
+          (i > 0 ? '<button type="button" class="link" data-act="cv-move" data-k="' + key + '" data-i="' + i + '">Move up</button>' : '') +
+          '<button type="button" class="link" data-act="cv-del" data-k="' + key + '" data-i="' + i + '">Remove</button></span></div>' +
+          '<div class="cv-grid">' + fields(key + '.' + i) + '</div></div>';
+      }).join('') + '<button type="button" class="btn tiny ghost" data-act="cv-add" data-k="' + key + '">+ ' + addLabel + '</button></section>';
+    };
+    return '<div class="card stack cv-editor">' +
+      '<section class="cv-sec"><h3>Look</h3>' + tpl + '</section>' +
+      '<section class="cv-sec"><h3>About you</h3><div class="cv-grid">' +
+        cvField('name', 'Full name', { ph: 'Your name' }) + cvField('headline', 'Headline', { ph: 'e.g. Customer support specialist' }) +
+        cvField('email', 'Email', { ph: 'you@example.com' }) + cvField('phone', 'Phone', { ph: '+91 …' }) +
+        cvField('city', 'City', { ph: 'e.g. Chennai' }) + cvField('links', 'Links', { ph: 'LinkedIn, portfolio…', hint: '(commas)' }) +
+        cvField('summary', 'Summary', { area: 1, wide: 1, rows: 3, max: 600, ph: '2–3 lines: who you are, what you are good at, and the role you want.' }) + '</div></section>' +
+      list('experience', 'Experience', 'Job', 'Add a job', function (p) {
+        return cvField(p + '.role', 'Job title', { ph: 'e.g. Senior associate' }) + cvField(p + '.company', 'Company') + cvField(p + '.place', 'City') +
+          cvField(p + '.start', 'From', { ph: 'e.g. Jun 2022' }) + cvField(p + '.end', 'To', { ph: 'e.g. Aug 2026 or Present' }) +
+          cvField(p + '.bullets', 'What you did', { area: 1, wide: 1, rows: 4, max: 1500, hint: '(one point per line; start with a verb, add numbers)', ph: 'Handled 60+ customer chats a day with a 95% satisfaction score' });
+      }) +
+      list('education', 'Education', 'Course', 'Add education', function (p) {
+        return cvField(p + '.degree', 'Degree or course', { ph: 'e.g. B.Com' }) + cvField(p + '.school', 'College or school') +
+          cvField(p + '.year', 'Year', { ph: 'e.g. 2021' }) + cvField(p + '.details', 'Details', { ph: 'e.g. 78%, class representative' });
+      }) +
+      '<section class="cv-sec"><h3>Skills</h3><div class="cv-grid">' + cvField('skills', 'Skills', { area: 1, wide: 1, rows: 2, max: 600, hint: '(separate with commas)', ph: 'Excel, Customer support, Tamil, English' }) + '</div></section>' +
+      list('projects', 'Projects', 'Project', 'Add a project', function (p) {
+        return cvField(p + '.name', 'Project') + cvField(p + '.link', 'Link', { ph: 'https://…' }) + cvField(p + '.description', 'What it is', { area: 1, wide: 1, rows: 2, max: 600 });
+      }) +
+      '<section class="cv-sec"><h3>More</h3><div class="cv-grid">' + cvField('certs', 'Certifications', { area: 1, wide: 1, rows: 2, max: 800, hint: '(one per line)' }) +
+        cvField('languages', 'Languages', { ph: 'English, Hindi, Tamil', wide: 1 }) + '</div></section></div>';
+  }
+  function cvLines(s) { return String(s || '').split('\n').map(function (x) { return x.replace(/^[-•*\s]+/, '').trim(); }).filter(Boolean); }
+  function cvList(s) { return String(s || '').split(/[,\n]/).map(function (x) { return x.trim(); }).filter(Boolean); }
+  function cvPreview() {
+    var c = S.cv;
+    var sec = function (title, body) { return body ? '<section class="cvp-sec"><h2>' + title + '</h2>' + body + '</section>' : ''; };
+    var bullets = function (lines) { return lines.length ? '<ul>' + lines.map(function (b) { return '<li>' + esc(b) + '</li>'; }).join('') + '</ul>' : ''; };
+    var contact = [c.email, c.phone, c.city].concat(cvList(c.links)).filter(Boolean).map(esc).join(' <span class="cvp-dot">·</span> ');
+    var exp = c.experience.filter(function (e) { return e.role || e.company; }).map(function (e) {
+      var dates = [e.start, e.end].filter(Boolean).join(' – ');
+      return '<div class="cvp-item"><div class="cvp-row"><b>' + esc(e.role) + '</b>' + (dates ? '<span>' + esc(dates) + '</span>' : '') + '</div>' +
+        '<div class="cvp-sub">' + esc([e.company, e.place].filter(Boolean).join(', ')) + '</div>' + bullets(cvLines(e.bullets)) + '</div>';
+    }).join('');
+    var edu = c.education.filter(function (e) { return e.degree || e.school; }).map(function (e) {
+      return '<div class="cvp-item"><div class="cvp-row"><b>' + esc(e.degree) + '</b>' + (e.year ? '<span>' + esc(e.year) + '</span>' : '') + '</div>' +
+        '<div class="cvp-sub">' + esc(e.school) + (e.details ? ' · ' + esc(e.details) : '') + '</div></div>';
+    }).join('');
+    var proj = c.projects.filter(function (p) { return p.name; }).map(function (p) {
+      return '<div class="cvp-item"><div class="cvp-row"><b>' + esc(p.name) + '</b>' + (p.link ? '<span>' + esc(p.link) + '</span>' : '') + '</div>' +
+        (p.description ? '<p>' + esc(p.description) + '</p>' : '') + '</div>';
+    }).join('');
+    var skills = cvList(c.skills).length ? '<p class="cvp-skills">' + cvList(c.skills).map(esc).join(' <span class="cvp-dot">·</span> ') + '</p>' : '';
+    var certs = bullets(cvLines(c.certs));
+    var langs = c.languages ? '<p>' + esc(c.languages) + '</p>' : '';
+    var head = '<header class="cvp-head"><h1>' + esc(c.name || 'Your name') + '</h1>' + (c.headline ? '<p class="cvp-headline">' + esc(c.headline) + '</p>' : '') +
+      (contact ? '<p class="cvp-contact">' + contact + '</p>' : '') + '</header>';
+    var main = sec('Summary', c.summary ? '<p>' + esc(c.summary) + '</p>' : '') + sec('Experience', exp) + sec('Projects', proj) + sec('Education', edu);
+    var side = sec('Skills', skills) + sec('Certifications', certs) + sec('Languages', langs);
+    var body = c.template === 'compact' ? '<div class="cvp-cols"><div>' + main + '</div><aside>' + side + '</aside></div>' : main + side;
+    var empty = !(c.summary || exp || edu || skills) ? '<p class="cvp-empty">Start filling in the form. Your resume appears here as you type.</p>' : '';
+    return '<article class="cv cv-' + c.template + '" id="cvpaper">' + head + body + empty + '</article>';
+  }
+  // Plain-text version, for the resume checker on the Prep page.
+  function cvText() {
+    var c = S.cv, out = [c.name, c.headline, [c.email, c.phone, c.city].concat(cvList(c.links)).filter(Boolean).join(' | '), ''];
+    if (c.summary) out.push('Summary', c.summary, '');
+    if (c.experience.length) {
+      out.push('Experience');
+      c.experience.forEach(function (e) {
+        out.push([e.role, e.company, e.place].filter(Boolean).join(', ') + ([e.start, e.end].filter(Boolean).length ? ' (' + [e.start, e.end].filter(Boolean).join(' – ') + ')' : ''));
+        cvLines(e.bullets).forEach(function (b) { out.push('- ' + b); });
+      });
+      out.push('');
+    }
+    if (c.projects.length) { out.push('Projects'); c.projects.forEach(function (p) { out.push([p.name, p.link].filter(Boolean).join(' – '), p.description || ''); }); out.push(''); }
+    if (c.education.length) { out.push('Education'); c.education.forEach(function (e) { out.push([e.degree, e.school, e.year, e.details].filter(Boolean).join(', ')); }); out.push(''); }
+    if (c.skills) out.push('Skills', cvList(c.skills).join(', '), '');
+    if (c.certs) out.push('Certifications', cvLines(c.certs).join('\n'), '');
+    if (c.languages) out.push('Languages', c.languages);
+    return out.filter(function (l, i, a) { return l !== '' || a[i - 1] !== ''; }).join('\n').trim();
+  }
+  function refreshCv(editorToo) {
+    if (editorToo) renderSection('cveditor', cvEditor());
+    var pv = document.getElementById('cvpreview');
+    if (pv) pv.innerHTML = cvPreview();
   }
 
   var afterRender = {
@@ -2132,7 +2385,8 @@
     },
     'edit-profile': loadEditor,
     people: loadPeople,
-    buddy: function () { loadBuddy(); loadSuggestions(); }
+    buddy: function () { loadBuddy(); loadSuggestions(); },
+    resume: function () { if (!S.cv) ensureCv().then(function () { if (currentView() === 'resume') render(); }); }
   };
 
   // ---------- splash ----------
@@ -2183,6 +2437,7 @@
     var v = currentView();
     main.innerHTML = views[v]();
     main.classList.toggle('chat-mode', v === 'chat');
+    document.body.setAttribute('data-view', v);
     // A gentle fade only when moving to a different page, not on every small update.
     if (v !== lastView) {
       main.classList.remove('enter');
@@ -2239,6 +2494,11 @@
   document.addEventListener('input', function (e) {
     if (e.target.id === 'resume') {
       S.resume = e.target.value; save();
+    } else if (e.target.dataset && e.target.dataset.cv && S.cv) {
+      setPath(e.target.dataset.cv, e.target.value);
+      save();
+      var pv = document.getElementById('cvpreview');
+      if (pv) pv.innerHTML = cvPreview();
     } else if (e.target.id === 'peopleq') {
       prof.query = e.target.value;
       document.getElementById('peoplelist').innerHTML = peopleHtml();

@@ -1853,6 +1853,12 @@ const STATIC = {
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
+  '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], // served from the root so it can look after the whole site
+  '/icons/icon-192.png': ['icons/icon-192.png', 'image/png', FOREVER],
+  '/icons/icon-512.png': ['icons/icon-512.png', 'image/png', FOREVER],
+  '/icons/maskable-512.png': ['icons/maskable-512.png', 'image/png', FOREVER],
+  '/icons/apple-touch-icon.png': ['icons/apple-touch-icon.png', 'image/png', FOREVER],
   '/fonts/inter.woff2': ['fonts/inter.woff2', 'font/woff2', FOREVER],
   '/fonts/fraunces.woff2': ['fonts/fraunces.woff2', 'font/woff2', FOREVER],
   '/fonts/fraunces-italic.woff2': ['fonts/fraunces-italic.woff2', 'font/woff2', FOREVER]

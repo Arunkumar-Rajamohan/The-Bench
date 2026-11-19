@@ -690,6 +690,109 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
   .ql .ico { width: 19px; height: 19px; }
 }
 
+/* ---------- resume builder ---------- */
+.cv-actions { margin-bottom: 18px; gap: 10px; }
+.cv-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.cv-editor { gap: 4px; }
+.cv-sec { padding: 12px 0; border-top: 1px solid var(--line); display: grid; gap: 10px; }
+.cv-sec:first-child { border-top: 0; padding-top: 0; }
+.cv-sec .chips { margin: 0; }
+.cv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.cvf { display: grid; gap: 5px; font-size: .82rem; font-weight: 600; color: var(--ink-2); min-width: 0; }
+.cvf .muted { font-weight: 400; }
+.cvf.wide { grid-column: 1 / -1; }
+.cvf textarea { min-height: 0; }
+.cv-item { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px; display: grid; gap: 10px; background: var(--bg); }
+.cv-preview-wrap { position: sticky; top: 20px; }
+.cv-preview-label { margin-bottom: 8px; text-transform: uppercase; letter-spacing: .1em; font-weight: 600; font-size: .7rem; }
+
+/* The resume itself: always a white page with dark text, whatever the site theme. */
+.cv {
+  --cv-ink: #1d1a16; --cv-soft: #5d554b; --cv-line: #ddd3c3; --cv-accent: #b23c26;
+  background: #fff; color: var(--cv-ink); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow-pop);
+  padding: 34px 36px; font: 13.5px/1.5 var(--sans); min-height: 420px; overflow-wrap: anywhere;
+}
+.cv h1, .cv h2, .cv p, .cv ul { margin: 0; }
+.cvp-head { margin-bottom: 14px; }
+.cvp-head h1 { font: 600 26px/1.15 var(--serif); letter-spacing: -.015em; }
+.cvp-headline { font-size: 14.5px; color: var(--cv-soft); margin-top: 3px; }
+.cvp-contact { font-size: 12.5px; color: var(--cv-soft); margin-top: 6px; }
+.cvp-dot { color: var(--cv-line); margin: 0 3px; }
+.cvp-sec { margin-top: 14px; }
+.cvp-sec h2 { font: 700 11px/1.2 var(--sans); text-transform: uppercase; letter-spacing: .14em; color: var(--cv-ink); padding-bottom: 5px; margin-bottom: 8px; border-bottom: 1px solid var(--cv-line); }
+.cvp-item { margin-bottom: 10px; break-inside: avoid; }
+.cvp-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.cvp-row span { font-size: 12px; color: var(--cv-soft); white-space: nowrap; }
+.cvp-sub { font-size: 12.5px; color: var(--cv-soft); }
+.cv ul { padding-left: 17px; margin-top: 4px; }
+.cv li { margin: 2px 0; }
+.cvp-skills { line-height: 1.7; }
+.cvp-empty { margin-top: 30px; text-align: center; color: var(--cv-soft); font: italic 15px/1.5 var(--serif); }
+/* Classic: centred, quietly elegant */
+.cv-classic .cvp-head { text-align: center; padding-bottom: 12px; border-bottom: 2px solid var(--cv-ink); }
+.cv-classic .cvp-sec h2 { font: 600 15px/1.2 var(--serif); text-transform: none; letter-spacing: 0; }
+/* Modern: tomato accents, strong left edge */
+.cv-modern { border-left: 6px solid var(--cv-accent); }
+.cv-modern .cvp-head h1 { font-family: var(--sans); font-weight: 700; letter-spacing: -.02em; }
+.cv-modern .cvp-headline { color: var(--cv-accent); font-weight: 600; }
+.cv-modern .cvp-sec h2 { color: var(--cv-accent); border-bottom: 0; padding-bottom: 0; }
+/* Compact: two columns, smaller type, fits more on one page */
+.cv-compact { font-size: 12.5px; padding: 28px 30px; }
+.cv-compact .cvp-head h1 { font-size: 22px; }
+.cvp-cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 22px; }
+.cvp-cols aside { border-left: 1px solid var(--cv-line); padding-left: 16px; }
+.cvp-cols aside .cvp-skills { line-height: 1.5; }
+.cv h2 { overflow-wrap: normal; word-break: normal; }
+.cvp-cols aside h2 { letter-spacing: .05em; font-size: 10px; }
+.cvp-cols aside, .cvp-cols aside * { overflow-wrap: break-word; -webkit-hyphens: auto; hyphens: auto; }
+
+/* Print = "Download PDF": only the resume, on A4, nothing else on the page. */
+@media print {
+  @page { size: A4; margin: 14mm; }
+  body[data-view="resume"] { background: #fff !important; }
+  body[data-view="resume"] .side, body[data-view="resume"] #toast, body[data-view="resume"] #splash, body[data-view="resume"] .confetti { display: none !important; }
+  body[data-view="resume"] .shell { display: block !important; }
+  body[data-view="resume"] main { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+  body[data-view="resume"] main > *:not(.cv-layout) { display: none !important; }
+  body[data-view="resume"] main.enter > * { animation: none !important; }
+  body[data-view="resume"] .cv-layout { display: block !important; }
+  body[data-view="resume"] #cveditor, body[data-view="resume"] .cv-preview-label { display: none !important; }
+  body[data-view="resume"] .cv-preview-wrap { position: static !important; }
+  body[data-view="resume"] .cv { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; padding: 0 !important; min-height: 0 !important; }
+  body[data-view="resume"] .cv-modern { border-left: 0 !important; }
+  body[data-view="resume"] .cvp-empty { display: none !important; }
+  /* An A4 page is narrower than the phone breakpoint: keep the desktop resume layout when printing. */
+  body[data-view="resume"] .cv { font-size: 13.5px !important; }
+  body[data-view="resume"] .cv-compact { font-size: 12.5px !important; }
+  body[data-view="resume"] .cvp-cols { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) !important; }
+  body[data-view="resume"] .cvp-cols aside { border-left: 1px solid var(--cv-line) !important; padding-left: 16px !important; }
+}
+
+/* iPhone "Add to Home Screen" help */
+dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
+dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }
+dialog.sheet h2 { margin-bottom: 12px; }
+dialog.sheet h2 .ico { color: var(--accent); }
+dialog.sheet form { margin-top: 16px; }
+
+/* Running full screen as an installed app: keep clear of the phone's status bar. */
+@media (display-mode: standalone) {
+  main { padding-top: max(52px, calc(env(safe-area-inset-top) + 20px)); }
+}
+
+@media (max-width: 860px) {
+  .cv-layout { grid-template-columns: minmax(0, 1fr); }
+  .cv-preview-wrap { position: static; }
+  .cv-grid { grid-template-columns: minmax(0, 1fr); }
+  .cv { padding: 22px 20px; font-size: 12.5px; }
+  .cvp-cols { grid-template-columns: minmax(0, 1fr); }
+  .cvp-cols aside { border-left: 0; padding-left: 0; }
+  .ab-links { grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)) !important; }
+}
+@media (max-width: 860px) and (display-mode: standalone) {
+  main { padding-top: max(28px, calc(env(safe-area-inset-top) + 12px)); }
+}
+
 /* ---------- splash + page transitions ---------- */
 #splash { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); transition: opacity .5s ease, visibility .5s; }
 #splash.done { opacity: 0; visibility: hidden; }

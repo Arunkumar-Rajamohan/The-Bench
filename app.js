@@ -90,26 +90,196 @@
   var REACTS = ['🙌', '💪', '😂'];
   var MOODS = ['😞', '😕', '😐', '🙂', '🤩'];
 
-  var QUESTIONS = [
-    { c: 'About you', q: 'Tell me about yourself.' },
-    { c: 'About you', q: 'What are you looking for in your next role?' },
-    { c: 'About you', q: 'What is your biggest strength, and where has it shown up?' },
-    { c: 'About you', q: 'What is something you are working on getting better at?' },
-    { c: 'The gap', q: 'Why did you leave your last job?' },
-    { c: 'The gap', q: 'What have you been doing since your last role?' },
-    { c: 'The gap', q: 'I see a gap on your resume. Can you walk me through it?' },
-    { c: 'Behavioral', q: 'Tell me about a time you disagreed with a teammate.' },
-    { c: 'Behavioral', q: 'Describe a project you are proud of. What was your part?' },
-    { c: 'Behavioral', q: 'Tell me about a time you failed. What did you change after?' },
-    { c: 'Behavioral', q: 'Describe a time you had to learn something fast.' },
-    { c: 'Behavioral', q: 'Tell me about a time you handled a difficult customer or stakeholder.' },
-    { c: 'Company', q: 'Why do you want to work here?' },
-    { c: 'Company', q: 'What do you know about what we do?' },
-    { c: 'Money', q: 'What are your salary expectations?' },
-    { c: 'Curveball', q: 'If you joined tomorrow, what would you do in your first 30 days?' },
-    { c: 'Curveball', q: 'Teach me something in two minutes.' },
-    { c: 'Closing', q: 'Do you have any questions for us?' }
+  // ---------- interview practice: question packs ----------
+  // Each question: q = the question, tip = what a good answer does, star = a "tell me about a time" question (use STAR).
+  // Ids are pack + position, so add new questions at the END of a pack to keep saved notes attached to the right question.
+  var PACKS = [
+    { id: 'general', name: 'Everyone', qs: [
+      { q: 'Tell me about yourself.', tip: 'Two minutes, three parts: who you are now, one or two things you have done that fit this job, and why you want this role. Not your life story.' },
+      { q: 'What are you looking for in your next role?', tip: 'Describe what this job actually offers. Talk about the work and the learning, not only salary or location.' },
+      { q: 'What is your biggest strength, and where has it shown up?', tip: 'Pick one strength that matters for this job and prove it with a short, real example and a result.' },
+      { q: 'What is something you are working on getting better at?', tip: 'A real but not job-breaking weakness, plus what you are doing about it right now.' },
+      { q: 'Why did you leave your last job?', tip: 'Short, honest and calm. Never criticise your old employer. Turn quickly to what you want next.' },
+      { q: 'What have you been doing since your last role?', tip: 'Show you kept moving: courses, projects, freelance work, family duties handled well. Gaps are normal; drifting is what worries them.' },
+      { q: 'I see a gap on your resume. Can you walk me through it?', tip: 'One or two sentences of reason, one sentence on what you did or learned, then say you are ready and why this role fits.' },
+      { q: 'Tell me about a time you disagreed with a teammate.', tip: 'Show you listened, used facts, and kept the relationship. End with the outcome and what you learned.', star: true },
+      { q: 'Describe a project you are proud of. What was your part?', tip: 'Be clear about what YOU did, not the team. Give a number for the result if you can.', star: true },
+      { q: 'Tell me about a time you failed. What did you change after?', tip: 'Pick a real, small-to-medium failure. Spend most of the answer on what you changed afterwards.', star: true },
+      { q: 'Describe a time you had to learn something fast.', tip: 'Show your method: where you learned from, how you practised, and how quickly you were useful.', star: true },
+      { q: 'Tell me about a time you handled a difficult customer or stakeholder.', tip: 'Stay calm in the story. Show empathy first, then the fix, then the result.', star: true },
+      { q: 'Why do you want to work here?', tip: 'Mention something specific about the company (product, customers, values), then connect it to your skills.' },
+      { q: 'What do you know about what we do?', tip: 'Spend 15 minutes on their website and recent news. Mention what they sell, who to, and one recent update.' },
+      { q: 'If you joined tomorrow, what would you do in your first 30 days?', tip: 'Learn first: meet the team, understand the tools and customers, then pick one early win.' },
+      { q: 'Teach me something in two minutes.', tip: 'Choose something simple you know well. Structure it: what it is, why it matters, one example.' },
+      { q: 'Do you have any questions for us?', tip: 'Always ask one or two: what success looks like in 90 days, the team, or the biggest challenge in the role.' }
+    ] },
+    { id: 'freshers', name: 'Freshers', qs: [
+      { q: 'You have no work experience. Why should we hire you?', tip: 'Point to proof: projects, internships, college roles, part-time work. Show you learn fast and want this specific job.' },
+      { q: 'Tell me about your final-year project.', tip: 'Problem, your part, tools used, result. Be ready for follow-up questions on anything you mention.', star: true },
+      { q: 'Why did you choose your degree, and why this field now?', tip: 'Honest is fine, even if the degree is different. Show a clear reason you are choosing this field now.' },
+      { q: 'Tell me about a time you worked in a team at college.', tip: 'Fests, group projects, sports, clubs all count. Show what you did and how the team did better.', star: true },
+      { q: 'Where do you see yourself in three years?', tip: 'Growing in this field and this company: more skills, more responsibility. Avoid "doing an MBA abroad".' },
+      { q: 'Are you open to relocation, shifts or a bond period?', tip: 'Know your real answer before the interview. If yes, say it clearly. If not, explain briefly and politely.' },
+      { q: 'What did you learn outside your syllabus?', tip: 'Online courses, certificates, YouTube learning, side projects. Show curiosity and self-learning.' },
+      { q: 'How do you handle pressure, like exams or deadlines?', tip: 'Give a real example and your method: plan, break it down, ask for help early.', star: true }
+    ] },
+    { id: 'hr', name: 'HR round', qs: [
+      { q: 'What is your current CTC, and what are you expecting?', tip: 'Know your numbers: fixed and variable pay. Give a researched range, and say you are flexible for the right role.' },
+      { q: 'What is your notice period? Can you join early?', tip: 'Be exact. If you are available now, say so; that is a plus. Do not promise what your current employer will not allow.' },
+      { q: 'Why are you looking for a change?', tip: 'Growth, learning, a better fit for your skills. Keep it positive and future-focused.' },
+      { q: 'Are you comfortable with night shifts or working weekends?', tip: 'Answer honestly. If yes, say so clearly. If not, give your availability without apologising.' },
+      { q: 'Do you have any other offers?', tip: 'Be truthful. If you have one, mention it briefly without bluffing. It can help, but never invent one.' },
+      { q: 'Why have you changed jobs so often?', tip: 'Give a clear reason for each move (contract ended, company closed, growth) and show you want to stay longer now.' },
+      { q: 'How do you handle criticism from a manager?', tip: 'Show you listen, ask questions, and act on it. A short real example helps.', star: true },
+      { q: 'Is there anything that would stop you from joining if we made an offer?', tip: 'Raise real concerns now (location, shift, joining date) rather than after the offer.' }
+    ] },
+    { id: 'support', name: 'Customer support', qs: [
+      { q: 'How would you calm down an angry customer?', tip: 'Listen fully, apologise for the experience, restate the problem, give a clear next step and a time. Then follow up.' },
+      { q: 'Tell me about a time you turned an unhappy customer into a happy one.', tip: 'Show empathy, ownership and a fix. End with how the customer responded or a CSAT score.', star: true },
+      { q: 'A customer asks for something against company policy. What do you do?', tip: 'Explain the policy kindly, offer the closest alternative, and escalate if there is a real case for an exception.' },
+      { q: 'How do you handle many chats or calls at the same time?', tip: 'Talk about prioritising urgent issues, using saved replies and notes, and keeping each customer updated.' },
+      { q: 'What does good customer service mean to you?', tip: 'Fast, friendly, accurate and owned: solve it the first time, or tell the customer exactly what happens next.' },
+      { q: 'Which support tools have you used?', tip: 'Name real tools: Zendesk, Freshdesk, Salesforce, CRMs, ticketing, Excel. If none, say how quickly you learn tools.' },
+      { q: 'How would you explain a technical problem to a customer who is not technical?', tip: 'Plain words, short steps, a simple comparison, and check they understood. Show a quick example.' },
+      { q: 'What metrics matter in a support role?', tip: 'First response time, resolution time, CSAT, first contact resolution, and quality scores. Mention your own numbers if you have them.' }
+    ] },
+    { id: 'sales', name: 'Sales', qs: [
+      { q: 'Sell me this pen.', tip: 'Do not list features first. Ask questions about the buyer\'s needs, then connect the pen to what they said, then ask for the sale.' },
+      { q: 'Tell me about a deal you closed that you are proud of.', tip: 'Size of the deal, the challenge, what you did, and the result. Numbers make it real.', star: true },
+      { q: 'How do you handle rejection?', tip: 'Show resilience: you learn from each no, keep your pipeline full, and keep going. Give one example.' },
+      { q: 'How do you find new leads?', tip: 'LinkedIn, referrals, cold calls, events, CRM data. Show a repeatable routine, not luck.' },
+      { q: 'A customer says the price is too high. What do you say?', tip: 'Understand what they compare against, show the value and savings, and offer options before discounting.' },
+      { q: 'Tell me about a time you missed a target. What did you do?', tip: 'Own it, explain what you changed, and show the result in the next period.', star: true },
+      { q: 'What does your typical day look like in sales?', tip: 'Prospecting, calls, follow-ups, meetings, CRM updates. Show discipline and planning.' },
+      { q: 'Why do you want to sell our product?', tip: 'Show you understand who buys it and why. Being excited about the product is a real advantage in sales.' }
+    ] },
+    { id: 'data', name: 'Data & analytics', qs: [
+      { q: 'Walk me through a data project from start to finish.', tip: 'Question, data source, cleaning, analysis, chart, recommendation, and what changed because of it.', star: true },
+      { q: 'How do you handle missing or messy data?', tip: 'Find out why it is missing, then remove, fill or flag it based on the impact. Always document what you did.' },
+      { q: 'Explain the difference between a JOIN and a UNION in SQL.', tip: 'A JOIN combines columns from tables on a key; a UNION stacks rows from similar queries. Give a tiny example.' },
+      { q: 'How would you explain your findings to a manager who does not like numbers?', tip: 'Lead with the answer, use one clear chart, and say what to do next. Keep details for the questions.' },
+      { q: 'Which tools are you most comfortable with?', tip: 'Be honest about levels: Excel, SQL, Power BI or Tableau, Python. Give an example of each in use.' },
+      { q: 'What would you look at if sales dropped 20% last month?', tip: 'Break it down: by region, product, channel, customer type. Check data issues first, then seasonality and recent changes.' },
+      { q: 'What is the difference between correlation and causation?', tip: 'Two things moving together does not mean one causes the other. Give an everyday example, like ice cream and sunburn.' },
+      { q: 'Tell me about a time your analysis changed a decision.', tip: 'The decision before, what you found, and the decision after. Numbers help.', star: true }
+    ] },
+    { id: 'tech', name: 'Software & IT', qs: [
+      { q: 'Tell me about a bug that was hard to find. How did you fix it?', tip: 'Show your debugging method: reproduce, narrow down, test a hypothesis, fix, and prevent it happening again.', star: true },
+      { q: 'Explain a project on your resume in detail.', tip: 'The problem, the architecture, your part, a hard decision you made, and what you would do differently.' },
+      { q: 'How do you keep your skills up to date?', tip: 'Name specific things: courses, docs, side projects, communities. Mention something you learned recently.' },
+      { q: 'What happens when you type a website address and press Enter?', tip: 'DNS lookup, TCP and TLS connection, HTTP request, server response, browser renders. Go as deep as they want.' },
+      { q: 'How would you explain an API to someone who is not technical?', tip: 'Use a simple comparison like a waiter taking an order to the kitchen and bringing the food back.' },
+      { q: 'Tell me about a time you disagreed with a technical decision.', tip: 'Show you raised it with evidence, listened, and supported the final decision.', star: true },
+      { q: 'How do you approach a task you have never done before?', tip: 'Break it down, research, build a small version first, and ask for help early instead of getting stuck.' },
+      { q: 'What does good code mean to you?', tip: 'Readable, tested, simple, and easy to change. Mention code reviews and naming.' }
+    ] },
+    { id: 'marketing', name: 'Marketing', qs: [
+      { q: 'Tell me about a campaign you ran. How did it perform?', tip: 'Goal, audience, channel, budget, and results with numbers: reach, clicks, leads, cost per lead.', star: true },
+      { q: 'How would you market our product with a small budget?', tip: 'Pick one clear audience, use low-cost channels (content, SEO, communities, referrals), and measure everything.' },
+      { q: 'Which marketing metrics do you track?', tip: 'Match metrics to the goal: reach and engagement for awareness, CTR and conversions for leads, CAC and ROI for business.' },
+      { q: 'How do you come up with content ideas?', tip: 'Customer questions, search data, competitors, trends, and what performed well before.' },
+      { q: 'A campaign is not working. What do you do?', tip: 'Check the data, find the weak step (audience, message, landing page), test one change at a time.' },
+      { q: 'What brand do you think markets really well, and why?', tip: 'Pick one you genuinely follow. Explain the specific thing they do well and what you would borrow.' },
+      { q: 'Which tools have you used?', tip: 'Google Analytics, Meta Ads, Google Ads, Canva, HubSpot, SEO tools. Be honest about your level.' }
+    ] },
+    { id: 'ops', name: 'Operations & admin', qs: [
+      { q: 'How do you organise your day when everything feels urgent?', tip: 'Show your method: list, sort by deadline and impact, communicate about what will slip.' },
+      { q: 'Tell me about a process you improved.', tip: 'What was slow or broken, what you changed, and the result in time or money saved.', star: true },
+      { q: 'How do you make sure you do not make mistakes in data entry or reports?', tip: 'Checklists, double-checking key numbers, templates, and Excel checks like totals and filters.' },
+      { q: 'Tell me about a time you handled several deadlines at once.', tip: 'Show planning, clear communication, and getting everything done or managing expectations early.', star: true },
+      { q: 'How comfortable are you with Excel?', tip: 'Be specific: VLOOKUP or XLOOKUP, PivotTables, filters, charts. Offer to show it in a test.' },
+      { q: 'A vendor delivers late and it affects your team. What do you do?', tip: 'Inform the team, find a short-term fix, discuss with the vendor calmly, and record it for future decisions.' },
+      { q: 'How do you handle confidential information?', tip: 'Share only on a need-to-know basis, follow company rules, lock files and screens. Give an example if you can.' }
+    ] }
   ];
+  var STAR_STEPS = [['S', 'Situation', 'Where and when. One or two lines.'], ['T', 'Task', 'What you had to do, or the problem.'],
+    ['A', 'Action', 'What YOU did. Most of the answer goes here.'], ['R', 'Result', 'What happened. Use a number if you can.']];
+  var RATINGS = [['Nailed', 'Nailed it'], ['Okay', 'Okay'], ['Rough', 'Rough']];
+
+  function allQs() {
+    var out = [];
+    PACKS.forEach(function (p) { p.qs.forEach(function (q, i) { out.push({ id: p.id + '-' + i, pack: p.id, packName: p.name, q: q.q, tip: q.tip, star: !!q.star }); }); });
+    return out;
+  }
+  var ALL_QS = allQs();
+  function qById(id) { for (var i = 0; i < ALL_QS.length; i++) if (ALL_QS[i].id === id) return ALL_QS[i]; return null; }
+  var iv = { pack: 'general', cur: null, seen: {}, secs: null };
+  // Questions whose most recent rating was Rough.
+  function roughIds() {
+    var last = {};
+    S.practice.forEach(function (p) { if (p.id) last[p.id] = p.r; });
+    return Object.keys(last).filter(function (k) { return last[k] === 'Rough' && qById(k); });
+  }
+  function packPool(pack) {
+    if (pack === 'mix') return ALL_QS;
+    if (pack === 'rough') return roughIds().map(qById);
+    return ALL_QS.filter(function (q) { return q.pack === pack; });
+  }
+  // A random question from the pack, not repeating until you have seen them all.
+  function pickQ() {
+    var pool = packPool(iv.pack);
+    if (!pool.length) { iv.cur = null; return; }
+    var seen = iv.seen[iv.pack] || (iv.seen[iv.pack] = {});
+    var fresh = pool.filter(function (q) { return !seen[q.id] && q.id !== iv.cur; });
+    if (!fresh.length) { iv.seen[iv.pack] = {}; seen = iv.seen[iv.pack]; fresh = pool.filter(function (q) { return q.id !== iv.cur; }); if (!fresh.length) fresh = pool; }
+    var q = fresh[Math.floor(Math.random() * fresh.length)];
+    seen[q.id] = 1;
+    iv.cur = q.id;
+    iv.secs = null;
+    stopTimer();
+  }
+  function cleanNotes(raw) {
+    var b = {};
+    if (isObj(raw)) Object.keys(raw).slice(0, 400).forEach(function (k) { if (typeof raw[k] === 'string' && raw[k].trim()) b[k] = raw[k].slice(0, 1500); });
+    return b;
+  }
+  function fmtSecs(s) { return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  function ivStats() {
+    var weekAgo = Date.now() - 7 * 864e5, week = 0, nailed = 0, timed = 0, total = 0;
+    S.practice.forEach(function (p) {
+      if (p.t > weekAgo) week++;
+      if (p.r === 'Nailed') nailed++;
+      if (typeof p.secs === 'number') { timed++; total += p.secs; }
+    });
+    return '<div class="stats"><div class="stat hot"><b>' + S.practice.length + '</b><span>' + ico('prep') + 'practiced</span></div>' +
+      '<div class="stat"><b>' + week + '</b><span>this week</span></div>' +
+      '<div class="stat"><b>' + (S.practice.length ? Math.round(nailed / S.practice.length * 100) + '%' : '–') + '</b><span>nailed</span></div>' +
+      '<div class="stat"><b>' + (timed ? fmtSecs(Math.round(total / timed)) : '–') + '</b><span>average answer</span></div></div>';
+  }
+  function ivPacks() {
+    var rough = roughIds().length;
+    var chip = function (id, label, n) {
+      return '<button type="button" class="chip' + (iv.pack === id ? ' on' : '') + '" data-act="iv-pack" data-p="' + id + '" aria-pressed="' + (iv.pack === id) + '">' + label + (n !== undefined ? ' <span>' + n + '</span>' : '') + '</button>';
+    };
+    return '<div class="chips" role="group" aria-label="Question pack">' + PACKS.map(function (p) { return chip(p.id, p.name, p.qs.length); }).join('') +
+      chip('mix', 'Mix of all') + (rough ? chip('rough', 'Retry my rough ones', rough) : '') + '</div>';
+  }
+  function ivQuestion() {
+    var q = qById(iv.cur);
+    if (!q) return '<section class="card"><p class="muted">No questions here yet. Rate a question "Rough" and it will come back in this pack.</p></section>';
+    var note = S.qnotes[q.id] || '';
+    return '<section class="card stack iv-card"><div class="row between"><span class="pill">' + esc(q.packName) + '</span>' +
+      (q.star ? '<span class="muted small">Use STAR</span>' : '') + '</div>' +
+      '<p class="question">' + esc(q.q) + '</p>' +
+      '<details class="iv-tip"><summary>Show a tip</summary><p class="small">' + esc(q.tip) + '</p></details>' +
+      (q.star ? '<div class="star-grid">' + STAR_STEPS.map(function (s) { return '<div><b>' + s[0] + '</b><span><strong>' + s[1] + '</strong> ' + s[2] + '</span></div>'; }).join('') + '</div>' : '') +
+      '<div class="iv-timer"><div class="row between"><span class="timer" id="timer">' + (iv.secs != null ? fmtSecs(iv.secs) : '0:00') + '</span>' +
+      '<span class="muted small">Aim for under 2:00</span></div><div class="tbar"><i id="timerbar" style="width:' + (iv.secs != null ? Math.min(100, iv.secs / 120 * 100) : 0) + '%"></i></div></div>' +
+      '<div class="row"><button class="btn" data-act="timer" id="timerbtn">' + (iv.secs != null ? 'Restart timer' : 'Start timer') + '</button>' +
+      '<button class="btn ghost" data-act="next-q">Skip question</button></div>' +
+      '<div><p class="small"><b>How did that go?</b></p><div class="row" style="margin-top:6px">' +
+      RATINGS.map(function (r) { return '<button class="btn ghost" data-act="rate" data-r="' + r[0] + '">' + r[1] + '</button>'; }).join('') + '</div></div>' +
+      '<label class="stack small"><b>Your notes for this question</b><textarea id="ivnote" rows="4" maxlength="1500" placeholder="Key points, a story to use, numbers to mention. Only you can see this.">' + esc(note) + '</textarea></label></section>';
+  }
+  function ivHistory() {
+    var recent = S.practice.slice(-15).reverse();
+    if (!recent.length) return '<p class="muted small">Your practice history shows here after you rate your first answer.</p>';
+    return '<ul class="iv-hist">' + recent.map(function (p) {
+      var d = new Date(p.t);
+      return '<li><span class="iv-r ' + esc(p.r) + '">' + esc(p.r) + '</span><span class="grow">' + esc(p.q) + '</span>' +
+        '<span class="muted small">' + (typeof p.secs === 'number' ? fmtSecs(p.secs) + ' · ' : '') + d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + '</span></li>';
+    }).join('') + '</ul>';
+  }
 
   var QUIPS = [
     'Professional status: between meetings. Very long meetings.',
@@ -136,6 +306,7 @@
       },
       resume: '',
       practice: [],
+      qnotes: {}, // interview practice notes, by question id
       bingo: null, // made the first time the Fun tab opens
       cv: null, // resume builder, made the first time it opens
       cl: null, // cover letter helper, made the first time it opens
@@ -147,7 +318,8 @@
     var b = blank();
     if (!isObj(raw)) return b;
     if (Array.isArray(raw.apps)) b.apps = raw.apps.filter(isObj);
-    if (Array.isArray(raw.practice)) b.practice = raw.practice.filter(isObj);
+    if (Array.isArray(raw.practice)) b.practice = raw.practice.filter(isObj).slice(-500);
+    b.qnotes = cleanNotes(raw.qnotes);
     if (typeof raw.resume === 'string') b.resume = raw.resume;
     b.bingo = cleanBingo(raw.bingo);
     b.cv = cleanCv(raw.cv);
@@ -166,7 +338,6 @@
   var posts = [];      // shared feed, from the server
   var ui = {
     booting: true, authMode: 'login', authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
-    q: Math.floor(Math.random() * QUESTIONS.length),
     timerId: null, timerStart: 0, report: null
   };
 
@@ -382,6 +553,14 @@
         '<div class="cv-preview-wrap"><p class="muted small cv-preview-label">Live preview</p><div id="clpreview">' + (ready ? clPreview() : '') + '</div></div></div>';
     },
 
+    interview: function () {
+      if (!iv.cur) pickQ();
+      return head('Interview practice', 'Pick a pack, answer out loud against the clock, then rate yourself. Your notes and history stay private.') +
+        ivStats() + ivPacks() +
+        '<div class="grid2 iv-grid"><div id="ivq">' + ivQuestion() + '</div>' +
+        '<section class="card stack"><h2>Recent practice</h2>' + ivHistory() + '</section></div>';
+    },
+
     learn: function () {
       return head('Free learning library', 'Hand-picked courses that are free to learn. Mark what you are doing, and add finished ones to your resume.') +
         '<div id="learnsum">' + learnSummary() + '</div>' +
@@ -460,7 +639,6 @@
     },
 
     prep: function () {
-      var q = QUESTIONS[ui.q];
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
       return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
@@ -470,16 +648,9 @@
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
         '<div id="report">' + reportHtml() + '</div></section>' +
         '<section class="card stack"><h2>Mock interview</h2>' +
-        '<div><span class="pill">' + q.c + '</span><p class="question">' + esc(q.q) + '</p>' +
-        '<p class="muted small">Answer out loud. Try STAR: Situation, Task, Action, Result. Aim for under 2 minutes.</p></div>' +
-        '<div class="row"><span class="timer" id="timer">0:00</span>' +
-        '<button class="btn" data-act="timer" id="timerbtn">Start timer</button>' +
-        '<button class="btn ghost" data-act="next-q">Skip question</button></div>' +
-        '<div><p class="small"><b>How did that go?</b></p><div class="row" style="margin-top:6px">' +
-        '<button class="btn ghost" data-act="rate" data-r="Nailed">Nailed it</button>' +
-        '<button class="btn ghost" data-act="rate" data-r="Okay">Okay</button>' +
-        '<button class="btn ghost" data-act="rate" data-r="Rough">Rough</button></div></div>' +
+        '<p>' + PACKS.length + ' question packs: freshers, HR round, customer support, sales, data, software, marketing and operations. Answer out loud against a 2-minute clock, with tips and a STAR guide.</p>' +
         '<p class="banner">Practiced ' + S.practice.length + ' so far: ' + tally.Nailed + ' nailed, ' + tally.Okay + ' okay, ' + tally.Rough + ' rough.</p>' +
+        '<div><a class="btn primary" href="#/interview">' + ico('prep') + 'Start practising</a></div>' +
         '</section></div>';
     },
 
@@ -757,11 +928,7 @@
   // Handlers that talk to the server, or only touch the screen, return false and render themselves.
   function find(arr, id) { for (var i = 0; i < arr.length; i++) if (arr[i].id === id) return arr[i]; return null; }
   function stopTimer() { if (ui.timerId) { clearInterval(ui.timerId); ui.timerId = null; } }
-  function nextQ() {
-    var n = ui.q;
-    while (n === ui.q) n = Math.floor(Math.random() * QUESTIONS.length);
-    ui.q = n; stopTimer();
-  }
+  function nextQ() { pickQ(); }
   function feedCall(promise) {
     promise.then(loadPosts).then(render).catch(fail);
     return false;
@@ -1193,19 +1360,36 @@
       S.apps = S.apps.filter(function (a) { return a.id !== d.id; });
     },
     'next-q': function () { nextQ(); render(); return false; },
+    'iv-pack': function (d) { iv.pack = d.p; iv.cur = null; pickQ(); render(); return false; },
     rate: function (d) {
-      S.practice.push({ q: QUESTIONS[ui.q].q, r: d.r, t: Date.now() });
+      var q = qById(iv.cur);
+      if (!q) return false;
+      var secs = ui.timerId ? Math.floor((Date.now() - ui.timerStart) / 1000) : iv.secs;
+      var entry = { id: q.id, pack: q.pack, q: q.q, r: d.r, t: Date.now() };
+      if (typeof secs === 'number') entry.secs = secs;
+      S.practice.push(entry);
+      if (S.practice.length > 500) S.practice = S.practice.slice(-500);
+      // Leaving "Retry my rough ones" empty sends you back to the full list.
+      var wasRough = iv.pack === 'rough';
       nextQ();
+      if (wasRough && !iv.cur) { iv.pack = 'general'; pickQ(); toast('No rough ones left. Nice work.'); }
+      else toast(d.r === 'Rough' ? 'Saved. It will come back in "Retry my rough ones".' : 'Saved. Next question.');
     },
     timer: function (d, btn) {
       var out = document.getElementById('timer');
-      if (ui.timerId) { stopTimer(); btn.textContent = 'Restart timer'; return false; }
+      var bar = document.getElementById('timerbar');
+      if (ui.timerId) { iv.secs = Math.floor((Date.now() - ui.timerStart) / 1000); stopTimer(); btn.textContent = 'Restart timer'; return false; }
       ui.timerStart = Date.now();
+      iv.secs = null;
       out.textContent = '0:00';
+      out.className = 'timer';
       btn.textContent = 'Stop timer';
       ui.timerId = setInterval(function () {
         var s = Math.floor((Date.now() - ui.timerStart) / 1000);
-        out.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+        out.textContent = fmtSecs(s);
+        // Amber from 1:30, red past 2:00.
+        out.className = 'timer' + (s >= 120 ? ' over' : s >= 90 ? ' near' : '');
+        if (bar) { bar.style.width = Math.min(100, s / 120 * 100) + '%'; bar.className = s >= 120 ? 'over' : s >= 90 ? 'near' : ''; }
       }, 250);
       return false;
     }
@@ -2892,6 +3076,9 @@
       S.cl[e.target.dataset.cl] = e.target.value;
       save();
       refreshCl(false);
+    } else if (e.target.id === 'ivnote' && iv.cur) {
+      if (e.target.value.trim()) S.qnotes[iv.cur] = e.target.value; else delete S.qnotes[iv.cur];
+      save();
     } else if (e.target.id === 'learnq') {
       learn.q = e.target.value;
       refreshLearn(false);

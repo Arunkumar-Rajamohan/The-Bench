@@ -799,6 +799,32 @@ mark.clp-gap { background: #fbe3c4; color: var(--cv-ink); border-radius: 3px; pa
 .learn-tools label { gap: 6px; white-space: nowrap; }
 .learn-tools input[type="search"] { flex: 1 1 240px; min-width: 0; }
 
+/* Interview practice */
+.iv-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.iv-card .question { margin: 4px 0; }
+.iv-tip summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--accent); }
+.iv-tip p { margin: 8px 0 0; padding: 10px 12px; background: var(--sunk); border-radius: var(--r-sm); }
+.star-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.star-grid div { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: .8rem; color: var(--ink-2); }
+.star-grid b { font: 600 1.3rem/1 var(--serif); color: var(--accent); }
+.star-grid strong { display: block; color: var(--ink); }
+.iv-timer { display: grid; gap: 8px; }
+.timer.near { color: var(--gold); }
+.timer.over { color: var(--bad); }
+.tbar { height: 6px; border-radius: 999px; background: var(--sunk); overflow: hidden; }
+.tbar i { display: block; height: 100%; width: 0; background: var(--good); border-radius: inherit; transition: width .25s linear, background .3s; }
+.tbar i.near { background: var(--gold); }
+.tbar i.over { background: var(--bad); }
+.iv-card textarea { min-height: 0; font-weight: 400; }
+.iv-hist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.iv-hist li { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); font-size: .86rem; }
+.iv-hist li:first-child { border-top: 0; }
+.iv-r { flex: none; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; width: 52px; }
+.iv-r.Nailed { color: var(--good); }
+.iv-r.Okay { color: var(--gold); }
+.iv-r.Rough { color: var(--bad); }
+@media (max-width: 860px) { .iv-grid { grid-template-columns: minmax(0, 1fr); } .star-grid { grid-template-columns: minmax(0, 1fr); } }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

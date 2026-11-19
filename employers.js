@@ -72,5 +72,13 @@ module.exports = [
   { name: 'Cars24', ats: 'smartrecruiters', token: 'cars24' },
   { name: 'NoBroker', ats: 'smartrecruiters', token: 'nobroker' },
   { name: 'Continental', ats: 'smartrecruiters', token: 'Continental' },
-  { name: 'Expeditors', ats: 'smartrecruiters', token: 'Expeditors' }
+  { name: 'Expeditors', ats: 'smartrecruiters', token: 'Expeditors' },
+
+  // Added 19 Nov 2026: payments operations, compliance, sales, education and non-profit roles
+  { name: 'Payoneer', ats: 'greenhouse', token: 'payoneer' },
+  { name: 'Nium', ats: 'lever', token: 'nium' },
+  { name: 'Airwallex', ats: 'ashby', token: 'airwallex' },
+  { name: 'Apollo.io', ats: 'ashby', token: 'apollo' },
+  { name: 'Ashoka', ats: 'lever', token: 'ashoka' },
+  { name: 'CollegeDekho', ats: 'smartrecruiters', token: 'collegedekho' }
 ];

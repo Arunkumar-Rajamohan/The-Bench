@@ -5,8 +5,11 @@
      boards.greenhouse.io/<token>  or  job-boards.greenhouse.io/<token>  -> ats: 'greenhouse'
      jobs.lever.co/<token>                                              -> ats: 'lever'
      jobs.ashbyhq.com/<token>                                           -> ats: 'ashby'
+     jobs.smartrecruiters.com/<token>                                   -> ats: 'smartrecruiters'
    and add { name, ats, token } below. Only roles located in India (or remote within India) are shown.
-   Checked 19 Nov 2026: each of these had open roles in India. */
+   Checked 19 Nov 2026: each of these had open roles in India.
+   Many big Indian brands use systems without a public feed (Workday, Darwinbox, SuccessFactors),
+   so they can't be added this way. */
 'use strict';
 
 module.exports = [
@@ -41,7 +44,6 @@ module.exports = [
   { name: 'Mindtickle', ats: 'lever', token: 'mindtickle' },
   { name: 'CRED', ats: 'lever', token: 'cred' },
   { name: 'Pocket FM', ats: 'lever', token: 'pocketfm' },
-  { name: 'Spotify', ats: 'lever', token: 'spotify' },
 
   // Ashby
   { name: 'Sarvam AI', ats: 'ashby', token: 'sarvam' },
@@ -51,5 +53,24 @@ module.exports = [
   { name: 'Atlan', ats: 'ashby', token: 'atlan' },
   { name: 'Notion', ats: 'ashby', token: 'notion' },
   { name: 'Temporal', ats: 'ashby', token: 'temporal' },
-  { name: 'Zapier', ats: 'ashby', token: 'zapier' }
+  { name: 'Zapier', ats: 'ashby', token: 'zapier' },
+
+  // Added for non-tech roles: sales, operations, support, finance, marketing, logistics, non-profit
+  { name: 'Paytm', ats: 'lever', token: 'paytm' },
+  { name: 'WPP', ats: 'greenhouse', token: 'wpp' },
+  { name: 'Wunderman Thompson', ats: 'greenhouse', token: 'wundermanthompson' },
+  { name: 'Agoda', ats: 'greenhouse', token: 'agoda' },
+  { name: 'Headout', ats: 'ashby', token: 'headout' },
+  { name: 'IDinsight', ats: 'ashby', token: 'idinsight' },
+  { name: 'Swiggy', ats: 'smartrecruiters', token: 'swiggy' },
+  { name: 'Sutherland', ats: 'smartrecruiters', token: 'sutherland' },
+  { name: 'Bosch', ats: 'smartrecruiters', token: 'BoschGroup' },
+  { name: 'Wise', ats: 'smartrecruiters', token: 'wise' },
+  { name: 'Grab', ats: 'smartrecruiters', token: 'grab' },
+  { name: 'ixigo', ats: 'smartrecruiters', token: 'ixigo' },
+  { name: 'Ubisoft', ats: 'smartrecruiters', token: 'Ubisoft2' },
+  { name: 'Cars24', ats: 'smartrecruiters', token: 'cars24' },
+  { name: 'NoBroker', ats: 'smartrecruiters', token: 'nobroker' },
+  { name: 'Continental', ats: 'smartrecruiters', token: 'Continental' },
+  { name: 'Expeditors', ats: 'smartrecruiters', token: 'Expeditors' }
 ];

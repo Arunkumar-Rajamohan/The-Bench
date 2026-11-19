@@ -705,7 +705,8 @@ const JOBS_PAGE = 20;
 const FEED_BASE = { // overridable for local testing only
   greenhouse: (process.env.GREENHOUSE_BASE_URL || 'https://boards-api.greenhouse.io').replace(/\/+$/, ''),
   lever: (process.env.LEVER_BASE_URL || 'https://api.lever.co').replace(/\/+$/, ''),
-  ashby: (process.env.ASHBY_BASE_URL || 'https://api.ashbyhq.com').replace(/\/+$/, '')
+  ashby: (process.env.ASHBY_BASE_URL || 'https://api.ashbyhq.com').replace(/\/+$/, ''),
+  smartrecruiters: (process.env.SMARTRECRUITERS_BASE_URL || 'https://api.smartrecruiters.com').replace(/\/+$/, '')
 };
 for (const b of Object.values(FEED_BASE)) {
   if (!/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(b)) throw new Error('Job feed URLs must use https.');
@@ -760,8 +761,53 @@ const FEEDS = {
         remote: !!x.isRemote || x.workplaceType === 'Remote'
       };
     });
+  },
+  async smartrecruiters(e) {
+    const out = [];
+    for (let offset = 0; offset < 300; offset += 100) { // at most 300 roles per company
+      const j = await getJson(FEED_BASE.smartrecruiters + '/v1/companies/' + encodeURIComponent(e.token) + '/postings?country=in&limit=100&offset=' + offset);
+      const rows = Array.isArray(j.content) ? j.content : [];
+      for (const x of rows) {
+        const loc = x.location || {};
+        if (String(loc.country).toLowerCase() !== 'in' || !/^\d+$/.test(String(x.id))) continue;
+        const city = String(loc.city || '').trim();
+        out.push({
+          id: 'sr:' + e.token + ':' + x.id, title: x.name, url: 'https://jobs.smartrecruiters.com/' + encodeURIComponent(e.token) + '/' + x.id,
+          places: [city ? city.replace(/\b\w/g, (ch) => ch.toUpperCase()) : 'India'],
+          posted: Date.parse(x.releasedDate) || null, team: (x.department && x.department.label) || '',
+          type: (x.typeOfEmployment && x.typeOfEmployment.label) || '', remote: !!loc.remote,
+          hint: (x.function && x.function.label) || ''
+        });
+      }
+      if (rows.length < 100 || offset + 100 >= (Number(j.totalFound) || 0)) break;
+    }
+    return out;
   }
 };
+
+// ----- field of work, guessed from the title (then team / function) -----
+const FIELDS = [
+  ['engineering', 'Engineering & IT', /\b(software|developer|devops|sre|site reliability|front[- ]?end|back[- ]?end|full[- ]?stack|android|ios|machine learning|data scientist|data engineer(ing)?|research engineer|design engineer|architect|qa|quality assurance|test automation|sdet|firmware|embedded|cloud|infrastructure|security engineer|programmer|hardware|asic|vlsi|mechanical|electrical|electronics|cad|plc|automation engineer|integration engineer|data pipelines?|threat|offensive security|penetration|cyber ?security|application security)\b/i],
+  ['support', 'Customer support', /\b(support|customer|client service|care|helpdesk|help desk|service desk|cx|customer success|success manager|chat|voice process|call cent(er|re)|contact cent(er|re))\b/i],
+  ['sales', 'Sales & business development', /\b(sales|account executive|account manager|key account|kam|business development|bdr|sdr|partnerships?|pre-?sales|revenue|merchant acquisition|field sales|channels?)\b/i],
+  ['marketing', 'Marketing & content', /\b(marketing|growth|brand|content|copywrit\w*|social media|seo|sem|public relations|pr manager|communications|creative|media|campaign|community|video\w*|photograph\w*|editor)\b/i],
+  ['finance', 'Finance & accounts', /\b(finance|financial|accountant|accounts?|accounting|audit\w*|tax|payroll|treasury|fp&a|finops|controller|billing|collections?|credit|rtr|record to report|p2p|procure to pay|o2c|order to cash|invoic\w*)\b/i],
+  ['people', 'HR & people', /\b(hr|human resources|talent|recruit\w*|people|learning (and|&) development|l&d|hrbp|candidate|onboarding specialist)\b/i],
+  ['legal', 'Legal, risk & compliance', /\b(legal|counsel|lawyer|compliance|risk|kyc|aml|fraud|regulatory|governance|grc|privacy|secretarial|ediscovery|e-discovery|forensic\w*)\b/i],
+  ['operations', 'Operations & logistics', /\b(operations?|ops|supply chain|logistics|fulfil+ment|warehouse|procurement|purchas\w*|store|retail|delivery|fleet|city manager|category|vendor|inventory|planning|planner|admin\w*|facilities|export|import|freight|secretar\w*|executive assistant|receptionist|front desk|maintenance|service management|service manager|house manager|office manager|hse|health,? safety|safety)\b/i],
+  ['design', 'Design', /\b(design(er)?|ux|ui|illustrat\w*|motion|art director|visual)\b/i],
+  ['product', 'Product & projects', /\b(product manager|product owner|program manager|programme manager|project manager|project management|program management|project coordinator|pmo|scrum|delivery manager)\b/i],
+  ['data', 'Data & analytics', /\b(analyst|analytics|data|insights|business intelligence|bi|research|economist|statistic\w*)\b/i],
+  ['engineering', 'Engineering & IT', /\b(engineer|engineering|technical|technology|it|systems?|network|security)\b/i]
+];
+const FIELD_LABEL = Object.fromEntries(FIELDS.map(([k, label]) => [k, label]).concat([['other', 'Other']]));
+function fieldOf(title, extra) {
+  for (const text of [title, extra]) {
+    if (!text) continue;
+    for (const [key, , re] of FIELDS) if (re.test(text)) return key;
+  }
+  return 'other';
+}
 
 function tidyJob(raw, employer) {
   return {
@@ -773,37 +819,48 @@ function tidyJob(raw, employer) {
     url: raw.url,
     posted: raw.posted,
     team: plainText(raw.team).slice(0, 60),
-    type: plainText(raw.type).slice(0, 30)
+    type: plainText(raw.type).slice(0, 30),
+    field: fieldOf(plainText(raw.title), [raw.team, raw.hint].filter(Boolean).join(' '))
   };
 }
 
+const FEED_WORKERS = 8; // feeds fetched at the same time
+function mergeJobs(all) {
+  const seen = new Set();
+  return all.filter((j) => (seen.has(j.id) ? false : seen.add(j.id))).sort((a, b) => (b.posted || 0) - (a.posted || 0));
+}
 async function refreshJobs() {
   const all = [], failed = [];
-  for (let i = 0; i < EMPLOYERS.length; i += 4) { // a few at a time, to be polite
-    await Promise.all(EMPLOYERS.slice(i, i + 4).map(async (e) => {
+  const firstLoad = !jobsStore.jobs.length;
+  jobsStore.firstLoad = firstLoad;
+  const queue = EMPLOYERS.slice();
+  // A small pool: each worker takes the next company as soon as it is free, so one slow feed holds up nobody.
+  await Promise.all(Array.from({ length: FEED_WORKERS }, async () => {
+    for (let e = queue.shift(); e; e = queue.shift()) {
       try {
         const rows = await FEEDS[e.ats](e);
         for (const r of rows) if (r && r.title) all.push(tidyJob(r, e));
+        if (firstLoad) jobsStore.jobs = mergeJobs(all); // cold start: show what has arrived so far
       } catch (err) {
         failed.push(e.name);
       }
-    }));
-  }
-  const seen = new Set();
-  const jobs = all.filter((j) => (seen.has(j.id) ? false : seen.add(j.id))).sort((a, b) => (b.posted || 0) - (a.posted || 0));
+    }
+  }));
+  const jobs = mergeJobs(all);
   if (jobs.length || !jobsStore.jobs.length) jobsStore.jobs = jobs; // keep the last good copy if every feed failed
   jobsStore.updated = Date.now();
   jobsStore.failed = failed;
+  jobsStore.firstLoad = false;
   if (failed.length) console.error('Job feeds failed: ' + failed.join(', '));
 }
-
 function ensureJobs() {
   const stale = Date.now() - jobsStore.updated > JOBS_REFRESH;
   if (stale && !jobsStore.refreshing) {
     jobsStore.refreshing = refreshJobs().catch((e) => console.error('Job refresh failed: ' + e.message)).finally(() => { jobsStore.refreshing = null; });
   }
-  // First load: wait for it. Later refreshes happen in the background while the old list is served.
-  return jobsStore.jobs.length ? Promise.resolve() : (jobsStore.refreshing || Promise.resolve());
+  if (jobsStore.jobs.length || !jobsStore.refreshing) return Promise.resolve();
+  // Cold start with nothing yet: wait for the first feeds, but never more than a few seconds.
+  return Promise.race([jobsStore.refreshing, new Promise((r) => setTimeout(r, 6000))]);
 }
 
 // ---------- community job leads ----------
@@ -831,19 +888,29 @@ async function jobsApi(req, res, route, user) {
     const what = (sp.get('what') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
     const where = (sp.get('where') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
     const remote = sp.get('remote') === '1';
+    const field = String(sp.get('field') || '');
     const page = Math.min(Math.max(parseInt(sp.get('page'), 10) || 1, 1), 50);
     const words = what.split(' ').filter(Boolean);
     const cityAliases = { bangalore: 'bengaluru', bengaluru: 'bangalore', gurgaon: 'gurugram', gurugram: 'gurgaon', bombay: 'mumbai', madras: 'chennai' };
-    const list = jobsStore.jobs.filter((j) => {
+    const matches = jobsStore.jobs.filter((j) => {
       if (remote && !j.remote) return false;
       const loc = j.location.toLowerCase();
       if (where && !loc.includes(where) && !(cityAliases[where] && loc.includes(cityAliases[where]))) return false;
       const hay = (j.title + ' ' + j.company + ' ' + j.team).toLowerCase();
       return words.every((w) => hay.includes(w));
     });
+    // Count fields before applying the field filter, so the menu shows what each choice would give.
+    const counts = {};
+    for (const j of matches) counts[j.field] = (counts[j.field] || 0) + 1;
+    const list = !field ? matches
+      : field === 'nontech' ? matches.filter((j) => j.field !== 'engineering')
+      : matches.filter((j) => j.field === field);
     send(res, 200, {
       jobs: list.slice((page - 1) * JOBS_PAGE, page * JOBS_PAGE), total: list.length, page,
-      companies: EMPLOYERS.length, updated: jobsStore.updated || null
+      companies: EMPLOYERS.length, updated: jobsStore.updated || null,
+      fields: Object.keys(FIELD_LABEL).map((k) => ({ key: k, label: FIELD_LABEL[k], count: counts[k] || 0 })).filter((f) => f.count),
+      nontech: matches.length - (counts.engineering || 0),
+      partial: !!(jobsStore.refreshing && jobsStore.firstLoad)
     });
     return true;
   }

@@ -592,6 +592,15 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .lead .job-top { align-items: flex-start; }
 .center-text { text-align: center; margin-top: 14px; }
 
+/* ---------- jobs: field chips ---------- */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 14px; }
+.chip { border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 5px 12px; font-size: .82rem; font-weight: 500; color: var(--ink-2); cursor: pointer; transition: border-color .15s, background .15s; }
+.chip span { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 2px; }
+.chip:hover { border-color: var(--line-2); background: var(--sunk); }
+.chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); font-weight: 600; }
+.chip.on span { color: inherit; opacity: .7; }
+@media (max-width: 860px) { .chips { flex-wrap: nowrap; overflow-x: auto; margin-left: -16px; margin-right: -16px; padding: 0 16px 4px; scrollbar-width: none; } .chips::-webkit-scrollbar { display: none; } .chip { flex: none; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }

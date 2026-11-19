@@ -73,7 +73,8 @@
 
   // ---------- fixed content ----------
   // Jobs come straight from employers' careers feeds (/api/jobs); leads are shared by members (/api/leads).
-  var jobs = { tab: 'employers', list: [], total: 0, page: 1, what: '', where: '', remote: false, companies: 0, loaded: false, loading: false, error: '',
+  var jobs = { tab: 'employers', list: [], total: 0, page: 1, what: '', where: '', remote: false, field: '', fields: [], nontech: 0, all: 0, partial: false, retry: null,
+    companies: 0, loaded: false, loading: false, error: '',
     leads: null, leadsError: '' };
 
   var STAGES = ['Wishlist', 'Applied', 'Interview', 'Offer', 'Rejected'];
@@ -475,13 +476,28 @@
       '<div class="row">' + trackBtn(j.id) +
       '<a class="btn tiny primary" href="' + esc(j.url) + '" target="_blank" rel="noopener">Apply on ' + esc(j.company) + '\'s site</a></div></div></article>';
   }
+  function fieldChips() {
+    if (!jobs.loaded || !jobs.all) return '';
+    var chip = function (key, label, count) {
+      var on = jobs.field === key;
+      return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-act="jobs-field" data-f="' + esc(key) + '" aria-pressed="' + on + '">' +
+        esc(label) + ' <span>' + Number(count).toLocaleString() + '</span></button>';
+    };
+    return '<div class="chips" role="group" aria-label="Field of work">' + chip('', 'All', jobs.all) + chip('nontech', 'All non-tech', jobs.nontech) +
+      jobs.fields.filter(function (f) { return f.key !== 'other'; }).sort(function (a, b) { return b.count - a.count; })
+        .map(function (f) { return chip(f.key, f.label, f.count); }).join('') +
+      (jobs.fields.some(function (f) { return f.key === 'other'; }) ? chip('other', 'Other', jobs.fields.filter(function (f) { return f.key === 'other'; })[0].count) : '') +
+      '</div>';
+  }
   function jobsHtml() {
     if (jobs.error && !jobs.list.length) return '<p class="card muted">' + esc(jobs.error) + '</p>';
     if (!jobs.loaded) return '<p class="muted">Gathering openings from ' + (jobs.companies || 'the') + ' companies… the first load can take a few seconds.</p>';
-    if (!jobs.list.length) return '<p class="card muted">No openings match that right now. Try a broader word, another city, or check <a href="#" data-act="jobs-tab" data-t="leads">Shared by members</a>.</p>';
+    var partial = jobs.partial ? '<p class="banner small">' + ico('jobs') + '<span>Still gathering listings from a few companies. More will appear here in a moment.</span></p>' : '';
+    if (!jobs.list.length) return fieldChips() + partial + '<p class="card muted">No openings match that right now. Try a broader word, another city, or check <a href="#" data-act="jobs-tab" data-t="leads">Shared by members</a>.</p>';
     var shown = jobs.list.length, more = shown < jobs.total;
-    var filters = [jobs.what && '“' + esc(jobs.what) + '”', jobs.where && 'in ' + esc(jobs.where), jobs.remote && 'remote'].filter(Boolean).join(' ');
-    return '<p class="muted small results-count">' + jobs.total.toLocaleString() + ' opening' + (jobs.total === 1 ? '' : 's') + (filters ? ' for ' + filters : '') +
+    var fieldName = jobs.field === 'nontech' ? 'non-tech' : jobs.field ? ((jobs.fields.filter(function (f) { return f.key === jobs.field; })[0] || {}).label || '').toLowerCase() : '';
+    var filters = [fieldName && esc(fieldName), jobs.what && '“' + esc(jobs.what) + '”', jobs.where && 'in ' + esc(jobs.where), jobs.remote && 'remote'].filter(Boolean).join(' ');
+    return fieldChips() + partial + '<p class="muted small results-count">' + jobs.total.toLocaleString() + ' opening' + (jobs.total === 1 ? '' : 's') + (filters ? ' for ' + filters : '') +
       ' from the careers pages of ' + jobs.companies + ' companies hiring in India. Newest first.</p>' +
       '<div class="jobs-list">' + jobs.list.map(jobHtml).join('') + '</div>' +
       (more ? '<div class="row center"><button class="btn" data-act="jobs-more"' + (jobs.loading ? ' disabled' : '') + '>' + (jobs.loading ? 'Loading…' : 'Show more') + '</button></div>' : '') +
@@ -498,15 +514,23 @@
     if (!more) { jobs.list = []; jobs.total = 0; jobs.loaded = false; }
     renderJobs();
     var qs = '?page=' + page + (jobs.what ? '&what=' + encodeURIComponent(jobs.what) : '') +
-      (jobs.where ? '&where=' + encodeURIComponent(jobs.where) : '') + (jobs.remote ? '&remote=1' : '');
+      (jobs.where ? '&where=' + encodeURIComponent(jobs.where) : '') + (jobs.remote ? '&remote=1' : '') +
+      (jobs.field ? '&field=' + encodeURIComponent(jobs.field) : '');
+    clearTimeout(jobs.retry);
     api('GET', '/api/jobs' + qs).then(function (j) {
       var seen = {};
       jobs.list.forEach(function (x) { seen[x.id] = true; });
       jobs.list = jobs.list.concat((j.jobs || []).filter(function (x) { return !seen[x.id]; }));
       jobs.total = Number(j.total) || 0;
       jobs.companies = Number(j.companies) || 0;
+      jobs.fields = Array.isArray(j.fields) ? j.fields : [];
+      jobs.all = jobs.fields.reduce(function (sum, f) { return sum + f.count; }, 0);
+      jobs.nontech = Number(j.nontech) || 0;
+      jobs.partial = !!j.partial;
       jobs.page = page;
       jobs.loaded = true;
+      // Cold start on the server: check back shortly for the slower feeds (first page only).
+      if (jobs.partial && page === 1) jobs.retry = setTimeout(function () { if (currentView() === 'jobs' && jobs.tab === 'employers') loadJobs(false); }, 8000);
     }, function (e) {
       if (e.status === 401) return fail(e);
       jobs.error = e.message;
@@ -830,6 +854,11 @@
       return false;
     },
     'jobs-more': function () { loadJobs(true); return false; },
+    'jobs-field': function (d) {
+      jobs.field = d.f || '';
+      loadJobs(false);
+      return false;
+    },
     'jobs-tab': function (d) {
       jobs.tab = d.t === 'leads' ? 'leads' : 'employers';
       render();

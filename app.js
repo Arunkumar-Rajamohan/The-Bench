@@ -53,6 +53,7 @@
     download: '<path d="M12 4v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>',
     mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/>',
     book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M9 7.5h7"/>',
+    rupee: '<path d="M7 4h10"/><path d="M7 8.5h10"/><path d="M7 4h3.5a4.5 4.5 0 0 1 0 9H7l7.5 7"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -310,7 +311,8 @@
       bingo: null, // made the first time the Fun tab opens
       cv: null, // resume builder, made the first time it opens
       cl: null, // cover letter helper, made the first time it opens
-      learn: {} // free learning library: course id -> 'doing' | 'done'
+      learn: {}, // free learning library: course id -> 'doing' | 'done'
+      salary: null // salary and offer helper inputs, made the first time it opens
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -325,6 +327,7 @@
     b.cv = cleanCv(raw.cv);
     b.cl = cleanCl(raw.cl);
     b.learn = cleanLearn(raw.learn);
+    b.salary = cleanSalary(raw.salary);
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -472,6 +475,158 @@
       '<span class="pill ' + tag + '">' + tag + '</span><span class="muted small">' + ago(p.t) + '</span></div>' +
       ((p.own || me.isAdmin) && !compact ? '<button class="link" data-act="del-post" data-id="' + id + '">delete</button>' : '') + '</div>' +
       '<p class="body">' + esc(p.text) + '</p><div class="row">' + reacts + '</div>' + replies + '</article>';
+  }
+
+  // ---------- salary and offer helper ----------
+  // Estimates monthly in-hand pay from a CTC under India's new tax regime (FY 2026-27, same slabs as Budget 2025):
+  // nil to 4L, 5% to 8L, 10% to 12L, 15% to 16L, 20% to 20L, 25% to 24L, 30% above; Rs 75,000 standard deduction;
+  // Section 87A rebate makes taxable income up to 12L tax-free (with marginal relief just above); surcharge above 50L; 4% cess.
+  var TAX_SLABS = [[400000, 0], [800000, 0.05], [1200000, 0.10], [1600000, 0.15], [2000000, 0.20], [2400000, 0.25], [Infinity, 0.30]];
+  var STD_DEDUCTION = 75000, REBATE_LIMIT = 1200000, PF_CAP_YEAR = 21600, PT_MAX_YEAR = 2500;
+  var SURCHARGE = [[5000000, 0.10], [10000000, 0.15], [20000000, 0.25]];
+  function slabTax(x) {
+    var t = 0, prev = 0;
+    TAX_SLABS.forEach(function (s) { if (x > prev) t += (Math.min(x, s[0]) - prev) * s[1]; prev = s[0]; });
+    return t;
+  }
+  function surchargeRate(x) { var r = 0; SURCHARGE.forEach(function (s) { if (x > s[0]) r = s[1]; }); return r; }
+  // Income tax plus surcharge and cess on a taxable income, for the new regime.
+  function incomeTax(x) {
+    if (x <= REBATE_LIMIT) return 0;
+    var t = Math.min(slabTax(x), x - REBATE_LIMIT); // rebate marginal relief
+    var r = surchargeRate(x), sc = t * r;
+    if (r) {
+      // Surcharge marginal relief: crossing a threshold can never cost more than the income above it.
+      var T = 0; SURCHARGE.forEach(function (s) { if (x > s[0]) T = s[0]; });
+      var atT = slabTax(T) * (1 + surchargeRate(T));
+      if (t + sc > atT + (x - T)) sc = Math.max(0, atT + (x - T) - t);
+    }
+    return Math.round((t + sc) * 1.04);
+  }
+  function blankOffer(label) { return { label: label, ctc: '', variable: '', basic: '40', pf: '12', pfInCtc: true, gratuity: true, pt: '200', ins: '0' }; }
+  function cleanOffer(raw, label) {
+    var b = blankOffer(label);
+    if (!isObj(raw)) return b;
+    ['label', 'ctc', 'variable', 'basic', 'pt', 'ins'].forEach(function (k) { if (typeof raw[k] === 'string') b[k] = raw[k].slice(0, k === 'label' ? 40 : 12); });
+    if (raw.pf === '12' || raw.pf === 'cap' || raw.pf === 'none') b.pf = raw.pf;
+    if (typeof raw.pfInCtc === 'boolean') b.pfInCtc = raw.pfInCtc;
+    if (typeof raw.gratuity === 'boolean') b.gratuity = raw.gratuity;
+    return b;
+  }
+  function cleanSalary(raw) {
+    if (!isObj(raw)) return null;
+    return { a: cleanOffer(raw.a, 'Offer A'), b: cleanOffer(raw.b, 'Offer B'), compare: raw.compare === true };
+  }
+  function num(v) { var n = parseFloat(String(v || '').replace(/,/g, '')); return isFinite(n) && n > 0 ? n : 0; }
+  function salCalc(o) {
+    var C = Math.min(num(o.ctc), 2000) * 1e5;                 // CTC is typed in lakhs
+    var V = Math.min(num(o.variable) * 1e5, C);
+    var F = C - V;
+    var basic = F * Math.min(Math.max(num(o.basic) || 40, 10), 80) / 100;
+    var pf = o.pf === '12' ? 0.12 * basic : o.pf === 'cap' ? Math.min(0.12 * basic, PF_CAP_YEAR) : 0;
+    var employerPF = o.pfInCtc ? pf : 0;
+    var gratuity = o.gratuity ? 0.0481 * basic : 0;
+    var gross = Math.max(0, F - employerPF - gratuity);
+    var pt = Math.min(num(o.pt) * 12, PT_MAX_YEAR), ins = num(o.ins) * 12;
+    var taxFixed = incomeTax(Math.max(0, gross - STD_DEDUCTION));
+    var taxAll = incomeTax(Math.max(0, gross + V - STD_DEDUCTION));
+    var inHandYear = Math.max(0, gross - pf - pt - ins - taxFixed);
+    return {
+      ctc: C, variable: V, fixed: F, basic: basic, employerPF: employerPF, gratuity: gratuity, gross: gross, pf: pf, pt: pt, ins: ins,
+      taxFixed: taxFixed, taxAll: taxAll, variableNet: Math.max(0, V - (taxAll - taxFixed)),
+      inHandYear: inHandYear, inHandMonth: inHandYear / 12, pfSavings: pf * 2,
+      rate: gross + V > 0 ? taxAll / (gross + V) : 0
+    };
+  }
+  function inr(n) { return '₹' + Math.round(n).toLocaleString('en-IN'); }
+  function lakhs(n) { return (n / 1e5).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' L'; }
+
+  function salField(side, key, label, opts) {
+    opts = opts || {};
+    var o = S.salary[side], id = 'sal-' + side + '-' + key;
+    return '<label class="cvf' + (opts.wide ? ' wide' : '') + '"><span>' + label + (opts.hint ? ' <span class="muted">' + opts.hint + '</span>' : '') + '</span>' +
+      '<input id="' + id + '" data-sal="' + side + '.' + key + '" type="' + (opts.text ? 'text' : 'number') + '"' + (opts.text ? ' maxlength="40"' : ' inputmode="decimal" min="0" step="' + (opts.step || 'any') + '"') +
+      ' value="' + esc(o[key]) + '" placeholder="' + esc(opts.ph || '') + '"></label>';
+  }
+  function salEditor(side) {
+    var o = S.salary[side];
+    var check = function (key, label) {
+      return '<label class="row small sal-check"><input type="checkbox" data-sal="' + side + '.' + key + '"' + (o[key] ? ' checked' : '') + '> ' + label + '</label>';
+    };
+    return '<div class="cv-grid">' +
+      (S.salary.compare ? salField(side, 'label', 'Name', { text: 1, wide: 1, ph: 'e.g. Freshworks offer' }) : '') +
+      salField(side, 'ctc', 'CTC', { hint: '(lakhs a year)', ph: 'e.g. 6.5', step: '0.1' }) +
+      salField(side, 'variable', 'Variable or bonus', { hint: '(lakhs, part of CTC)', ph: '0', step: '0.1' }) + '</div>' +
+      '<details class="sal-more"><summary>Salary structure <span class="muted">(optional: change if your offer letter says otherwise)</span></summary><div class="cv-grid">' +
+      salField(side, 'basic', 'Basic pay', { hint: '(% of fixed pay)', ph: '40', step: '1' }) +
+      '<label class="cvf"><span>Provident fund (PF)</span><select data-sal="' + side + '.pf">' +
+      [['12', '12% of basic'], ['cap', 'Capped at ₹1,800 a month'], ['none', 'No PF']].map(function (p) { return '<option value="' + p[0] + '"' + (o.pf === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') + '</select></label>' +
+      salField(side, 'pt', 'Professional tax', { hint: '(₹ a month)', ph: '200', step: '1' }) +
+      salField(side, 'ins', 'Insurance you pay', { hint: '(₹ a month)', ph: '0', step: '1' }) + '</div>' +
+      check('pfInCtc', 'Employer’s PF share is included in the CTC') + check('gratuity', 'Gratuity (4.81% of basic) is included in the CTC') +
+      '<p class="muted small">Professional tax is about ₹200 a month in Karnataka, Maharashtra, Tamil Nadu, Telangana, West Bengal and Gujarat, and ₹0 in Delhi, Haryana, Uttar Pradesh and Rajasthan.</p></details>';
+  }
+  function salResults(side) {
+    var o = S.salary[side], r = salCalc(o);
+    if (!r.ctc) return '<p class="muted">Type a CTC to see the monthly in-hand pay.</p>';
+    var row = function (label, year, cls) { return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + label + '</td><td>' + inr(year) + '</td><td>' + inr(year / 12) + '</td></tr>'; };
+    var minus = function (label, year) { return year ? row('− ' + label, year, 'minus') : ''; };
+    return '<div class="sal-big"><b>' + inr(r.inHandMonth) + '</b><span>a month in hand</span></div>' +
+      '<p class="muted small">From a CTC of ' + lakhs(r.ctc) + ' a year. Income tax: ' + inr(r.taxAll) + ' a year (' + (r.rate * 100).toFixed(1) + '% of your salary).</p>' +
+      '<table class="sal-table"><thead><tr><th></th><th>Year</th><th>Month</th></tr></thead><tbody>' +
+      row('CTC', r.ctc) + minus('Variable or bonus (paid separately)', r.variable) + minus('Employer’s PF share', r.employerPF) + minus('Gratuity', r.gratuity) +
+      row('Gross salary', r.gross, 'sub') +
+      minus('Your PF (12%)', r.pf) + minus('Professional tax', r.pt) + minus('Income tax on fixed pay', r.taxFixed) + minus('Insurance', r.ins) +
+      row('In-hand pay', r.inHandYear, 'total') + '</tbody></table>' +
+      (r.variable ? '<p class="small">Plus the variable or bonus: about <b>' + inr(r.variableNet) + '</b> after tax, if it is paid in full. It is usually paid quarterly or yearly, and is not guaranteed.</p>' : '') +
+      (r.pfSavings ? '<p class="small muted">' + inr(r.pfSavings) + ' a year also goes into your PF account (your share plus your employer’s). That is savings, not lost money.</p>' : '');
+  }
+  function salCompare() {
+    if (!S.salary.compare) return '';
+    var A = salCalc(S.salary.a), B = salCalc(S.salary.b);
+    if (!A.ctc || !B.ctc) return '<section class="card sal-compare"><h2>Side by side</h2><p class="muted">Fill in both CTCs to compare them.</p></section>';
+    var la = esc(S.salary.a.label || 'Offer A'), lb = esc(S.salary.b.label || 'Offer B');
+    var pct = function (x, y) { return y ? ((x - y) / y * 100) : 0; };
+    var diff = function (x, y, money) {
+      var d = x - y;
+      return '<td class="' + (d > 0 ? 'up' : d < 0 ? 'down' : '') + '">' + (d > 0 ? '+' : d < 0 ? '−' : '') + (money ? inr(Math.abs(d)) : Math.abs(d).toFixed(1) + '%') + '</td>';
+    };
+    var row = function (label, a, b) { return '<tr><td>' + label + '</td><td>' + inr(a) + '</td><td>' + inr(b) + '</td>' + diff(b, a, true) + '</tr>'; };
+    var dm = B.inHandMonth - A.inHandMonth;
+    var verdict = Math.abs(dm) < 1 ? 'Both offers pay about the same each month.'
+      : '<b>' + (dm > 0 ? lb : la) + '</b> pays <b>' + inr(Math.abs(dm)) + ' more a month</b> in hand (' + Math.abs(pct(dm > 0 ? B.inHandMonth : A.inHandMonth, dm > 0 ? A.inHandMonth : B.inHandMonth)).toFixed(1) + '% more).';
+    return '<section class="card sal-compare"><h2>Side by side</h2><p>' + verdict + '</p>' +
+      '<table class="sal-table cmp"><thead><tr><th></th><th>' + la + '</th><th>' + lb + '</th><th>Change</th></tr></thead><tbody>' +
+      row('CTC', A.ctc, B.ctc) + row('Fixed pay', A.fixed, B.fixed) + row('In hand a month', A.inHandMonth, B.inHandMonth) +
+      row('A year in hand, with bonus', A.inHandYear + A.variableNet, B.inHandYear + B.variableNet) + row('PF savings a year', A.pfSavings, B.pfSavings) +
+      '</tbody></table><p class="muted small">CTC hike from ' + la + ' to ' + lb + ': ' + (pct(B.ctc, A.ctc) >= 0 ? '+' : '') + pct(B.ctc, A.ctc).toFixed(1) + '%. ' +
+      'In-hand hike: ' + (pct(B.inHandMonth, A.inHandMonth) >= 0 ? '+' : '') + pct(B.inHandMonth, A.inHandMonth).toFixed(1) + '%. Put your current or last salary as ' + la + ' to see your real hike.</p></section>';
+  }
+  var SAL_TIPS = [
+    ['Know your number first', 'Decide the lowest monthly in-hand pay you can accept before the HR call, so you are not deciding under pressure.'],
+    ['Ask for the breakup in writing', 'Request the full CTC structure: fixed pay, variable, PF, gratuity, insurance and any joining bonus.'],
+    ['Compare fixed pay, not CTC', 'Variable pay and bonuses are not guaranteed. Two offers with the same CTC can differ by thousands a month in hand.'],
+    ['Give a researched range', 'When asked for expected CTC, give a range whose lower end is the number you actually want, and say you are open to discussing.'],
+    ['Between jobs is not a discount', 'Base your ask on the role and the market, not only your last salary. A gap is not a reason to accept far less.'],
+    ['Use the extras', 'If fixed pay will not move, ask about a joining bonus, an earlier review, remote days or a better title.'],
+    ['Get it in writing', 'Wait for the signed offer letter before declining other offers or interviews.']
+  ];
+  function salTips() {
+    return '<section class="card stack"><h2>Before you negotiate</h2><ul class="sal-tips">' + SAL_TIPS.map(function (t) {
+      return '<li><b>' + t[0] + '.</b> ' + t[1] + '</li>';
+    }).join('') + '</ul><p class="small"><a href="#/interview">Practise the HR round</a>, including “What is your expected CTC?”</p></section>';
+  }
+  function salOfferCard(side) {
+    return '<section class="card stack sal-offer"><h2>' + (S.salary.compare ? esc(S.salary[side].label || (side === 'a' ? 'Offer A' : 'Offer B')) : 'Your offer') + '</h2>' +
+      salEditor(side) + '<div id="sal-res-' + side + '" class="sal-res">' + salResults(side) + '</div></section>';
+  }
+  function refreshSalary(side) {
+    var el = document.getElementById('sal-res-' + side); if (el) el.innerHTML = salResults(side);
+    var cmp = document.getElementById('salcmp'); if (cmp) cmp.innerHTML = salCompare();
+    if (S.salary.compare) {
+      var h = document.querySelector('#salgrid .sal-offer:nth-child(' + (side === 'a' ? 1 : 2) + ') h2');
+      if (h) h.textContent = S.salary[side].label || (side === 'a' ? 'Offer A' : 'Offer B');
+    }
   }
 
   // ---------- tracker follow-ups ----------
@@ -757,6 +912,19 @@
         '<section class="card stack"><h2>Recent practice</h2>' + ivHistory() + '</section></div>';
     },
 
+    salary: function () {
+      if (!S.salary) S.salary = { a: blankOffer('Offer A'), b: blankOffer('Offer B'), compare: false };
+      var cmp = S.salary.compare;
+      return head('Salary and offer helper', 'See what a CTC really pays each month, and compare two offers before you negotiate. Your numbers stay private to your account.') +
+        '<div class="seg" role="group" aria-label="How many offers">' +
+        '<button type="button" data-act="sal-mode" data-m="1" aria-pressed="' + !cmp + '"' + (!cmp ? ' class="on"' : '') + '>One offer</button>' +
+        '<button type="button" data-act="sal-mode" data-m="2" aria-pressed="' + cmp + '"' + (cmp ? ' class="on"' : '') + '>Compare two</button></div>' +
+        '<div class="grid2 sal-grid" id="salgrid">' + salOfferCard('a') + (cmp ? salOfferCard('b') : salTips()) + '</div>' +
+        '<div id="salcmp">' + salCompare() + '</div>' + (cmp ? salTips() : '') +
+        '<p class="muted small sal-note">An estimate for FY 2026-27 under the new tax regime: no tax on taxable income up to ₹12 lakh (about ₹12.75 lakh salary after the ₹75,000 standard deduction), ' +
+        'then slabs of 5% to 30%, plus 4% cess. Real payslips vary with your exact salary structure, allowances and the old tax regime. This is not tax advice.</p>';
+    },
+
     learn: function () {
       return head('Free learning library', 'Hand-picked courses that are free to learn. Mark what you are doing, and add finished ones to your resume.') +
         '<div id="learnsum">' + learnSummary() + '</div>' +
@@ -835,6 +1003,7 @@
         '<select class="auto" name="stage" aria-label="Stage">' + STAGES.map(function (s) { return '<option>' + s + '</option>'; }).join('') + '</select>' +
         '<button class="btn primary">Add</button></form>' +
         trackerUpcoming() +
+        (countStage('Offer') ? '<p class="banner">' + ico('rupee') + '<span><b>Got an offer?</b> See what it pays each month in hand, and compare it with another. <a href="#/salary">Open the salary helper</a></span></p>' : '') +
         '<div class="board">' + cols + '</div>' +
         '<p class="muted small">Moving a job to Applied sets a follow-up reminder for ' + FOLLOW_DAYS + ' days later. Tap “dates” on a card to add interview dates or change reminders.</p></div>';
     },
@@ -843,7 +1012,7 @@
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
       return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
-        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a> · <a href="#/learn">Free courses</a></span></p>' +
+        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a> · <a href="#/learn">Free courses</a> · <a href="#/salary">Salary helper</a></span></p>' +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -1492,6 +1661,7 @@
       return false;
     },
     'cv-print': function () { window.print(); return false; },
+    'sal-mode': function (d) { S.salary.compare = d.m === '2'; },
     'learn-field': function (d) { learn.field = d.f; refreshLearn(true); return false; },
     'learn-set': function (d) {
       if (S.learn[d.id] === d.s) delete S.learn[d.id]; else S.learn[d.id] = d.s;
@@ -2860,6 +3030,7 @@
       '<a class="ql" href="#/resume">' + ico('feed') + '<span>Resume</span></a>' +
       '<a class="ql" href="#/cover">' + ico('mail') + '<span>Cover letter</span></a>' +
       '<a class="ql" href="#/learn">' + ico('book') + '<span>Learn</span></a>' +
+      '<a class="ql" href="#/salary">' + ico('rupee') + '<span>Salary</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -3516,6 +3687,13 @@
     } else if (e.target.id === 'ivnote' && iv.cur) {
       if (e.target.value.trim()) S.qnotes[iv.cur] = e.target.value; else delete S.qnotes[iv.cur];
       save();
+    } else if (e.target.dataset && e.target.dataset.sal && S.salary) {
+      var sp = e.target.dataset.sal.split('.'), off = S.salary[sp[0]];
+      if (off && sp[1] in off) {
+        off[sp[1]] = e.target.type === 'checkbox' ? e.target.checked : String(e.target.value);
+        save();
+        refreshSalary(sp[0]);
+      }
     } else if (e.target.id === 'refq') {
       refs.q = e.target.value;
       var rl = document.getElementById('reflist'); if (rl) rl.innerHTML = refsHtml();

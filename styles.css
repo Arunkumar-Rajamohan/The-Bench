@@ -869,6 +869,33 @@ dialog.sheet.wide { max-width: 560px; }
 dialog.sheet textarea { width: 100%; }
 dialog.sheet .grid2.tight { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 
+/* Salary and offer helper */
+.sal-grid { margin-top: 16px; }
+.sal-offer select { width: 100%; }
+.sal-more summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--ink-2); padding: 4px 0; }
+.sal-more[open] summary { margin-bottom: 10px; }
+.sal-more .cv-grid { margin-bottom: 8px; }
+.sal-check { gap: 8px; align-items: flex-start; font-weight: 400; margin-top: 6px; }
+.sal-res { border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 8px; }
+.sal-big { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sal-big b { font: 500 2.4rem/1 var(--serif); letter-spacing: -.02em; color: var(--accent); font-variant-numeric: lining-nums tabular-nums; }
+.sal-big span { color: var(--muted); font-size: .9rem; }
+.sal-table { width: 100%; border-collapse: collapse; font-size: .84rem; font-variant-numeric: tabular-nums; }
+.sal-table th { text-align: right; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; padding: 4px 0 6px; }
+.sal-table td { padding: 5px 0; border-top: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.sal-table td:first-child, .sal-table th:first-child { text-align: left; white-space: normal; padding-right: 10px; }
+.sal-table td + td, .sal-table th + th { padding-left: 10px; }
+.sal-table.cmp th { white-space: normal; vertical-align: bottom; line-height: 1.25; }
+.sal-table tr.minus td { color: var(--muted); }
+.sal-table tr.sub td { font-weight: 600; }
+.sal-table tr.total td { font-weight: 700; color: var(--ink); border-top: 2px solid var(--ink-2); }
+.sal-table.cmp td.up { color: var(--good); font-weight: 600; }
+.sal-table.cmp td.down { color: var(--bad); font-weight: 600; }
+.sal-compare { margin-top: 18px; display: grid; gap: 10px; }
+.sal-tips { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: .9rem; }
+.sal-note { margin-top: 18px; }
+@media (max-width: 860px) { .sal-table { font-size: .8rem; } .sal-table.cmp { font-size: .76rem; } .sal-table td + td, .sal-table th + th { padding-left: 6px; } .sal-big b { font-size: 2rem; } }
+
 /* iPhone "Add to Home Screen" help */
 dialog.sheet { border: 1px solid var(--line); border-radius: var(--r); background: var(--paper); color: var(--ink); padding: 24px; max-width: 420px; width: calc(100vw - 32px); box-shadow: var(--shadow-pop); }
 dialog.sheet::backdrop { background: rgba(20, 18, 15, .45); }

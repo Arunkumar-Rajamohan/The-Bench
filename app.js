@@ -271,7 +271,7 @@
       '<button class="btn ghost" data-act="next-q">Skip question</button></div>' +
       '<div><p class="small"><b>How did that go?</b></p><div class="row" style="margin-top:6px">' +
       RATINGS.map(function (r) { return '<button class="btn ghost" data-act="rate" data-r="' + r[0] + '">' + r[1] + '</button>'; }).join('') + '</div></div>' +
-      '<label class="stack small"><b>Your notes for this question</b><textarea id="ivnote" rows="4" maxlength="1500" placeholder="Key points, a story to use, numbers to mention. Only you can see this.">' + esc(note) + '</textarea></label></section>';
+      '<label class="stack small"><b>Your notes for this question</b><textarea id="ivnote" rows="4" maxlength="1500" placeholder="Key points, a story to use, numbers to mention. Other members cannot see this.">' + esc(note) + '</textarea></label></section>';
   }
   function ivHistory() {
     var recent = S.practice.slice(-15).reverse();
@@ -343,7 +343,7 @@
   var S = blank();     // this user's private data
   var posts = [];      // shared feed, from the server
   var ui = {
-    booting: true, authMode: 'login', authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
+    booting: true, authMode: (function () { try { return localStorage.getItem('bench:member') ? 'login' : 'signup'; } catch (e) { return 'login'; } })(), authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
     timerId: null, timerStart: 0, report: null
   };
 
@@ -372,6 +372,7 @@
     stopStream(); chat = freshChat(); updateBadge();
     alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
     buddy.state = null; buddy.suggestions = null; buddy.editing = false;
+    refs.list = null; refs.asking = null; jobs.leads = null;
   }
   var toastTimer = null;
   function toast(msg) {
@@ -402,6 +403,49 @@
     return '<header class="head"><h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
   }
 
+  var WELCOME = [
+    ['jobs', 'Real openings', 'Jobs in India, read from the careers pages of 59 companies. Apply on the company’s own site.'],
+    ['tracker', 'Never lose track', 'Every application in one place, with follow-up reminders and interview dates.'],
+    ['feed', 'Resume and cover letters', 'Fill in a simple form and download a clean PDF.'],
+    ['prep', 'Interview practice', '79 questions with tips, a timer and the STAR method.'],
+    ['rupee', 'Know the real pay', 'Turn a CTC into an estimated monthly in-hand salary, and compare two offers.'],
+    ['users', 'Referrals and buddies', 'Ask members for referrals, and find someone to check in with.'],
+    ['chat', 'People who get it', 'Chat rooms, private messages and a feed for wins, rants and questions.'],
+    ['heart', 'Look after yourself', 'A mood check-in, a breathing exercise and helplines for hard days.']
+  ];
+  function privacyHtml() {
+    var sec = function (t, items) { return '<section class="card stack"><h2>' + t + '</h2><ul class="sal-tips">' + items.map(function (i) { return '<li>' + i + '</li>'; }).join('') + '</ul></section>'; };
+    return head('Your privacy', 'What The Bench stores, who can see it, and how to remove it. Last updated 24 November 2026.') +
+      '<div class="grid2">' +
+      sec('What every member can see', [
+        'Your name, username and profile, including where you can refer people.',
+        'Your feed posts, replies and reactions, chat room messages, Question of the Day answers, puzzle scores, job leads and referral offers.',
+        'Whether you are looking for a buddy, and the goal you wrote.'
+      ]) +
+      sec('What other members cannot see', [
+        'Your tracker, routine, moods and notes, resume, cover letters, salary numbers, interview practice and course progress.',
+        'Private chats are for the two people in them. If one of you reports a message, moderators see that message.',
+        'Your buddy sees your check-ins, not the rest of your private data.'
+      ]) +
+      sec('What the site owner can see', [
+        '<b>Your data is not end-to-end encrypted.</b> Whoever runs The Bench can technically open the database and read what is stored, including private chats, moods, resumes and salary numbers.',
+        'So please do not store ID numbers, bank details, passwords or anything you could not bear someone else reading.',
+        'Passwords and recovery codes are stored scrambled (hashed), so they cannot simply be read.'
+      ]) +
+      sec('Where it is kept', [
+        'The site runs on Render, and the database is kept by Turso. They are separate companies with their own policies.',
+        'We use one cookie to keep you logged in, and your browser’s storage for small settings. There are no ads and no tracking scripts.',
+        'Outside links, such as job posts, courses or Google Calendar, go to other websites. Google gets an interview’s job title, company and time only if you tap its button.'
+      ]) +
+      sec('Your choices', [
+        '<b>Download your data</b> or <b>delete your account</b> any time from the Account page.',
+        'Deleting removes your profile, private data, posts, leads, offers and messages. Your private chats are removed for the other person too.',
+        'A reported message is kept until a moderator closes the report, and reports you made stay until they are closed. An empty numbered placeholder remains so your account number is never reused.',
+        'The database company may hold backup copies for a limited time.'
+      ]) + '</div>' +
+      '<p class="small" style="margin-top:18px">' + (me ? '<a href="#/account">Go to your account</a>' : '<a href="#/home">← Back</a>') + '</p>';
+  }
+
   function authView() {
     var mode = ui.authMode, signup = mode === 'signup', reset = mode === 'reset';
     var title = signup ? 'Grab a seat' : reset ? 'Reset your password' : 'Welcome back';
@@ -425,11 +469,20 @@
       ? '<p class="small">Remembered it? ' + modeLink('login', 'Back to log in') + '</p>'
       : '<p class="small">New here? ' + modeLink('signup', 'Create an account') + '</p>' +
         '<p class="small">' + modeLink('reset', 'Forgot password?') + '</p>';
-    return '<div class="auth"><div class="auth-brand"><span class="brand-mark" aria-hidden="true">' + ico('bench') + '</span>' +
-      '<h1>The <em>Bench</em></h1><p class="sub">A clubhouse for the between-jobs crowd. Everyone sits here sometimes.</p></div>' +
-      '<form class="card stack" data-form="auth"><h2>' + title + '</h2>' + fields +
+    var form = '<form class="card stack" data-form="auth" id="authform"><h2>' + title + '</h2>' + fields +
       (ui.authError ? '<p class="err" role="alert">' + esc(ui.authError) + '</p>' : '') +
-      '<button class="btn primary">' + button + '</button>' + links + '</form></div>';
+      '<button class="btn primary">' + button + '</button>' + links +
+      '<p class="muted small"><a href="#/privacy">What we store and who can see it</a></p></form>';
+    return '<div class="welcome"><div class="welcome-top"><div class="welcome-hero">' +
+      '<p class="welcome-name"><span class="brand-mark" aria-hidden="true">' + ico('bench') + '</span><span>The <em>Bench</em></span></p>' +
+      '<h1>Between jobs? Pull up a seat.</h1>' +
+      '<p class="welcome-sub">A free space for people in India looking for work: real openings, tools for the search, and people who get it.</p>' +
+      '<ul class="welcome-points"><li>' + ico('check') + 'Free, with no ads</li><li>' + ico('check') + 'No email or phone number needed</li><li>' + ico('check') + 'Never pay anyone for a job or a referral</li></ul>' +
+      (signup ? '<button type="button" class="btn primary welcome-go" data-act="to-auth">Create your account</button>' : '') +
+      '</div><div class="auth">' + form + '</div></div>' +
+      '<section class="welcome-grid" aria-label="What is inside">' + WELCOME.map(function (w) {
+        return '<div class="welcome-item">' + ico(w[0]) + '<h2>' + w[1] + '</h2><p>' + w[2] + '</p></div>';
+      }).join('') + '</section></div>';
   }
   function modeLink(mode, label) {
     return '<button type="button" class="link big" data-act="auth-mode" data-mode="' + mode + '">' + label + '</button>';
@@ -942,15 +995,15 @@
         var on = log.tags.indexOf(t) > -1;
         return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-act="mood-tag" data-t="' + esc(t) + '" aria-pressed="' + on + '">' + esc(t) + '</button>';
       }).join('') + '</div></div>' +
-      '<label class="stack small"><b>A note to yourself</b><textarea id="moodnote" rows="2" maxlength="280" placeholder="Anything on your mind. Only you can see this.">' + esc(log.note) + '</textarea></label></section>';
+      '<label class="stack small"><b>A note to yourself</b><textarea id="moodnote" rows="2" maxlength="280" placeholder="Anything on your mind. Other members cannot see this.">' + esc(log.note) + '</textarea></label></section>';
   }
   function helplinesHtml() {
     return '<section class="card stack helplines" id="support"><h2>' + ico('phone') + ' If you need to talk</h2>' +
-      '<p>Free, confidential, and you do not need to be in crisis to call. If you are in danger right now, call <a href="tel:112"><b>112</b></a>.</p>' +
+      '<p>You do not need to be in crisis to call. If you are in danger right now, call <a href="tel:112"><b>112</b></a>.</p>' +
       '<ul class="help-list">' + HELPLINES.map(function (h) {
         return '<li><div class="grow"><b>' + esc(h.name) + '</b> <span class="muted small">' + esc(h.by) + '</span><br><span class="small muted">' + esc(h.when) + '</span></div>' +
           '<a class="btn tiny primary" href="tel:' + esc(h.tel) + '">' + ico('phone') + esc(h.show) + '</a></li>';
-      }).join('') + '</ul><p class="muted small">Numbers checked in November 2026. If one line is busy, try another. The Bench is a peer community, not a medical service.</p></section>';
+      }).join('') + '</ul><p class="muted small">Numbers checked in November 2026 against each service’s own website, or a government source for Tele-MANAS. Tele-MANAS is toll-free; your normal call charges may apply to the others. If one line is busy, try another. The Bench is a peer community, not a medical service.</p></section>';
   }
   function copingHtml() {
     return '<section class="card stack"><h2>When it gets heavy</h2><ul class="sal-tips">' + COPING.map(function (c) {
@@ -1009,6 +1062,8 @@
         accountBar() + '</div>';
     },
 
+    privacy: privacyHtml,
+
     account: function () {
       var msg = ui.acctMsg ? '<p class="' + (ui.acctMsg.ok ? 'ok-msg' : 'err') + '" role="status">' + esc(ui.acctMsg.text) + '</p>' : '';
       return head('Account', 'Signed in as @' + esc(me.username) + '.') + msg +
@@ -1026,6 +1081,14 @@
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
         (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        '<section class="card stack"><h2>Your data</h2><p class="small">Download everything stored about you as one file, or read <a href="#/privacy">what we store and who can see it</a>.</p>' +
+        '<div><button type="button" class="btn" data-act="export-data">' + ico('download') + 'Download my data</button></div></section>' +
+        '<form class="card stack" data-form="deleteme"><h2>Delete account</h2>' +
+        (me.isAdmin ? '<p class="small">You are a moderator. Ask to be removed from the moderator list first, then you can delete your account.</p>'
+          : '<p class="small">This removes your account and everything in it, including private chats for both people. <b>It cannot be undone.</b> Download your data first if you want a copy.</p>' +
+          '<label>Current password<input type="password" name="password" maxlength="200" autocomplete="current-password" required></label>' +
+          '<label>Type your username, <b>' + esc(me.username) + '</b>, to confirm<input type="text" name="confirm" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>' +
+          '<button class="btn danger">Delete my account</button>') + '</form>' +
         '</div>' +
         '<p class="small muted" style="margin-top:16px"><a href="#/home">← Back home</a> · <button class="link" data-act="logout">Log out</button></p>';
     },
@@ -1066,14 +1129,14 @@
 
     interview: function () {
       if (!iv.cur) pickQ();
-      return head('Interview practice', 'Pick a pack, answer out loud against the clock, then rate yourself. Your notes and history stay private.') +
+      return head('Interview practice', 'Pick a pack, answer out loud against the clock, then rate yourself. Other members cannot see your notes or history.') +
         ivStats() + ivPacks() +
         '<div class="grid2 iv-grid"><div id="ivq">' + ivQuestion() + '</div>' +
         '<section class="card stack"><h2>Recent practice</h2>' + ivHistory() + '</section></div>';
     },
 
     mood: function () {
-      return head('How you are doing', 'A private check-in, just for you. Nobody else can see this page, not even moderators.') +
+      return head('How you are doing', 'A check-in just for you. Other members and moderators cannot see it. <a href="#/privacy">How your data is stored</a>') +
         (hardStretch() ? '<p class="banner warm">' + ico('heart') + '<span><b>You have had a few hard days in a row.</b> That happens to a lot of people between jobs. Talking to someone can really help. <button type="button" class="link" data-act="to-support">See free helplines</button></span></p>' : '') +
         '<div class="grid2">' + moodCheckin() +
         '<section class="card stack"><h2>Your last 30 days</h2>' + moodChart() + '<div id="moodinsights">' + moodInsights() + '</div></section></div>' +
@@ -1083,7 +1146,7 @@
     salary: function () {
       if (!S.salary) S.salary = { a: blankOffer('Offer A'), b: blankOffer('Offer B'), compare: false };
       var cmp = S.salary.compare;
-      return head('Salary and offer helper', 'See what a CTC really pays each month, and compare two offers before you negotiate. Your numbers stay private to your account.') +
+      return head('Salary and offer helper', 'See what a CTC really pays each month, and compare two offers before you negotiate. Other members cannot see your numbers.') +
         '<div class="seg" role="group" aria-label="How many offers">' +
         '<button type="button" data-act="sal-mode" data-m="1" aria-pressed="' + !cmp + '"' + (!cmp ? ' class="on"' : '') + '>One offer</button>' +
         '<button type="button" data-act="sal-mode" data-m="2" aria-pressed="' + cmp + '"' + (cmp ? ' class="on"' : '') + '>Compare two</button></div>' +
@@ -1098,7 +1161,7 @@
         '<div id="learnsum">' + learnSummary() + '</div>' +
         '<div id="learnctl">' + learnControls() + '</div>' +
         '<div id="learnlist">' + learnListHtml() + '</div>' +
-        '<p class="muted small" style="margin-top:16px">Links go to each provider’s own site. Course details change, so check the certificate terms there before you start.</p>';
+        '<p class="muted small" style="margin-top:16px">Links go to each provider’s own site. We do not run these courses, and they change. Check the price and certificate terms there before you start.</p>';
     },
 
     buddy: function () {
@@ -1582,6 +1645,7 @@
   }
   function enter(j, importOld) {
     me = j.user; S = adopt(j.data); ui.authError = '';
+    try { localStorage.setItem('bench:member', '1'); } catch (e) { /* storage blocked */ }
     if (j.recoveryCode) ui.newCode = j.recoveryCode;
     if (importOld) {
       var old = oldLocal();
@@ -1604,6 +1668,11 @@
   }
 
   var actions = {
+    'to-auth': function () {
+      var f = document.getElementById('authform');
+      if (f) { f.scrollIntoView({ block: 'start' }); var i = f.querySelector('input'); if (i) i.focus({ preventScroll: true }); }
+      return false;
+    },
     'auth-mode': function (d) {
       ui.authMode = d.mode || 'login'; ui.authError = '';
       render(); return false;
@@ -1748,6 +1817,16 @@
     'code-done': function () {
       ui.newCode = '';
       render(); window.scrollTo(0, 0); return false;
+    },
+    'export-data': function () {
+      flush().then(function () { return api('GET', '/api/me/export'); }).then(function (j) {
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' }));
+        a.download = 'the-bench-' + me.username + '.json';
+        document.body.appendChild(a); a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      }).catch(fail);
+      return false;
     },
     logout: function () {
       flush().then(function () { return api('POST', '/api/logout'); }).catch(function () {}).then(function () {
@@ -2283,6 +2362,22 @@
         .then(function (j) { me.hasRecovery = true; ui.newCode = j.recoveryCode; ui.acctMsg = { ok: true, text: 'New recovery code made. Your old one no longer works.' }; })
         .catch(function (e) { if (e.status === 429 || e.status === 401 || e.status === 400) ui.acctMsg = { ok: false, text: e.message }; else fail(e); })
         .then(render);
+      return false;
+    },
+    deleteme: function (f, form) {
+      if (String(f.get('confirm')).trim().toLowerCase() !== me.username) { toast('Type your username exactly to confirm.'); return false; }
+      if (!window.confirm('Delete your account for good? This cannot be undone.')) return false;
+      var btn = form.querySelector('button.danger');
+      btn.disabled = true;
+      api('POST', '/api/me/delete', { password: String(f.get('password')), confirm: String(f.get('confirm')).trim() })
+        .then(function () {
+          signedOut();
+          try { localStorage.removeItem('bench:member'); } catch (e) { /* storage blocked */ }
+          ui.authMode = 'signup'; ui.authUser = ''; ui.authName = '';
+          location.hash = '#/home'; render();
+          toast('Your account has been deleted. Take care, and all the best.');
+        })
+        .catch(function (e) { btn.disabled = false; toast(e.message); });
       return false;
     },
     password: function (f, form) {
@@ -3574,7 +3669,7 @@
       '<section class="cv-sec"><h3>The job</h3><div class="cv-grid">' + pick +
         clField('company', 'Company', { ph: 'e.g. Freshworks' }) + clField('role', 'Job title', { ph: 'e.g. Customer success associate' }) +
         clField('manager', 'Hiring manager', { hint: '(if you know the name)', ph: 'e.g. Ms. Priya Raman' }) + clField('source', 'Where you saw it', { ph: 'e.g. LinkedIn, a friend' }) + '</div></section>' +
-      '<section class="cv-sec"><h3>The job post</h3>' + clField('post', 'Paste the job post', { area: 1, wide: 1, rows: 6, max: 8000, hint: '(optional, stays private)', ph: 'Paste the full job description here to match your skills against it.' }) +
+      '<section class="cv-sec"><h3>The job post</h3>' + clField('post', 'Paste the job post', { area: 1, wide: 1, rows: 6, max: 8000, hint: '(optional, other members cannot see it)', ph: 'Paste the full job description here to match your skills against it.' }) +
         '<div id="clkeys" class="cl-keys">' + clKeywordsHtml() + '</div></section>' +
       '<section class="cv-sec"><h3>Your pitch</h3><div class="cv-grid">' +
         clField('highlight', 'Something you are proud of', { area: 1, wide: 1, rows: 2, max: 400, hint: '(one result, with a number if you can)', ph: 'e.g. Cut average resolution time by 30% by writing a shared answer library' }) +
@@ -3611,35 +3706,34 @@
   // free = free certificate or badge, paid = free to learn but the certificate or exam costs money, some = some courses have free certificates, none = no certificate.
   var LEARN_FIELDS = [['all', 'All'], ['office', 'Office & Excel'], ['data', 'Data'], ['tech', 'Software & IT'], ['marketing', 'Marketing'], ['sales', 'Sales & support'],
     ['design', 'Design'], ['finance', 'Finance'], ['pm', 'Project management'], ['soft', 'English & soft skills'], ['general', 'Big libraries']];
-  var CERT_LABEL = { free: 'Free certificate', paid: 'Certificate costs extra', some: 'Some free certificates', none: 'No certificate' };
+  var CERT_LABEL = { free: 'Free certificate', paid: 'Certificate costs extra', some: 'Some free certificates', check: 'Check certificate terms', none: 'No certificate' };
   var COURSES = [
     { id: 'gcf-excel', field: 'office', title: 'Excel tutorials', by: 'GCFGlobal', cert: 'none', url: 'https://edu.gcfglobal.org/en/excel/', note: 'Step-by-step lessons from the very basics up to formulas, charts and PivotTables.' },
     { id: 'ms-excel', field: 'office', title: 'Excel video training', by: 'Microsoft', cert: 'none', url: 'https://support.microsoft.com/en-us/office/excel-video-training-9bc05390-e94c-46af-a5b3-d7c22f6990bb', note: 'Short official videos on tables, formulas, charts and PivotTables.' },
     { id: 'kaggle', field: 'data', title: 'Python, Pandas and SQL mini-courses', by: 'Kaggle Learn', cert: 'free', url: 'https://www.kaggle.com/learn', note: 'Hands-on lessons that run in your browser, with a certificate for each course you finish.' },
-    { id: 'fcc-data', field: 'data', title: 'Data Analysis with Python', by: 'freeCodeCamp', cert: 'free', url: 'https://www.freecodecamp.org/learn/data-analysis-with-python/', note: 'NumPy, Pandas and charts. Build five projects to earn the certificate.' },
+    { id: 'fcc-data', field: 'data', title: 'Data Analysis with Python', by: 'freeCodeCamp', cert: 'check', url: 'https://www.freecodecamp.org/learn/data-analysis-with-python/', note: 'NumPy, Pandas and charts, with projects. Still open, but freeCodeCamp no longer updates it.' },
     { id: 'ms-powerbi', field: 'data', title: 'Power BI training', by: 'Microsoft Learn', cert: 'paid', url: 'https://learn.microsoft.com/en-us/training/powerplatform/power-bi', note: 'Build reports and dashboards. Prepares you for the PL-300 exam, which is paid.' },
     { id: 'google-da', field: 'data', title: 'Google Data Analytics Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-data-analytics', note: 'Spreadsheets, SQL and dashboards. Audit the courses for free; Coursera offers financial aid for the certificate.' },
     { id: 'cs50x', field: 'tech', title: 'CS50x: Introduction to Computer Science', by: 'Harvard University', cert: 'free', url: 'https://cs50.harvard.edu/x/', note: 'The famous beginner course. Finish the problem sets for a free certificate from CS50.' },
-    { id: 'fcc-web', field: 'tech', title: 'Responsive Web Design', by: 'freeCodeCamp', cert: 'free', url: 'https://www.freecodecamp.org/learn/2022/responsive-web-design/', note: 'HTML and CSS from zero, with projects to build for the certificate.' },
+    { id: 'fcc-web', field: 'tech', title: 'Responsive Web Design', by: 'freeCodeCamp', cert: 'check', url: 'https://www.freecodecamp.org/learn/2022/responsive-web-design/', note: 'HTML and CSS from zero, with projects. This is an older version; freeCodeCamp links to the current one at the top.' },
     { id: 'odin', field: 'tech', title: 'The Odin Project', by: 'The Odin Project', cert: 'none', url: 'https://www.theodinproject.com/', note: 'A complete web development path, free and open source, with a friendly community.' },
     { id: 'khan-code', field: 'tech', title: 'Computer programming', by: 'Khan Academy', cert: 'none', url: 'https://www.khanacademy.org/computing/computer-programming', note: 'A gentle first taste of coding, with instant visual results.' },
     { id: 'az900', field: 'tech', title: 'Azure Fundamentals (AZ-900) learning path', by: 'Microsoft Learn', cert: 'paid', url: 'https://learn.microsoft.com/en-us/training/paths/microsoft-azure-fundamentals-describe-cloud-concepts/', note: 'Cloud basics in plain language. The training is free; the exam is paid.' },
     { id: 'aws-cp', field: 'tech', title: 'AWS Cloud Practitioner Essentials', by: 'AWS Skill Builder', cert: 'paid', url: 'https://skillbuilder.aws/', note: 'Search for "Cloud Practitioner Essentials" after signing in. The course is free; the exam is paid.' },
-    { id: 'cisco-cyber', field: 'tech', title: 'Introduction to Cybersecurity', by: 'Cisco Networking Academy', cert: 'free', url: 'https://www.netacad.com/courses/introduction-to-cybersecurity', note: 'How attacks work and how to stay safe online. Free badge when you finish.' },
+    { id: 'cisco-cyber', field: 'tech', title: 'Introduction to Cybersecurity', by: 'Cisco Networking Academy', cert: 'check', url: 'https://www.netacad.com/courses/introduction-to-cybersecurity', note: 'A free course on how attacks work and how to stay safe online.' },
     { id: 'hs-inbound', field: 'marketing', title: 'Inbound Marketing', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/inbound-marketing', note: 'Content, social and lead nurturing basics, with a free certification.' },
     { id: 'skillshop', field: 'marketing', title: 'Google Ads certifications', by: 'Google Skillshop', cert: 'free', url: 'https://skillshop.withgoogle.com/', note: 'Official Google Ads and Analytics training with free certifications.' },
-    { id: 'semrush', field: 'marketing', title: 'SEO and digital marketing courses', by: 'Semrush Academy', cert: 'free', url: 'https://www.semrush.com/academy/', note: 'Short courses on SEO, content and ads, most with a free certificate.' },
+    { id: 'semrush', field: 'marketing', title: 'SEO and digital marketing courses', by: 'Semrush Academy', cert: 'check', url: 'https://www.semrush.com/academy/', note: 'Free short courses on SEO, content and ads. Moving to a new platform on 16 December 2026, so finish and save certificates before then.' },
     { id: 'meta', field: 'marketing', title: 'Meta Blueprint courses', by: 'Meta', cert: 'paid', url: 'https://www.facebook.com/business/learn', note: 'Facebook and Instagram marketing. Courses are free; certification exams are paid.' },
     { id: 'hs-sales', field: 'sales', title: 'Inbound Sales', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/inbound-sales', note: 'Modern selling: finding leads, calls and closing, with a free certification.' },
-    { id: 'hs-service', field: 'sales', title: 'Customer Service', by: 'HubSpot Academy', cert: 'free', url: 'https://academy.hubspot.com/courses/customer-service', note: 'Support basics: tickets, customer happiness and keeping customers.' },
     { id: 'canva', field: 'design', title: 'Canva Design School', by: 'Canva', cert: 'none', url: 'https://www.canva.com/designschool/', note: 'Bite-size lessons on layout, colour and type, plus social media design.' },
     { id: 'google-ux', field: 'design', title: 'Google UX Design Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-ux-design', note: 'Research, wireframes and Figma prototypes. Free to audit; financial aid available.' },
     { id: 'varsity', field: 'finance', title: 'Zerodha Varsity', by: 'Zerodha', cert: 'none', url: 'https://zerodha.com/varsity/', note: 'Stock markets, financial statements and personal finance, explained simply for India.' },
     { id: 'khan-fin', field: 'finance', title: 'Economics, finance and accounting', by: 'Khan Academy', cert: 'none', url: 'https://www.khanacademy.org/economics-finance-domain', note: 'Clear videos on accounting, interest, banking and the economy.' },
     { id: 'google-pm', field: 'pm', title: 'Google Project Management Certificate', by: 'Google on Coursera', cert: 'paid', url: 'https://www.coursera.org/professional-certificates/google-project-management', note: 'Planning, Agile and stakeholder skills. Free to audit; financial aid available.' },
     { id: 'scrum', field: 'pm', title: 'Scrum open assessments', by: 'Scrum.org', cert: 'none', url: 'https://www.scrum.org/open-assessments', note: 'Free practice tests to check your Scrum basics before an interview.' },
-    { id: 'tcs-edge', field: 'soft', title: 'Career Edge – Young Professional', by: 'TCS iON', cert: 'free', url: 'https://learning.tcsionhub.in/courses/career-edge-young-professional/', note: 'Communication, resume writing, interviews and office basics, with a free certificate.' },
-    { id: 'bc-english', field: 'soft', title: 'LearnEnglish', by: 'British Council', cert: 'none', url: 'https://learnenglish.britishcouncil.org/', note: 'Free lessons, listening and grammar practice for workplace English.' },
+    { id: 'tcs-edge', field: 'soft', title: 'Career Edge – Young Professional', by: 'TCS iON', cert: 'free', url: 'https://www.tcsion.com/courses/career-edge-young-professional/', note: 'A free 15-day course on communication, resumes, interviews and office basics, with a certificate of achievement.' },
+    { id: 'bc-english', field: 'soft', title: 'LearnEnglish', by: 'British Council', cert: 'none', url: 'https://learnenglish.britishcouncil.org/', note: 'A free library of English lessons and practice. Their live courses cost money.' },
     { id: 'lhtl', field: 'soft', title: 'Learning How to Learn', by: 'Coursera', cert: 'paid', url: 'https://www.coursera.org/learn/learning-how-to-learn', note: 'One of the most popular courses anywhere: study smarter and beat procrastination. Free to audit.' },
     { id: 'elements-ai', field: 'soft', title: 'Elements of AI', by: 'University of Helsinki', cert: 'free', url: 'https://www.elementsofai.com/', note: 'What AI is and is not, with no maths or coding needed. Free certificate.' },
     { id: 'swayam', field: 'general', title: 'SWAYAM', by: 'Government of India', cert: 'paid', url: 'https://swayam.gov.in/', note: 'Free university courses. You pay only if you sit the proctored certificate exam.' },
@@ -3653,7 +3747,7 @@
   var learn = { field: 'all', freeOnly: false, q: '' };
   function cleanLearn(raw) {
     var b = {};
-    if (isObj(raw)) Object.keys(raw).forEach(function (k) { if (raw[k] === 'doing' || raw[k] === 'done') b[k] = raw[k]; });
+    if (isObj(raw)) Object.keys(raw).forEach(function (k) { if ((raw[k] === 'doing' || raw[k] === 'done') && COURSES.some(function (c) { return c.id === k; })) b[k] = raw[k]; });
     return b;
   }
   function learnMatches() {
@@ -3783,7 +3877,7 @@
     document.body.classList.toggle('anon', !me);
     main.classList.remove('chat-mode');
     if (ui.booting) { main.innerHTML = ''; return; } // the splash screen covers this moment
-    if (!me) { main.innerHTML = authView(); return; }
+    if (!me) { main.innerHTML = currentView() === 'privacy' ? '<div class="public-page">' + privacyHtml() + '</div>' : authView(); return; }
     document.body.classList.toggle('anon', !!ui.newCode); // hide the nav until the code is saved
     if (ui.newCode) { main.innerHTML = codeView(); return; }
     var v = currentView();

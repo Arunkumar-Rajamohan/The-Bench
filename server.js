@@ -346,7 +346,11 @@ const q = {
   wipeIfDeleted: stmt(`UPDATE messages SET text = '' WHERE id = ? AND deleted = 1
     AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0)`),
   setBanned: stmt('UPDATE users SET banned = ? WHERE id = ?'),
-  bannedUsers: stmt('SELECT username, name FROM users WHERE banned = 1 ORDER BY username'),
+  // Deleted accounts are empty placeholders named '~<id>' (a name nobody can sign up with); they are not bans.
+  bannedUsers: stmt("SELECT username, name FROM users WHERE banned = 1 AND username NOT LIKE '~%' ORDER BY username"),
+  dmKeysOf: stmt('SELECT key FROM dms WHERE a = ? OR b = ?'),
+  recentMsgsOf: stmt("SELECT id, channel FROM messages WHERE user_id = ? AND deleted = 0 AND (channel LIKE 'room:%' OR channel LIKE 'qotd:%') ORDER BY id DESC LIMIT 200"),
+  emptyUser: stmt("UPDATE users SET username = ?, name = 'Deleted member', pass = ?, salt = ?, recovery = NULL, data = '{}', banned = 1 WHERE id = ?"),
 
   // fun tab
   answers: stmt(`SELECT m.id, m.text, m.created, m.user_id, u.name, u.username FROM messages m JOIN users u ON u.id = m.user_id
@@ -620,6 +624,59 @@ setInterval(() => {
   for (const set of streams.values()) for (const r of set) r.write(': ping\n\n');
 }, 25000).unref();
 
+// ---------- deleting an account ----------
+// [name in the file, query, how many times the member's id appears]
+const EXPORTS = [
+  ['profile', 'SELECT data, updated FROM profiles WHERE user_id = ?', 1],
+  ['posts', 'SELECT tag, text, created FROM posts WHERE user_id = ?', 1],
+  ['replies', 'SELECT post_id, text, created FROM replies WHERE user_id = ?', 1],
+  ['messages', "SELECT channel, text, created FROM messages WHERE user_id = ? AND deleted = 0 AND (channel LIKE 'room:%' OR channel LIKE 'qotd:%' OR channel LIKE 'dm:%')", 1],
+  ['jobLeads', 'SELECT title, company, location, url, note, created FROM job_leads WHERE user_id = ? AND deleted = 0', 1],
+  ['referralOffers', 'SELECT company, kind, roles, note, open, created FROM referral_offers WHERE user_id = ? AND deleted = 0', 1],
+  ['referralRequests', 'SELECT o.company, a.created FROM referral_asks a JOIN referral_offers o ON o.id = a.offer_id WHERE a.user_id = ?', 1],
+  ['jobAlerts', 'SELECT what, place, remote, field, created FROM job_alerts WHERE user_id = ?', 1],
+  ['buddySettings', 'SELECT seeking, goal, updated FROM buddy_prefs WHERE user_id = ?', 1],
+  ['buddyRequestsSent', 'SELECT note, status, created FROM buddy_requests WHERE from_id = ?', 1],
+  ['checkins', 'SELECT day, plan, done, updated FROM checkins WHERE user_id = ?', 1],
+  ['puzzles', 'SELECT day, guesses, solved, tries FROM puzzle_plays WHERE user_id = ?', 1],
+  ['blocked', 'SELECT u.username FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ?', 1]
+];
+// Blank a message, unless an open report still needs it: then its text goes when a moderator closes the report.
+const BLANK_MSG = "UPDATE messages SET deleted = 1, text = CASE WHEN EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0) THEN text ELSE '' END ";
+
+// Turso does not cascade for us, so every table is listed. The account row goes last: if a step fails, the member
+// can still log in and try again. It becomes an empty placeholder so its id is never handed to someone else.
+async function deleteAccount(u) {
+  const id = u.id;
+  const pair = await q.activePair.get(id, id);
+  if (pair) await endPairBetween(id, buddyPeer(pair, id));
+  const gone = await q.recentMsgsOf.all(id);
+  for (const d of await q.dmKeysOf.all(id, id)) await exec(BLANK_MSG + 'WHERE channel = ?', ['dm:' + d.key]);
+  await exec(BLANK_MSG + 'WHERE user_id = ?', [id]);
+  await exec('DELETE FROM msg_reacts WHERE user_id = ?', [id]);
+  await exec('DELETE FROM dms WHERE a = ? OR b = ?', [id, id]);
+  await exec('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?', [id, id]);
+  await exec('DELETE FROM reports WHERE reporter_id = ? AND resolved = 1', [id]);
+  await exec('DELETE FROM reactions WHERE user_id = ? OR post_id IN (SELECT id FROM posts WHERE user_id = ?)', [id, id]);
+  await exec('DELETE FROM replies WHERE user_id = ? OR post_id IN (SELECT id FROM posts WHERE user_id = ?)', [id, id]);
+  await exec('DELETE FROM posts WHERE user_id = ?', [id]);
+  await exec('DELETE FROM lead_votes WHERE user_id = ?', [id]);
+  await exec("UPDATE job_leads SET deleted = 1, title = '', company = '', location = '', url = '', note = '' WHERE user_id = ?", [id]);
+  await exec('DELETE FROM referral_asks WHERE user_id = ? OR offer_id IN (SELECT id FROM referral_offers WHERE user_id = ?)', [id, id]);
+  await exec("UPDATE referral_offers SET deleted = 1, company = '', roles = '', note = '' WHERE user_id = ?", [id]);
+  await exec('DELETE FROM job_alerts WHERE user_id = ?', [id]);
+  await exec('DELETE FROM buddy_prefs WHERE user_id = ?', [id]);
+  await exec('DELETE FROM buddy_requests WHERE from_id = ? OR to_id = ?', [id, id]);
+  await exec('DELETE FROM buddy_pairs WHERE a = ? OR b = ?', [id, id]);
+  await exec('DELETE FROM checkins WHERE user_id = ?', [id]);
+  await exec('DELETE FROM puzzle_plays WHERE user_id = ?', [id]);
+  await exec('DELETE FROM profiles WHERE user_id = ?', [id]);
+  await q.emptyUser.run('~' + id, crypto.randomBytes(64).toString('hex'), crypto.randomBytes(16).toString('hex'), id);
+  await q.dropUserSessions.run(id);
+  closeStreams(id);
+  for (const m of gone) pushAll({ type: 'del', channel: m.channel, id: m.id });
+}
+
 // ---------- API ----------
 async function api(req, res, route) {
   const method = req.method;
@@ -720,6 +777,33 @@ async function api(req, res, route) {
     await q.setPassword.run(await hashPassword(newPassword(b.newPassword), salt), salt, full.recovery, user.id);
     await q.dropUserSessions.run(user.id); // sign out everywhere else, keep this device signed in
     return send(res, 200, { ok: true }, { 'Set-Cookie': await startSession(user.id) });
+  }
+
+  // Everything we hold about this member, as one file.
+  if (method === 'GET' && route === '/me/export') {
+    limit('export:' + user.id, 10, 60 * 60000);
+    const full = await q.userById.get(user.id);
+    const out = {
+      exported: new Date().toISOString(),
+      account: { username: full.username, name: full.name, joined: new Date(full.created).toISOString() },
+      private: parseData(full.data)
+    };
+    for (const [name, sql, args] of EXPORTS) {
+      out[name] = (await exec(sql, Array(args).fill(user.id))).rows;
+    }
+    return send(res, 200, out);
+  }
+
+  if (method === 'POST' && route === '/me/delete') {
+    limit('account:' + user.id, 10, 10 * 60000);
+    const b = await readBody(req);
+    const full = await q.userById.get(user.id);
+    if (!(await checkPassword(full, b.password))) throw new HttpError(401, 'Your current password is not right.');
+    if (String(b.confirm || '').trim().toLowerCase() !== full.username) throw new HttpError(400, 'Type your username to confirm.');
+    // A freed moderator username could be registered by anyone, who would then be a moderator.
+    if (isAdmin(full)) throw new HttpError(400, 'Moderators must be removed from the moderator list before deleting their account.');
+    await deleteAccount(full);
+    return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('', 0) });
   }
 
   if (method === 'PUT' && route === '/me/data') {
@@ -2001,6 +2085,7 @@ const STATIC = {
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/og.png': ['og.png', 'image/png'], // the picture shown when someone shares the link
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], // served from the root so it can look after the whole site
   '/icons/icon-192.png': ['icons/icon-192.png', 'image/png', FOREVER],

@@ -1059,3 +1059,12 @@ main.enter > *:nth-child(3) { animation-delay: .08s; }
   .welcome-go { display: inline-flex; }
   .welcome-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 18px; margin-top: 36px; }
 }
+
+/* Shown only while a change has not reached the server */
+#savestate { width: max-content; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; max-width: calc(100vw - 32px); padding: 8px 16px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: .82rem; font-weight: 600; box-shadow: var(--shadow-pop); text-align: center; }
+#savestate[hidden] { display: none; }
+@media (max-width: 860px) { #savestate { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+@media print { #savestate { display: none !important; } }
+#keptcopies:empty { display: none; }
+.kept { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.kept textarea { min-height: 0; }

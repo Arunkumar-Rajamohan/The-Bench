@@ -66,16 +66,16 @@
     return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   }
 
-  function api(method, url, body, keepalive) {
+  function api(method, url, body, keepalive, extra) {
     return fetch(url, {
       method: method,
       credentials: 'same-origin',
       keepalive: !!keepalive,
-      headers: body ? { 'Content-Type': 'application/json' } : {},
+      headers: Object.assign(body ? { 'Content-Type': 'application/json' } : {}, extra || {}),
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
-        if (!r.ok) { var e = new Error(j.error || 'Something went wrong.'); e.status = r.status; throw e; }
+        if (!r.ok) { var e = new Error(j.error || 'Something went wrong.'); e.status = r.status; e.body = j; throw e; }
         return j;
       });
     }, function () { throw new Error('Cannot reach the server. Is it running?'); });
@@ -314,7 +314,8 @@
       cl: null, // cover letter helper, made the first time it opens
       learn: {}, // free learning library: course id -> 'doing' | 'done'
       salary: null, // salary and offer helper inputs, made the first time it opens
-      moodlog: {} // mood check-in extras by day: { tags, note }
+      moodlog: {}, // mood check-in extras by day: { tags, note }
+      kept: [] // text that was changed on two devices at once: the version that was not used
     };
   }
   // Turn whatever the server (or old local storage) holds into a safe, complete shape.
@@ -331,6 +332,9 @@
     b.learn = cleanLearn(raw.learn);
     b.salary = cleanSalary(raw.salary);
     b.moodlog = cleanMoodlog(raw.moodlog);
+    b.kept = cleanKept(raw.kept);
+    // Parts this version of the app does not know (an older tab next to a newer one) must survive a save.
+    Object.keys(raw).forEach(function (k) { if (!(k in b)) b[k] = raw[k]; });
     if (isObj(raw.routine)) {
       if (Array.isArray(raw.routine.tasks)) b.routine.tasks = raw.routine.tasks.filter(isObj);
       if (isObj(raw.routine.log)) b.routine.log = raw.routine.log;
@@ -347,15 +351,281 @@
     timerId: null, timerStart: 0, report: null
   };
 
-  var saveTimer = null;
+  // ---------- saving private data ----------
+  // Every save says which version it started from (sync.rev). If another device or tab saved in between, the server
+  // refuses and sends back the newer copy; we merge both sets of changes and save again. Until a change has reached the
+  // server it is also kept in this browser, so a dropped connection or a closed page does not lose it.
+  // --- merge (plain functions, no app state) ---
+  function clone(v) { return JSON.parse(JSON.stringify(v)); }
+  function same(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a)) return a.length === b.length && a.every(function (x, i) { return same(x, b[i]); });
+    return Object.keys(a).every(function (k) { return same(a[k], b[k]); }) &&
+      Object.keys(b).every(function (k) { return b[k] === undefined || a[k] !== undefined; });
+  }
+  function isEmptyVal(v) {
+    if (v === undefined || v === null || v === '') return true;
+    if (Array.isArray(v)) return !v.length;
+    return typeof v === 'object' && Object.keys(v).every(function (k) { return isEmptyVal(v[k]); });
+  }
+  // base = the last copy both sides shared. lost collects text that could not be kept in place: [{ path, text }].
+  function merge3(base, mine, theirs, path, lost) {
+    if (same(mine, theirs)) return mine;
+    if (same(base, mine)) return theirs;
+    if (same(base, theirs)) return mine;
+    if (mine === undefined) return theirs; // deleted here but edited there: keep the edit
+    if (theirs === undefined) return mine;
+    if (isEmptyVal(base)) {                // filled in on one side only
+      if (isEmptyVal(mine)) return theirs;
+      if (isEmptyVal(theirs)) return mine;
+    }
+    if (isObj(mine) && isObj(theirs)) {
+      // A bingo card only makes sense whole: two different cards cannot be mixed.
+      if (path === 'bingo' && !same(mine.card, theirs.card)) {
+        return isEmptyVal(base) && (theirs.ticks || []).length > (mine.ticks || []).length ? theirs : mine;
+      }
+      var b = isObj(base) ? base : {}, out = {};
+      Object.keys(Object.assign({}, theirs, mine)).forEach(function (k) {
+        var v = merge3(b[k], mine[k], theirs[k], path ? path + '.' + k : k, lost);
+        if (v !== undefined) out[k] = v;
+      });
+      return out;
+    }
+    if (Array.isArray(mine) && Array.isArray(theirs)) return mergeLists(Array.isArray(base) ? base : [], mine, theirs, path, lost);
+    if (typeof theirs === 'string') lost.push({ path: path, text: theirs });
+    return mine; // the same single value changed on both sides: this device wins
+  }
+  function mergeLists(base, mine, theirs, path, lost) {
+    var lists = [base, mine, theirs], has = function (l, x) { return l.indexOf(x) > -1; };
+    if (lists.every(function (l) { return l.every(function (x) { return x === null || typeof x !== 'object'; }); })) {
+      var vals = mine.filter(function (x) { return has(theirs, x) || !has(base, x); });
+      theirs.forEach(function (x) { if (!has(base, x) && !has(vals, x)) vals.push(x); });
+      return vals;
+    }
+    var byId = function (x) { return isObj(x) && x.id ? 'i' + x.id : ''; };
+    var byTime = function (x) { return isObj(x) && x.t ? 't' + x.t + '|' + (x.q || '') : ''; };
+    // Practice entries carry the QUESTION's id, which repeats, so they are told apart by when they happened.
+    var key = (path === 'practice' ? [byTime] : [byId, byTime]).filter(function (f) {
+      return lists.every(function (l) {
+        var seen = {};
+        return l.every(function (x) { var k = f(x); if (!k || seen[k]) return false; seen[k] = 1; return true; });
+      });
+    })[0];
+    if (!key) {
+      if (mine.length === theirs.length) return mine.map(function (x, i) { return merge3(base[i], x, theirs[i], path + '.' + i, lost); });
+      lost.push({ path: path, text: JSON.stringify(theirs) });
+      return mine;
+    }
+    var index = function (l) { var m = {}; l.forEach(function (x) { m[key(x)] = x; }); return m; };
+    var B = index(base), M = index(mine), T = index(theirs);
+    var order = function (l) { return l.map(key); };
+    // Keep this device's order if it was rearranged here; otherwise follow the other side's.
+    var common = order(mine).filter(function (k) { return B[k] && T[k]; }), was = order(base).filter(function (k) { return M[k] && T[k]; });
+    var keys = same(common, was) ? order(theirs).concat(order(mine)) : order(mine).concat(order(theirs));
+    var done = {}, out = [];
+    keys.forEach(function (k) {
+      if (done[k]) return;
+      done[k] = 1;
+      var v;
+      if (M[k] && T[k]) v = merge3(B[k], M[k], T[k], path + '.' + k.slice(1), lost);
+      else if (M[k]) v = B[k] && same(B[k], M[k]) ? undefined : M[k]; // removed there, untouched here
+      else v = B[k] && same(B[k], T[k]) ? undefined : T[k];           // removed here, untouched there
+      if (v !== undefined) out.push(v);
+    });
+    return path === 'practice' ? out.sort(function (x, y) { return x.t - y.t; }) : out;
+  }
+  // --- end merge ---
+
+  var KEPT_LABEL = { cv: 'Resume builder', cl: 'Cover letter', resume: 'Resume checker', qnotes: 'Interview notes', moodlog: 'Mood note', apps: 'Tracker', salary: 'Salary helper', routine: 'Routine' };
+  var STASH = 'bench:unsaved:', STASH_DAYS = 30;
+  var sync = { rev: null, base: blank(), busy: null, again: false, want: 0, tries: 0, retry: null, blocked: false, stashTimer: null, recovered: {}, redraw: false, pulledAt: 0, tab: uid() };
+  var saveTimer = null, composing = false;
+
+  function dirty() { return !!me && !same(S, sync.base); }
   function save() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(flush, 400);
+    saveTimer = setTimeout(function () { saveTimer = null; push(); }, 400);
+    if (!sync.stashTimer) sync.stashTimer = setTimeout(stash, 150);
+    sync.blocked = false;
   }
+  // Save now, and keep going until everything is on the server or a save fails.
   function flush(keepalive) {
-    if (!saveTimer || !me) return Promise.resolve();
     clearTimeout(saveTimer); saveTimer = null;
-    return api('PUT', '/api/me/data', S, keepalive).catch(fail);
+    return push(keepalive).then(function () { return dirty() && !sync.retry && !sync.blocked && me && !keepalive ? flush() : undefined; });
+  }
+  function push(keepalive) {
+    if (!me) return Promise.resolve();
+    if (sync.busy) { sync.again = true; return sync.busy; }
+    clearTimeout(sync.retry); sync.retry = null;
+    if (!dirty()) { settled(); return Promise.resolve(); }
+    var snap = clone(S), who = me;
+    var small = keepalive && JSON.stringify(snap).length < 55000; // browsers refuse bigger "last breath" requests
+    sync.busy = api('PUT', '/api/me/data', snap, small, sync.rev === null ? null : { 'If-Match': String(sync.rev) }).then(function (j) {
+      if (me !== who) return;
+      sync.base = snap; sync.tries = 0; sync.blocked = false;
+      if (typeof j.rev === 'number') sync.rev = j.rev; else { sync.rev = null; sync.want = Infinity; }
+      if (dirty()) sync.again = true; else settled();
+    }, function (e) {
+      if (me !== who) return;
+      if (e.status === 409 && e.body && isObj(e.body.data)) {
+        take(e.body.rev, e.body.data);
+        if (dirty() && sync.tries++ < 8) sync.again = true; else if (dirty()) retryLater(); else settled();
+      } else if (e.status === 401) {
+        fail(e); // signed out: the unsaved copy stays in this browser for the next log in
+      } else if (e.status && e.status < 500 && e.status !== 429) {
+        sync.blocked = true; stash(); showUnsaved('Not saved: ' + e.message);
+      } else retryLater();
+    }).then(function () {
+      sync.busy = null;
+      if (!me) return;
+      if (sync.again) { sync.again = false; return push(); }
+      if (sync.want > (sync.rev === null ? -1 : sync.rev)) return pull();
+    });
+    return sync.busy;
+  }
+  function retryLater() {
+    stash();
+    var wait = [2000, 4000, 8000, 15000, 30000][Math.min(sync.tries++, 4)];
+    clearTimeout(sync.retry);
+    sync.retry = setTimeout(function () { sync.retry = null; push(); }, wait);
+    showUnsaved('Not saved yet. Kept here, trying again…');
+  }
+  // Everything is on the server: drop the copy kept in this browser.
+  function settled() {
+    sync.tries = 0; sync.again = false;
+    clearTimeout(sync.stashTimer); sync.stashTimer = null;
+    try {
+      localStorage.removeItem(STASH + sync.tab);
+      Object.keys(sync.recovered).forEach(function (k) { if (localStorage.getItem(k) === sync.recovered[k]) localStorage.removeItem(k); });
+    } catch (e) { /* storage blocked */ }
+    sync.recovered = {};
+    showUnsaved('');
+  }
+  function showUnsaved(msg) {
+    var el = document.getElementById('savestate');
+    if (!el && !msg) return;
+    if (!el) { document.body.insertAdjacentHTML('beforeend', '<div id="savestate" role="status"></div>'); el = document.getElementById('savestate'); }
+    el.textContent = msg; el.hidden = !msg;
+  }
+  // Get the newest copy, if another device has saved since.
+  function pull() {
+    if (!me) return Promise.resolve();
+    if (sync.busy) { sync.want = Infinity; return sync.busy; }
+    var who = me;
+    sync.pulledAt = Date.now();
+    sync.want = 0;
+    sync.busy = api('GET', '/api/me/data').then(function (j) {
+      if (me === who && typeof j.rev === 'number' && j.rev !== sync.rev) take(j.rev, j.data);
+    }, function (e) { if (me === who && e.status === 401) fail(e); /* otherwise try again at the next chance */ }).then(function () {
+      sync.busy = null;
+      if (!me) return;
+      if (sync.again || dirty()) { sync.again = false; return push(); }
+    });
+    return sync.busy;
+  }
+  // Bring in a newer copy from the server without losing what changed here.
+  function take(rev, raw) {
+    var theirs = adopt(clone(raw)), before = S, lost = [];
+    var merged = merge3(sync.base, clone(S), theirs, '', lost);
+    S = adopt(clone(merged));
+    keepCopies(lost);
+    sync.base = clone(theirs);
+    sync.rev = rev;
+    if (dirty()) stash();
+    if (!same(before, S)) redraw();
+  }
+  function keepCopies(lost) {
+    var added = 0;
+    lost.forEach(function (l) {
+      var top = l.path.split('.')[0], text = l.text.trim();
+      if (top === 'kept' || text.length < 12 || S.kept.some(function (k) { return k.text === text; })) return;
+      S.kept.push({ id: uid(), t: Date.now(), where: KEPT_LABEL[top] || 'The Bench', text: text.slice(0, 20000) });
+      added++;
+    });
+    S.kept = trimKept(S.kept);
+    if (added) toast('This was also changed on another device. Your version here was kept; the other is saved under Account.');
+  }
+  function trimKept(list) {
+    var room = 40000;
+    return list.slice().reverse().filter(function (k) { room -= k.text.length; return room >= 0; }).slice(0, 10).reverse();
+  }
+  function cleanKept(raw) {
+    return trimKept((Array.isArray(raw) ? raw : []).filter(function (k) { return isObj(k) && typeof k.id === 'string' && typeof k.text === 'string'; })
+      .map(function (k) { return { id: k.id.slice(0, 20), t: Number(k.t) || 0, where: String(k.where || '').slice(0, 40), text: k.text.slice(0, 20000) }; }));
+  }
+
+  // --- the copy kept in this browser until a save succeeds ---
+  function stash() {
+    clearTimeout(sync.stashTimer); sync.stashTimer = null;
+    if (!dirty()) return;
+    try { localStorage.setItem(STASH + sync.tab, JSON.stringify({ user: me.username, since: me.since, at: Date.now(), base: sync.base, data: S })); } catch (e) { /* storage blocked or full */ }
+  }
+  function eachStash(fn) {
+    try {
+      Object.keys(localStorage).filter(function (k) { return k.indexOf(STASH) === 0; }).forEach(function (k) {
+        var text = localStorage.getItem(k), v = null;
+        try { v = JSON.parse(text); } catch (e) { /* broken */ }
+        if (!isObj(v) || !isObj(v.data) || !isObj(v.base) || !(v.at > Date.now() - STASH_DAYS * 864e5)) { localStorage.removeItem(k); return; }
+        fn(k, v, text);
+      });
+    } catch (e) { /* storage blocked */ }
+  }
+  // After logging in or reopening: put back changes that never reached the server.
+  function recoverStash() {
+    var found = false;
+    eachStash(function (k, v, text) {
+      // "since" is when the account was made, so a later account with the same username never gets this.
+      if (v.user !== me.username || v.since !== me.since) return;
+      var lost = [];
+      S = adopt(clone(merge3(adopt(v.base), adopt(v.data), clone(S), '', lost)));
+      keepCopies(lost);
+      sync.recovered[k] = text;
+      found = true;
+    });
+    if (!found) return;
+    if (dirty()) { toast('Brought back changes that had not been saved.'); save(); } else settled();
+  }
+  function dropStashes(user) { eachStash(function (k, v) { if (v.user === user) localStorage.removeItem(k); }); }
+
+  // --- show changes that arrived from another device ---
+  var SHOWS_DATA = { home: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1 };
+  function redraw() {
+    sync.redraw = false;
+    if (!me || ui.booting || ui.newCode) return;
+    var v = currentView();
+    updateTrackerBadge();
+    if (v === 'fun') { if (S.bingo) renderSection('bingo', bingoHtml()); return; }
+    if (v === 'account') { var kc = document.getElementById('keptcopies'); if (kc) kc.innerHTML = keptHtml(); return; }
+    if (!SHOWS_DATA[v]) return;
+    if (composing || ui.timerId) { sync.redraw = true; return; } // mid-word in an Indian-language keyboard, or an answer being timed
+    // Half-typed forms are not part of the saved data, so carry them across; so too the cursor and scroll position.
+    var keyOf = function (f) { var form = f.closest('form'); return f.id || (form && f.name ? form.dataset.form + '|' + (form.dataset.id || '') + '|' + f.name + (f.type === 'radio' ? f.value : '') : ''); };
+    var bound = function (f) { return f.dataset.cv || f.dataset.cl || f.dataset.sal || f.id === 'resume' || f.id === 'moodnote' || f.id === 'ivnote'; };
+    var fields = function () { return Array.prototype.slice.call(main.querySelectorAll('input, textarea, select')); };
+    var kept = {}, at = document.activeElement, focus = at && main.contains(at) && /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName) ? keyOf(at) : '', sel = null, y = window.scrollY;
+    if (focus) { try { sel = [at.selectionStart, at.selectionEnd]; } catch (e) { /* not a text box */ } }
+    fields().forEach(function (f) { var k = keyOf(f); if (k && !bound(f)) kept[k] = [f.value, f.checked]; });
+    var open = Array.prototype.map.call(main.querySelectorAll('details'), function (d) { return d.open; });
+    render();
+    fields().forEach(function (f) {
+      var k = keyOf(f);
+      if (!k) return;
+      if (kept[k] && !bound(f)) { f.value = kept[k][0]; f.checked = kept[k][1]; }
+      if (k === focus) { f.focus({ preventScroll: true }); if (sel && sel[0] !== null) { try { f.setSelectionRange(sel[0], sel[1]); } catch (e) { /* not a text box */ } } }
+    });
+    Array.prototype.forEach.call(main.querySelectorAll('details'), function (d, i) { if (open[i]) d.open = true; });
+    window.scrollTo(0, y);
+  }
+  function keptHtml() {
+    if (!S.kept.length) return '';
+    return '<section class="card stack"><h2>Kept copies</h2><p class="small">The same text was changed on two devices. The version from the device that saved last is in use; these are the others. Copy anything you need, then remove it.</p>' +
+      S.kept.slice().reverse().map(function (k) {
+        return '<div class="kept"><div class="row between"><b class="small">' + esc(k.where) + '</b><span class="muted small">' + esc(new Date(k.t).toLocaleString()) + '</span></div>' +
+          '<textarea id="kept-' + esc(k.id) + '" rows="4" readonly aria-label="Kept copy">' + esc(k.text) + '</textarea>' +
+          '<div class="row"><button type="button" class="btn tiny" data-act="kept-copy" data-id="' + esc(k.id) + '">Copy</button>' +
+          '<button type="button" class="link" data-act="kept-del" data-id="' + esc(k.id) + '">Remove</button></div></div>';
+      }).join('') + '</section>';
   }
 
   function loadPosts() {
@@ -366,7 +636,11 @@
     toast(e.message);
   }
   function signedOut() {
+    stash(); // only if something is unsaved; a deliberate log out has already dealt with it
     clearTimeout(saveTimer); saveTimer = null;
+    clearTimeout(sync.retry); sync.retry = null;
+    sync.rev = null; sync.base = blank(); sync.again = false; sync.want = 0; sync.tries = 0; sync.blocked = false; sync.redraw = false; sync.recovered = {}; sync.tab = uid();
+    showUnsaved('');
     stopTimer();
     me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
     stopStream(); chat = freshChat(); updateBadge();
@@ -415,7 +689,7 @@
   ];
   function privacyHtml() {
     var sec = function (t, items) { return '<section class="card stack"><h2>' + t + '</h2><ul class="sal-tips">' + items.map(function (i) { return '<li>' + i + '</li>'; }).join('') + '</ul></section>'; };
-    return head('Your privacy', 'What The Bench stores, who can see it, and how to remove it. Last updated 24 November 2026.') +
+    return head('Your privacy', 'What The Bench stores, who can see it, and how to remove it. Last updated 25 November 2026.') +
       '<div class="grid2">' +
       sec('What every member can see', [
         'Your name, username and profile, including where you can refer people.',
@@ -434,7 +708,7 @@
       ]) +
       sec('Where it is kept', [
         'The site runs on Render, and the database is kept by Turso. They are separate companies with their own policies.',
-        'We use one cookie to keep you logged in, and your browser’s storage for small settings. There are no ads and no tracking scripts.',
+        'We use one cookie to keep you logged in, and your browser’s storage for small settings. Changes that have not reached the server yet are also kept in your browser until they do, or until you log out. There are no ads and no tracking scripts.',
         'Outside links, such as job posts, courses or Google Calendar, go to other websites. Google gets an interview’s job title, company and time only if you tap its button.'
       ]) +
       sec('Your choices', [
@@ -1081,6 +1355,7 @@
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
         (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        '<div id="keptcopies">' + keptHtml() + '</div>' +
         '<section class="card stack"><h2>Your data</h2><p class="small">Download everything stored about you as one file, or read <a href="#/privacy">what we store and who can see it</a>.</p>' +
         '<div><button type="button" class="btn" data-act="export-data">' + ico('download') + 'Download my data</button></div></section>' +
         '<form class="card stack" data-form="deleteme"><h2>Delete account</h2>' +
@@ -1645,13 +1920,15 @@
   }
   function enter(j, importOld) {
     me = j.user; S = adopt(j.data); ui.authError = '';
+    sync.rev = typeof j.rev === 'number' ? j.rev : null; sync.base = clone(S); sync.pulledAt = Date.now();
     try { localStorage.setItem('bench:member', '1'); } catch (e) { /* storage blocked */ }
     if (j.recoveryCode) ui.newCode = j.recoveryCode;
     if (importOld) {
       var old = oldLocal();
-      if (old) { S = old; saveTimer = setTimeout(flush, 0); }
+      if (old) { S = old; save(); }
       try { localStorage.removeItem(OLD_KEY); } catch (e) { /* storage blocked */ }
     }
+    recoverStash();
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     loadAlerts();
     loadBuddy();
@@ -1818,6 +2095,14 @@
       ui.newCode = '';
       render(); window.scrollTo(0, 0); return false;
     },
+    'kept-copy': function (d) {
+      var k = find(S.kept, d.id), box = document.getElementById('kept-' + d.id);
+      if (!k || !box) return false;
+      var done = function () { toast('Copied.'); }, hand = function () { box.select(); toast('Select the text and copy it.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(k.text).then(done, hand); else hand();
+      return false;
+    },
+    'kept-del': function (d) { S.kept = S.kept.filter(function (k) { return k.id !== d.id; }); },
     'export-data': function () {
       flush().then(function () { return api('GET', '/api/me/export'); }).then(function (j) {
         var a = document.createElement('a');
@@ -1829,9 +2114,16 @@
       return false;
     },
     logout: function () {
-      flush().then(function () { return api('POST', '/api/logout'); }).catch(function () {}).then(function () {
-        signedOut(); ui.authMode = 'login'; location.hash = '#/home'; render();
+      flush().then(function () {
+        if (dirty() && !window.confirm('Some changes have not been saved yet. Log out anyway and lose them?')) return;
+        return api('POST', '/api/logout').catch(function () {}).then(loggedOut);
       });
+      function loggedOut() {
+        var who = me && me.username;
+        sync.base = clone(S); // nothing left to keep
+        signedOut();
+        if (who) dropStashes(who); ui.authMode = 'login'; location.hash = '#/home'; render();
+      }
       return false;
     },
     'toggle-task': function (d) {
@@ -1882,7 +2174,7 @@
     },
     'cv-template': function (d) { S.cv.template = d.t; save(); refreshCv(true); return false; },
     'cv-add': function (d) {
-      var blank = {};
+      var blank = { id: uid() };
       CV_ITEM[d.k].forEach(function (f) { blank[f] = ''; });
       S.cv[d.k].push(blank);
       save();
@@ -1893,7 +2185,7 @@
     },
     'cv-del': function (d) {
       var i = Number(d.i), item = S.cv[d.k][i];
-      var filled = item && Object.keys(item).some(function (k) { return item[k]; });
+      var filled = item && CV_ITEM[d.k].some(function (k) { return item[k]; });
       if (filled && !window.confirm('Remove this entry?')) return false;
       S.cv[d.k].splice(i, 1);
       save();
@@ -2371,6 +2663,8 @@
       btn.disabled = true;
       api('POST', '/api/me/delete', { password: String(f.get('password')), confirm: String(f.get('confirm')).trim() })
         .then(function () {
+          dropStashes(me.username);
+          sync.base = clone(S); // nothing left to keep
           signedOut();
           try { localStorage.removeItem('bench:member'); } catch (e) { /* storage blocked */ }
           ui.authMode = 'signup'; ui.authUser = ''; ui.authName = '';
@@ -2682,12 +2976,16 @@
     if (!window.EventSource || !me) return;
     var es = new EventSource('/api/stream');
     chat.es = es;
-    es.onopen = function () { if (chat.down) { chat.down = false; resync(); } };
+    es.onopen = function () { if (chat.down) { chat.down = false; resync(); pull(); } };
     es.onmessage = function (e) {
       var ev;
       try { ev = JSON.parse(e.data); } catch (err) { return; /* ignore a bad event */ }
       if (ev && ev.type === 'jobs-updated') return loadAlerts();
       if (ev && ev.type === 'buddy') return onBuddyEvent(ev);
+      if (ev && ev.type === 'data') { // saved on one of this member's devices
+        if (sync.rev === null || ev.rev > sync.rev) { if (sync.busy) sync.want = Math.max(sync.want, ev.rev); else pull(); }
+        return;
+      }
       onChatEvent(ev);
     };
     es.onerror = function () {
@@ -3375,8 +3673,12 @@
     var b = blankCv();
     Object.keys(b).forEach(function (k) {
       if (CV_ITEM[k]) {
-        b[k] = (Array.isArray(raw[k]) ? raw[k] : []).filter(isObj).slice(0, 15).map(function (it) {
-          var o = {};
+        var ids = {};
+        b[k] = (Array.isArray(raw[k]) ? raw[k] : []).filter(isObj).slice(0, 15).map(function (it, i) {
+          // Each entry has an id, so two devices can tell entries apart. Old entries get one from their position.
+          var o = { id: typeof it.id === 'string' && it.id ? it.id.slice(0, 20) : 'n' + i };
+          if (ids[o.id]) o.id = uid();
+          ids[o.id] = 1;
           CV_ITEM[k].forEach(function (f) { o[f] = typeof it[f] === 'string' ? it[f].slice(0, 2000) : ''; });
           return o;
         });
@@ -3392,7 +3694,9 @@
     S.cv.name = me.name;
     return api('GET', '/api/profile/' + encodeURIComponent(me.username)).then(function (j) {
       var p = j.profile;
-      S.cv.headline = p.headline; S.cv.city = p.location; S.cv.skills = p.skills.join(', '); S.cv.links = p.link; S.cv.summary = p.bio;
+      // Only fill gaps: a resume may have arrived from another device, or been typed, while this was loading.
+      var from = { headline: p.headline, city: p.location, skills: p.skills.join(', '), links: p.link, summary: p.bio };
+      Object.keys(from).forEach(function (k) { if (S.cv && !S.cv[k]) S.cv[k] = from[k]; });
     }).catch(function () { /* start blank */ }).then(save);
   }
   function getPath(p) {
@@ -3998,7 +4302,18 @@
     var v = currentView();
     if (me && (v === 'feed' || v === 'home')) loadPosts().then(render).catch(fail);
   });
-  window.addEventListener('pagehide', function () { flush(true); });
+  // Leaving: keep a copy here first, then try one last save. If that does not make it, the copy is used next time.
+  window.addEventListener('pagehide', function () { stash(); flush(true); stopStream(); });
+  document.addEventListener('visibilitychange', function () {
+    if (!me) return;
+    if (document.visibilityState === 'hidden') { stash(); flush(); } // phones often never say "pagehide"
+    else if (Date.now() - sync.pulledAt > 5000) pull();
+  });
+  // Back from the browser's "back" memory: reconnect and catch up on whatever was missed.
+  window.addEventListener('pageshow', function (e) { if (e.persisted && me) { startStream(); resync(); pull(); } });
+  window.addEventListener('online', function () { if (me) { sync.tries = 0; pull(); } });
+  document.addEventListener('compositionstart', function () { composing = true; });
+  document.addEventListener('compositionend', function () { composing = false; if (sync.redraw) setTimeout(redraw, 0); });
 
   document.querySelectorAll('[data-icon]').forEach(function (el) { el.innerHTML = ico(el.getAttribute('data-icon')); });
   render();

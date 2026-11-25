@@ -213,7 +213,7 @@ const SCHEMA = [
   )`
 ];
 
-// exec(sql, args) -> { rows: [objects], lastId: number }
+// exec(sql, args) -> { rows: [objects], lastId: number, changes: rows changed }
 let exec;
 if (TURSO_URL) {
   // Plain http is accepted only for a database on this same machine (local testing).
@@ -240,7 +240,8 @@ if (TURSO_URL) {
     const names = res.cols.map((c) => c.name);
     return {
       rows: res.rows.map((row) => Object.fromEntries(row.map((c, i) => [names[i], dec(c)]))),
-      lastId: Number(res.last_insert_rowid) || 0
+      lastId: Number(res.last_insert_rowid) || 0,
+      changes: Number(res.affected_row_count) || 0
     };
   };
 } else {
@@ -256,16 +257,17 @@ if (TURSO_URL) {
   // Statements are prepared per call: on Node 22 long-lived ones can be finalized under us.
   exec = async (sql, args = []) => {
     const st = db.prepare(sql);
-    if (/^\s*select/i.test(sql)) return { rows: st.all(...args), lastId: 0 };
+    if (/^\s*select/i.test(sql)) return { rows: st.all(...args), lastId: 0, changes: 0 };
     const info = st.run(...args);
-    return { rows: [], lastId: Number(info.lastInsertRowid) || 0 };
+    return { rows: [], lastId: Number(info.lastInsertRowid) || 0, changes: Number(info.changes) || 0 };
   };
 }
 
 // Columns added after launch. ADD COLUMN fails once the column exists, which is fine.
 const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN recovery TEXT',
-  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0' // goes up by one with every save of data
 ];
 
 async function initDb() {
@@ -288,12 +290,14 @@ const q = {
   userById: stmt('SELECT * FROM users WHERE id = ?'),
   addUser: stmt('INSERT INTO users (username, name, pass, salt, recovery, created) VALUES (?, ?, ?, ?, ?, ?)'),
   addSession: stmt('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)'),
-  session: stmt('SELECT u.id, u.username, u.name, u.data, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ? AND u.banned = 0'),
+  session: stmt('SELECT u.id, u.username, u.name, u.data, u.data_rev, u.created, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ? AND u.banned = 0'),
   dropSession: stmt('DELETE FROM sessions WHERE token_hash = ?'),
   dropUserSessions: stmt('DELETE FROM sessions WHERE user_id = ?'),
   setRecovery: stmt('UPDATE users SET recovery = ? WHERE id = ?'),
   setPassword: stmt('UPDATE users SET pass = ?, salt = ?, recovery = ? WHERE id = ?'),
-  saveData: stmt('UPDATE users SET data = ? WHERE id = ?'),
+  saveData: stmt('UPDATE users SET data = ?, data_rev = data_rev + 1 WHERE id = ? AND banned = 0'),
+  saveDataAt: stmt('UPDATE users SET data = ?, data_rev = data_rev + 1 WHERE id = ? AND banned = 0 AND data_rev = ?'),
+  dataOf: stmt('SELECT data, data_rev FROM users WHERE id = ?'),
   posts: stmt('SELECT p.id, p.tag, p.text, p.created, p.user_id, u.name, u.username FROM posts p JOIN users u ON u.id = p.user_id WHERE u.banned = 0 ORDER BY p.id DESC LIMIT 100'),
   replies: stmt('SELECT r.post_id, r.text, r.created, u.name FROM replies r JOIN users u ON u.id = r.user_id WHERE r.post_id >= ? ORDER BY r.id'),
   reacts: stmt('SELECT post_id, emoji, COUNT(*) AS n, SUM(user_id = ?) AS mine FROM reactions WHERE post_id >= ? GROUP BY post_id, emoji'),
@@ -556,7 +560,7 @@ async function currentUser(req) {
 }
 
 function publicUser(u) {
-  return { username: u.username, name: u.name, hasRecovery: !!(u.recovery || u.has_recovery), isAdmin: isAdmin(u) };
+  return { username: u.username, name: u.name, since: u.created, hasRecovery: !!(u.recovery || u.has_recovery), isAdmin: isAdmin(u) };
 }
 function parseData(s) { try { return JSON.parse(s); } catch (e) { return {}; } }
 
@@ -577,7 +581,7 @@ setInterval(() => {
 // ---------- live updates (Server-Sent Events) ----------
 // One server instance, so an in-memory list of open connections is enough.
 const streams = new Map(); // user id -> Set of open responses
-const MAX_STREAMS_PER_USER = 5;
+const MAX_STREAMS_PER_USER = 8;
 
 function push(userId, event) {
   const set = streams.get(userId);
@@ -600,7 +604,12 @@ function closeStreams(userId) {
 }
 function openStream(req, res, user) {
   let set = streams.get(user.id);
-  if (set && set.size >= MAX_STREAMS_PER_USER) throw new HttpError(429, 'Too many open tabs.');
+  // At the limit, let go of the oldest: it is usually a phone that lost its network or a page left behind.
+  if (set && set.size >= MAX_STREAMS_PER_USER) {
+    const oldest = set.values().next().value;
+    set.delete(oldest);
+    oldest.end();
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -706,9 +715,10 @@ async function api(req, res, route) {
     const pass = await hashPassword(password, salt);
     const recoveryCode = makeRecoveryCode();
     let info;
-    try { info = await q.addUser.run(username, name, pass, salt, recoveryHash(recoveryCode), Date.now()); }
+    const created = Date.now();
+    try { info = await q.addUser.run(username, name, pass, salt, recoveryHash(recoveryCode), created); }
     catch (e) { throw new HttpError(409, 'That username is taken.'); }
-    return send(res, 201, { user: publicUser({ username, name, recovery: 'set' }), data: {}, recoveryCode },
+    return send(res, 201, { user: publicUser({ username, name, recovery: 'set', created }), data: {}, rev: 0, recoveryCode },
       { 'Set-Cookie': await startSession(info.lastId) });
   }
 
@@ -720,7 +730,7 @@ async function api(req, res, route) {
     const u = await q.userByName.get(username);
     if (!(await checkPassword(u, b.password))) throw new HttpError(401, 'Wrong username or password.');
     if (u.banned) throw new HttpError(403, 'This account has been suspended.');
-    return send(res, 200, { user: Object.assign(publicUser(u), await profileFlags(u.id)), data: parseData(u.data) }, { 'Set-Cookie': await startSession(u.id) });
+    return send(res, 200, { user: Object.assign(publicUser(u), await profileFlags(u.id)), data: parseData(u.data), rev: u.data_rev }, { 'Set-Cookie': await startSession(u.id) });
   }
 
   // Forgot password: username + one-time recovery code -> new password.
@@ -742,7 +752,7 @@ async function api(req, res, route) {
     const recoveryCode = makeRecoveryCode();
     await q.setPassword.run(await hashPassword(password, salt), salt, recoveryHash(recoveryCode), u.id);
     await q.dropUserSessions.run(u.id);
-    return send(res, 200, { user: Object.assign(publicUser(u), { hasRecovery: true }), data: parseData(u.data), recoveryCode },
+    return send(res, 200, { user: Object.assign(publicUser(u), { hasRecovery: true }), data: parseData(u.data), rev: u.data_rev, recoveryCode },
       { 'Set-Cookie': await startSession(u.id) });
   }
 
@@ -757,7 +767,7 @@ async function api(req, res, route) {
   if (!user) throw new HttpError(401, 'Please log in.');
 
   if (method === 'GET' && route === '/me') {
-    return send(res, 200, { user: Object.assign(publicUser(user), await profileFlags(user.id)), data: parseData(user.data) });
+    return send(res, 200, { user: Object.assign(publicUser(user), await profileFlags(user.id)), data: parseData(user.data), rev: user.data_rev });
   }
 
   // Account changes ask for the current password, so a borrowed logged-in device cannot take over the account.
@@ -806,12 +816,23 @@ async function api(req, res, route) {
     return send(res, 200, { ok: true }, { 'Set-Cookie': cookie('', 0) });
   }
 
+  if (method === 'GET' && route === '/me/data') {
+    return send(res, 200, { data: parseData(user.data), rev: user.data_rev });
+  }
+
+  // If-Match carries the version the save was based on. If someone saved since (another device or tab), nothing is
+  // written: the newer copy goes back (409) so the app can merge and try again.
   if (method === 'PUT' && route === '/me/data') {
     const b = await readBody(req);
     const json = JSON.stringify(b);
-    if (json.length > MAX_DATA) throw new HttpError(413, 'Your saved data is too big.');
-    await q.saveData.run(json, user.id);
-    return send(res, 200, { ok: true });
+    if (json.length > MAX_DATA) throw new HttpError(413, 'your saved data is too big. Remove something long, like an old job post.');
+    const m = /^"?(\d{1,15})"?$/.exec(String(req.headers['if-match'] || ''));
+    const done = m ? await q.saveDataAt.run(json, user.id, Number(m[1])) : await q.saveData.run(json, user.id);
+    const now = await q.dataOf.get(user.id);
+    if (m && !done.changes) return send(res, 409, { error: 'Your data changed on another device.', data: parseData(now.data), rev: now.data_rev });
+    const rev = m ? Number(m[1]) + 1 : now.data_rev;
+    push(user.id, { type: 'data', channel: 'data', rev });
+    return send(res, 200, { ok: true, rev });
   }
 
   if (method === 'GET' && route === '/posts') {

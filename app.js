@@ -55,6 +55,7 @@
     book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M9 7.5h7"/>',
     rupee: '<path d="M7 4h10"/><path d="M7 8.5h10"/><path d="M7 4h3.5a4.5 4.5 0 0 1 0 9H7l7.5 7"/>',
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+    tools: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
@@ -315,6 +316,7 @@
       learn: {}, // free learning library: course id -> 'doing' | 'done'
       salary: null, // salary and offer helper inputs, made the first time it opens
       moodlog: {}, // mood check-in extras by day: { tags, note }
+      steps: {}, // first steps: { hi, hide }
       kept: [] // text that was changed on two devices at once: the version that was not used
     };
   }
@@ -333,6 +335,7 @@
     b.salary = cleanSalary(raw.salary);
     b.moodlog = cleanMoodlog(raw.moodlog);
     b.kept = cleanKept(raw.kept);
+    if (isObj(raw.steps)) { if (raw.steps.hi) b.steps.hi = true; if (raw.steps.hide) b.steps.hide = true; }
     // Parts this version of the app does not know (an older tab next to a newer one) must survive a save.
     Object.keys(raw).forEach(function (k) { if (!(k in b)) b[k] = raw[k]; });
     if (isObj(raw.routine)) {
@@ -589,7 +592,7 @@
   function dropStashes(user) { eachStash(function (k, v) { if (v.user === user) localStorage.removeItem(k); }); }
 
   // --- show changes that arrived from another device ---
-  var SHOWS_DATA = { home: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1 };
+  var SHOWS_DATA = { home: 1, tools: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1 };
   function redraw() {
     sync.redraw = false;
     if (!me || ui.booting || ui.newCode) return;
@@ -673,8 +676,11 @@
   function countStage(s) { return S.apps.filter(function (a) { return a.stage === s; }).length; }
 
   // ---------- views ----------
+  // Pages that live inside Tools: they light up Tools in the menu and get a link back to it.
+  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1 };
   function head(title, sub) {
-    return '<header class="head"><h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
+    var v = currentView(), back = me && IN_TOOLS[v] && v !== 'tools' ? '<a class="crumb" href="#/tools">← Tools</a>' : '';
+    return '<header class="head">' + back + '<h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
   }
 
   var WELCOME = [
@@ -1121,7 +1127,7 @@
     return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//The Bench//Tracker//EN', 'BEGIN:VEVENT',
       'UID:' + a.id + '-' + d + '@the-bench', 'DTSTAMP:' + stamp, start, end,
       'SUMMARY:' + esc2('Interview: ' + a.title + ' at ' + a.company),
-      'DESCRIPTION:' + esc2((a.note ? a.note + '\n\n' : '') + 'Practise first: open The Bench, Prep, Start practising.'),
+      'DESCRIPTION:' + esc2((a.note ? a.note + '\n\n' : '') + 'Practise first: open The Bench, Tools, Interview practice.'),
       'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc2('Interview with ' + a.company + ' in 1 hour'), 'END:VALARM',
       'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
   }
@@ -1141,7 +1147,7 @@
     return 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
       '&text=' + encodeURIComponent('Interview: ' + a.title + ' at ' + a.company) +
       '&dates=' + dates +
-      '&details=' + encodeURIComponent('Practise first: open The Bench, then Prep, then Start practising.') +
+      '&details=' + encodeURIComponent('Practise first: open The Bench, then Tools, then Interview practice.') +
       (tz ? '&ctz=' + encodeURIComponent(tz) : '');
   }
   function downloadIcs(a) {
@@ -1311,7 +1317,75 @@
     d.addEventListener('close', function () { clearTimeout(breathTimer); });
   }
 
+  // ---------- tools ----------
+  // [icon, name, what it does, link, action (optional), what you have so far]
+  function toolGroups() {
+    var doing = 0, done = 0, p = S.practice.length;
+    Object.keys(S.learn).forEach(function (k) { if (S.learn[k] === 'done') done++; else doing++; });
+    var learnt = [doing ? doing + ' in progress' : '', done ? done + ' finished' : ''].filter(Boolean).join(' · ');
+    return [
+      ['Apply', [
+        ['feed', 'Resume builder', 'Fill in a form, pick a look, download a PDF.', '#/resume', '', resumeStarted() ? 'Started' : ''],
+        ['mail', 'Cover letter', 'A letter built from your resume and the job post.', '#/cover', '', S.cl && S.cl.company.trim() ? 'Last one: ' + S.cl.company.trim() : ''],
+        ['check', 'Resume checker', 'Paste any resume for a quick score and fixes.', '#/prep', '', '']
+      ]],
+      ['Interviews and offers', [
+        ['prep', 'Interview practice', 'Questions with tips, a timer and the STAR method.', '#/interview', '', p ? p + ' practised' : ''],
+        ['rupee', 'Salary and offers', 'Turn a CTC into monthly in-hand pay, and compare offers.', '#/salary', '', '']
+      ]],
+      ['People who can help', [
+        ['users', 'Referrals', 'Ask members for a referral, or offer one.', '#/jobs', 'open-refs', ''],
+        ['buddy', 'Accountability buddy', 'Check in daily with someone else who is looking.', '#/buddy', '', buddy.state && buddy.state.pair ? 'With ' + buddy.state.pair.buddy.name : '']
+      ]],
+      ['Learn and look after yourself', [
+        ['book', 'Free courses', 'Hand-picked courses that are free to learn.', '#/learn', '', learnt],
+        ['heart', 'Wellbeing', 'A mood check-in, a breathing exercise and helplines.', '#/mood', '', moodOn(today()) !== null ? 'Checked in today' : '']
+      ]]
+    ];
+  }
+  function toolsHtml() {
+    return toolGroups().map(function (g) {
+      return '<section class="tool-group"><h2>' + g[0] + '</h2><div class="tool-grid">' + g[1].map(function (t) {
+        return '<a class="card tool" href="' + t[3] + '"' + (t[4] ? ' data-act="' + t[4] + '"' : '') + '><span class="tool-ico">' + ico(t[0]) + '</span><span class="grow"><b>' + t[1] + '</b><span>' + t[2] + '</span>' +
+          (t[5] ? '<small>' + esc(t[5]) + '</small>' : '') + '</span></a>';
+      }).join('') + '</div></section>';
+    }).join('');
+  }
+  function resumeStarted() { return !!(S.cv && (S.cv.experience.length || S.cv.education.length || S.cv.email || S.cv.phone)); }
+
+  // ---------- first steps ----------
+  // Shown on Home to accounts less than a month old. Each step ticks itself when it has really been done.
+  var STEP_DAYS = 30;
+  function steps() {
+    return [
+      [!!me.profileDone, 'Set up your profile', 'The role you want and a line about you.', '#/edit-profile'],
+      [S.apps.length > 0, 'Track one job', 'Anything you have applied for, or want to.', '#/tracker'],
+      [!!S.steps.hi || posts.some(function (p) { return p.own; }), 'Say hi', 'Introduce yourself in the #lobby chat room.', '#/chat/lobby'],
+      [resumeStarted(), 'Start your resume', 'Add your contact details, a job or a course.', '#/resume'],
+      [Object.keys(S.routine.log).some(function (k) { return hit(k); }), 'Tick one routine task', 'Small wins add up. Start with an easy one.', '#/routine']
+    ];
+  }
+  function stepsShown() { return !S.steps.hide && me.since > Date.now() - STEP_DAYS * 864e5; }
+  function stepsHtml() {
+    if (!stepsShown()) return '';
+    var list = steps(), done = list.filter(function (s) { return s[0]; }).length;
+    if (done === list.length) {
+      return '<section class="card steps all"><div class="row between"><h2>' + ico('check') + ' You are all set</h2><button type="button" class="btn tiny" data-act="steps-hide">Hide this</button></div>' +
+        '<p class="small">That is everything. Come back tomorrow for the daily puzzle and your routine, and find the rest under <a href="#/tools">Tools</a>.</p></section>';
+    }
+    return '<section class="card steps"><div class="row between"><h2>First steps</h2><span class="muted small">' + done + ' of ' + list.length + ' done</span></div>' +
+      '<div class="tbar" role="img" aria-label="' + done + ' of ' + list.length + ' steps done"><i style="width:' + Math.round(done / list.length * 100) + '%"></i></div>' +
+      '<ul>' + list.map(function (s) {
+        return '<li' + (s[0] ? ' class="done"' : '') + '><span class="step-box">' + (s[0] ? ico('check') : '') + '</span>' +
+          (s[0] ? '<span class="grow"><b>' + s[1] + '</b><span class="sr-only"> (done)</span></span>' : '<a class="grow" href="' + s[3] + '"><b>' + s[1] + '</b><span class="muted small">' + s[2] + '</span></a>') + '</li>';
+      }).join('') + '</ul><button type="button" class="link small" data-act="steps-hide">Hide this list</button></section>';
+  }
+
   var views = {
+    tools: function () {
+      return head('Tools', 'Everything for the search, in one place.') + toolsHtml();
+    },
+
     home: function () {
       var done = doneOn(today()).length, total = S.routine.tasks.length;
       var latest = posts.slice(0, 2).map(function (p) { return postHtml(p, true); }).join('') ||
@@ -1325,12 +1399,13 @@
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
-        (me.profileDone ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
-        installBanner() +
+        stepsHtml() +
+        (me.profileDone || stepsShown() ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
+        (stepsShown() ? '' : installBanner()) +
         homeDueHtml() +
         homeBuddyHtml() +
         alertBanner() +
-        '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>' +
+        (stepsShown() ? '' : '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>') +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
         accountBar() + '</div>';
@@ -1517,8 +1592,7 @@
     prep: function () {
       var tally = { Nailed: 0, Okay: 0, Rough: 0 };
       S.practice.forEach(function (p) { if (tally[p.r] !== undefined) tally[p.r]++; });
-      return head('Interview prep', 'Check your resume and practice answers out loud before the real thing.') +
-        '<p class="banner">' + ico('feed') + '<span><b>New: Resume builder and cover letters.</b> Fill in a simple form, pick a look, and download a clean PDF. <a href="#/resume">Build your resume</a> · <a href="#/cover">Write a cover letter</a> · <a href="#/learn">Free courses</a> · <a href="#/salary">Salary helper</a></span></p>' +
+      return head('Resume checker', 'Paste your resume for a quick score and fixes, then practise answers out loud.') +
         '<div class="grid2"><section class="card stack"><h2>Resume checkup</h2>' +
         '<form class="stack" data-form="resume"><textarea id="resume" name="text" style="min-height:220px" maxlength="20000" placeholder="Paste your resume text here" aria-label="Resume text">' + esc(S.resume) + '</textarea>' +
         '<div class="row between"><span class="muted small">Saved privately to your account.</span><button class="btn primary">Check it</button></div></form>' +
@@ -2213,6 +2287,7 @@
     },
     breathe: function () { startBreathing(); return false; },
     'to-support': function () { var el = document.getElementById('support'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return false; },
+    'steps-hide': function () { S.steps.hide = true; },
     'sal-mode': function (d) { S.salary.compare = d.m === '2'; },
     'learn-field': function (d) { learn.field = d.f; refreshLearn(true); return false; },
     'learn-set': function (d) {
@@ -2630,6 +2705,7 @@
       api('POST', channelUrl(ch), { text: body }).then(function (j) {
         if (box.value.trim() === body) { box.value = ''; autosize(box); }
         onChatEvent({ type: 'msg', channel: ch, msg: j.msg, peer: chat.peers[ch] });
+        if (!isDm(ch) && !S.steps.hi) { S.steps.hi = true; save(); }
       }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); })
         .then(function () { chat.sending = false; btn.disabled = false; if (document.body.contains(box)) box.focus(); });
       return false;
@@ -3601,11 +3677,6 @@
       '<span><b>' + esc(me.name) + '</b><small>@' + u + ' · View your profile</small></span></a>' +
       '<div class="ab-links">' + link('#/people', 'users', 'People') + link('#/buddy', 'buddy', 'Buddy') + link('#/account', 'settings', 'Account') +
       (canInstall() ? '<button type="button" class="ql" data-act="install-app">' + ico('phone') + '<span>Install app</span></button>' : '') +
-      '<a class="ql" href="#/resume">' + ico('feed') + '<span>Resume</span></a>' +
-      '<a class="ql" href="#/cover">' + ico('mail') + '<span>Cover letter</span></a>' +
-      '<a class="ql" href="#/learn">' + ico('book') + '<span>Learn</span></a>' +
-      '<a class="ql" href="#/salary">' + ico('rupee') + '<span>Salary</span></a>' +
-      '<a class="ql" href="#/mood">' + ico('heart') + '<span>Wellbeing</span></a>' +
       '<button type="button" class="ql ql-out" data-act="logout">' + ico('logout') + '<span>Log out</span></button></div></nav>';
   }
   function updateMeChip() {
@@ -4197,9 +4268,9 @@
       lastView = v;
     }
     document.querySelectorAll('#nav a').forEach(function (a) {
-      var on = a.dataset.view === v;
+      var on = a.dataset.view === v || (a.dataset.view === 'tools' && !!IN_TOOLS[v]);
       a.classList.toggle('on', on);
-      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+      if (on) a.setAttribute('aria-current', a.dataset.view === v ? 'page' : 'true'); else a.removeAttribute('aria-current');
     });
     updateBadge();
     updateMeChip();

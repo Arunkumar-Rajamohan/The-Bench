@@ -1068,3 +1068,33 @@ main.enter > *:nth-child(3) { animation-delay: .08s; }
 #keptcopies:empty { display: none; }
 .kept { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .kept textarea { min-height: 0; }
+
+/* Tools page and first steps */
+.crumb { display: inline-block; margin-bottom: 10px; font-size: .86rem; font-weight: 600; color: var(--muted); text-decoration: none; }
+.crumb:hover { color: var(--ink); text-decoration: underline; }
+.tool-group { margin-bottom: 30px; }
+.tool-group h2 { font-size: 1.15rem; margin-bottom: 12px; }
+.tool-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
+.tool { display: flex; gap: 14px; align-items: flex-start; padding: 16px; color: var(--ink); text-decoration: none; transition: border-color .15s, background .15s; }
+.tool:hover { border-color: var(--line-2); background: var(--sunk); }
+.tool-ico { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.tool-ico .ico { width: 20px; height: 20px; }
+.tool b, .tool .grow > span, .tool small { display: block; }
+.tool .grow { min-width: 0; }
+.tool .grow > span { font-size: .86rem; line-height: 1.45; color: var(--muted); margin-top: 2px; }
+.tool small { margin-top: 6px; font-size: .76rem; font-weight: 600; color: var(--good); overflow-wrap: anywhere; }
+.steps { display: grid; gap: 12px; }
+.steps ul { list-style: none; margin: 0; padding: 0; display: grid; }
+.steps li { display: flex; gap: 12px; align-items: center; border-top: 1px solid var(--line); }
+.steps li:first-child { border-top: 0; }
+.steps li a, .steps li > .grow { padding: 10px 0; color: var(--ink); text-decoration: none; }
+.steps li a:hover b { text-decoration: underline; }
+.steps li a span { display: block; }
+.steps li.done b { color: var(--muted); font-weight: 500; text-decoration: line-through; }
+.step-box { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-2); display: grid; place-items: center; }
+.steps li.done .step-box { background: var(--good); border-color: var(--good); color: var(--paper); }
+.step-box .ico { width: 13px; height: 13px; }
+.steps.all h2 .ico { width: 20px; height: 20px; color: var(--good); vertical-align: -3px; }
+.steps .link { justify-self: start; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 350px) { #nav a { font-size: .56rem; padding: 6px 0; } }

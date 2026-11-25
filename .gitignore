@@ -1,2 +1,8 @@
 data/
 node_modules/
+# backups and keys never belong in the project
+*.benchbackup
+*.benchbackup.part
+.the-bench-backup.json
+.env
+.env.*

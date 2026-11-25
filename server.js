@@ -343,6 +343,7 @@ const q = {
       au.username AS author, au.name AS author_name, au.banned AS author_banned, ru.username AS reporter
     FROM reports r JOIN messages m ON m.id = r.message_id JOIN users au ON au.id = m.user_id JOIN users ru ON ru.id = r.reporter_id
     WHERE r.resolved = 0 ORDER BY r.id LIMIT 100`),
+  openReportCount: stmt('SELECT COUNT(*) AS n FROM reports r JOIN messages m ON m.id = r.message_id WHERE r.resolved = 0'),
   report: stmt('SELECT * FROM reports WHERE id = ?'),
   resolveReport: stmt('UPDATE reports SET resolved = 1 WHERE id = ?'),
   resolveMsgReports: stmt('UPDATE reports SET resolved = 1 WHERE message_id = ?'),
@@ -1263,6 +1264,7 @@ async function jobsApi(req, res, route, user) {
       const snapshot = [lead.title + ' at ' + lead.company, lead.location, lead.note, lead.url].filter(Boolean).join('\n');
       const info = await q.addMsg.run('lead:' + lead.id, lead.user_id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      await tellModerators();
       send(res, 201, { ok: true });
       return true;
     }
@@ -1365,6 +1367,7 @@ async function referralApi(req, res, route, user) {
       const snapshot = [(offer.kind === 'refer' ? 'Can refer at ' : 'Knows people at ') + offer.company, offer.roles, offer.note].filter(Boolean).join('\n');
       const info = await q.addMsg.run('ref:' + offer.id, offer.user_id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      await tellModerators();
       send(res, 201, { ok: true });
       return true;
     }
@@ -1502,6 +1505,7 @@ async function profileApi(req, res, route, user) {
         p.skills.length && 'Skills: ' + p.skills.join(', '), p.link].filter(Boolean).join('\n');
       const info = await q.addMsg.run('profile:' + u.id, u.id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      await tellModerators();
       send(res, 201, { ok: true });
       return true;
     }
@@ -1726,6 +1730,17 @@ async function sendDm(user, peer, body) {
   return msg;
 }
 
+// Keep every moderator's badge current. A problem here must never get in the way of reporting something.
+async function tellModerators() {
+  try {
+    const open = (await q.openReportCount.get()).n;
+    for (const name of ADMINS) {
+      const u = await q.userByName.get(name);
+      if (u) push(u.id, { type: 'reports', channel: 'reports', open });
+    }
+  } catch (e) { console.error('Could not tell moderators: ' + e.message); }
+}
+
 async function chatApi(req, res, route, user) {
   const method = req.method;
   let m;
@@ -1803,6 +1818,7 @@ async function chatApi(req, res, route, user) {
       const b = await readBody(req);
       const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
       await q.addReport.run(msg.id, user.id, reason, Date.now());
+      await tellModerators();
       send(res, 201, { ok: true });
       return true;
     }
@@ -1823,6 +1839,11 @@ async function chatApi(req, res, route, user) {
   // ----- moderators -----
   if (route.startsWith('/admin/')) {
     if (!isAdmin(user)) throw new HttpError(403, 'Moderators only.');
+
+    if (method === 'GET' && route === '/admin/count') {
+      send(res, 200, { open: (await q.openReportCount.get()).n });
+      return true;
+    }
 
     if (method === 'GET' && route === '/admin/reports') {
       const reports = (await q.openReports.all()).map((r) => ({
@@ -1862,6 +1883,7 @@ async function chatApi(req, res, route, user) {
       } else {
         throw new HttpError(400, 'Unknown action.');
       }
+      await tellModerators();
       send(res, 200, { ok: true });
       return true;
     }

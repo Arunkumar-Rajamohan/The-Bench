@@ -650,6 +650,7 @@
     alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
     buddy.state = null; buddy.suggestions = null; buddy.editing = false;
     refs.list = null; refs.asking = null; jobs.leads = null;
+    setReports(0);
   }
   var toastTimer = null;
   function toast(msg) {
@@ -721,7 +722,7 @@
         '<b>Download your data</b> or <b>delete your account</b> any time from the Account page.',
         'Deleting removes your profile, private data, posts, leads, offers and messages. Your private chats are removed for the other person too.',
         'A reported message is kept until a moderator closes the report, and reports you made stay until they are closed. An empty numbered placeholder remains so your account number is never reused.',
-        'The database company may hold backup copies for a limited time.'
+        'The database company may hold backup copies for a limited time. The site owner may also keep encrypted backups for about 90 days, so something you delete can remain in a backup for that long.'
       ]) + '</div>' +
       '<p class="small" style="margin-top:18px">' + (me ? '<a href="#/account">Go to your account</a>' : '<a href="#/home">← Back</a>') + '</p>';
   }
@@ -1399,6 +1400,7 @@
         '<div class="stat"><b>' + S.practice.length + '</b><span>questions practiced</span></div>' +
         '</div><div class="stack">' +
         (me.hasRecovery ? '' : '<p class="banner">' + ico('key') + '<span><b>Protect your account.</b> Get a recovery code so you can reset a forgotten password. <a href="#/account">Set it up</a></span></p>') +
+        reportBanner() +
         stepsHtml() +
         (me.profileDone || stepsShown() ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
         (stepsShown() ? '' : installBanner()) +
@@ -1429,7 +1431,7 @@
         '<button class="btn">Change password</button></form>' +
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
-        (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2><p class="small">You are a moderator.</p><a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2>' + reportCount() + '<a class="btn" href="#/admin">Open reports</a></section>' : '') +
         '<div id="keptcopies">' + keptHtml() + '</div>' +
         '<section class="card stack"><h2>Your data</h2><p class="small">Download everything stored about you as one file, or read <a href="#/privacy">what we store and who can see it</a>.</p>' +
         '<div><button type="button" class="btn" data-act="export-data">' + ico('download') + 'Download my data</button></div></section>' +
@@ -2003,6 +2005,7 @@
       try { localStorage.removeItem(OLD_KEY); } catch (e) { /* storage blocked */ }
     }
     recoverStash();
+    loadReportCount();
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     loadAlerts();
     loadBuddy();
@@ -3052,12 +3055,17 @@
     if (!window.EventSource || !me) return;
     var es = new EventSource('/api/stream');
     chat.es = es;
-    es.onopen = function () { if (chat.down) { chat.down = false; resync(); pull(); } };
+    es.onopen = function () { if (chat.down) { chat.down = false; resync(); pull(); loadReportCount(); } };
     es.onmessage = function (e) {
       var ev;
       try { ev = JSON.parse(e.data); } catch (err) { return; /* ignore a bad event */ }
       if (ev && ev.type === 'jobs-updated') return loadAlerts();
       if (ev && ev.type === 'buddy') return onBuddyEvent(ev);
+      if (ev && ev.type === 'reports') {
+        setReports(ev.open);
+        if (currentView() === 'admin') loadAdmin();
+        return;
+      }
       if (ev && ev.type === 'data') { // saved on one of this member's devices
         if (sync.rev === null || ev.rev > sync.rev) { if (sync.busy) sync.want = Math.max(sync.want, ev.rev); else pull(); }
         return;
@@ -3113,8 +3121,29 @@
   }
 
   // ----- moderators -----
+  // Open reports, for moderators: a badge on Home, a line at the top of Home, and a count on Account.
+  var mod = { open: 0 };
+  function loadReportCount() {
+    if (!me || !me.isAdmin) return;
+    api('GET', '/api/admin/count').then(function (j) { setReports(j.open); }).catch(function () { /* the next event or visit catches up */ });
+  }
+  function setReports(n) {
+    mod.open = me && me.isAdmin ? Number(n) || 0 : 0;
+    var b = document.getElementById('homebadge');
+    if (b) { b.textContent = mod.open ? String(mod.open > 99 ? '99+' : mod.open) : ''; b.hidden = !mod.open; }
+    ['reportbanner', 'reportcount'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.outerHTML = id === 'reportbanner' ? reportBanner() : reportCount();
+    });
+  }
+  function reportsText() { return mod.open + (mod.open === 1 ? ' report' : ' reports'); }
+  function reportBanner() {
+    return mod.open ? '<p class="banner" id="reportbanner">' + ico('shield') + '<span><b>' + reportsText() + '</b> from members to look at. <a href="#/admin">Open reports</a></span></p>' : '<span id="reportbanner" hidden></span>';
+  }
+  function reportCount() { return '<p class="small" id="reportcount">' + (mod.open ? '<b>' + reportsText() + '</b> to look at.' : 'You are a moderator. No open reports.') + '</p>'; }
   function loadAdmin() {
     api('GET', '/api/admin/reports').then(function (j) {
+      setReports((j.reports || []).length);
       var el = document.getElementById('adminbody');
       if (el) el.innerHTML = adminHtml(j);
     }).catch(fail);
@@ -4378,7 +4407,7 @@
   document.addEventListener('visibilitychange', function () {
     if (!me) return;
     if (document.visibilityState === 'hidden') { stash(); flush(); } // phones often never say "pagehide"
-    else if (Date.now() - sync.pulledAt > 5000) pull();
+    else if (Date.now() - sync.pulledAt > 5000) { pull(); loadReportCount(); }
   });
   // Back from the browser's "back" memory: reconnect and catch up on whatever was missed.
   window.addEventListener('pageshow', function (e) { if (e.persisted && me) { startStream(); resync(); pull(); } });

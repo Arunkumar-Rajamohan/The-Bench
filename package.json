@@ -4,7 +4,10 @@
   "private": true,
   "description": "A friendly space for people between jobs.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/run.js",
+    "test:browser": "node tests/run.js browser",
+    "backup": "node backup/backup.js"
   },
   "engines": {
     "node": ">=22.5"

@@ -29,6 +29,9 @@ const NEW_DMS_PER_DAY = 10;
 // Moderators: comma-separated usernames, set on the host (e.g. ADMIN_USERNAMES=arun).
 const ADMINS = new Set((process.env.ADMIN_USERNAMES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 const isAdmin = (u) => !!u && ADMINS.has(u.username);
+// The first name in that list is the site owner: the only one who can open the usage counts.
+const OWNER = [...ADMINS][0] || '';
+const isOwner = (u) => !!u && !!OWNER && u.username === OWNER;
 
 // ---------- database ----------
 // Two modes, same SQL:
@@ -214,6 +217,10 @@ const SCHEMA = [
     fails INTEGER NOT NULL DEFAULT 0
   )`,
   'CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)',
+  // Usage counts (see "usage counts" below): totals, plus scrambled markers that only live until the week is over.
+  'CREATE TABLE IF NOT EXISTS usage_marks (week TEXT NOT NULL, metric TEXT NOT NULL, mark TEXT NOT NULL, PRIMARY KEY (week, metric, mark))',
+  'CREATE TABLE IF NOT EXISTS usage_weeks (week TEXT NOT NULL, metric TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (week, metric))',
+  'CREATE TABLE IF NOT EXISTS usage_days (day TEXT PRIMARY KEY, n INTEGER NOT NULL)',
   // Read receipts. No row in receipts = not asked yet, which counts as off. dm_reads: how far a member has read a private chat.
   'CREATE TABLE IF NOT EXISTS receipts (user_id INTEGER PRIMARY KEY, is_on INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS dm_reads (user_id INTEGER NOT NULL, key TEXT NOT NULL, last_id INTEGER NOT NULL, PRIMARY KEY (user_id, key))',
@@ -285,7 +292,8 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN recovery TEXT',
   'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0', // goes up by one with every save of data
-  'ALTER TABLE messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0' // 1 = never shows "Seen" (referral requests)
+  'ALTER TABLE messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0', // 1 = never shows "Seen" (referral requests)
+  'ALTER TABLE users ADD COLUMN last_day TEXT' // the last day they opened The Bench; used only to count, never shown to members
 ];
 
 async function initDb() {
@@ -398,7 +406,14 @@ const q = {
   bannedUsers: stmt("SELECT username, name FROM users WHERE banned = 1 AND username NOT LIKE '~%' ORDER BY username"),
   dmKeysOf: stmt('SELECT key FROM dms WHERE a = ? OR b = ?'),
   recentMsgsOf: stmt("SELECT id, channel FROM messages WHERE user_id = ? AND deleted = 0 AND (channel LIKE 'room:%' OR channel LIKE 'qotd:%') ORDER BY id DESC LIMIT 200"),
-  emptyUser: stmt("UPDATE users SET username = ?, name = 'Deleted member', pass = ?, salt = ?, recovery = NULL, data = '{}', banned = 1 WHERE id = ?"),
+  emptyUser: stmt("UPDATE users SET username = ?, name = 'Deleted member', pass = ?, salt = ?, recovery = NULL, data = '{}', last_day = NULL, banned = 1 WHERE id = ?"),
+  lastDay: stmt('SELECT last_day, created FROM users WHERE id = ?'),
+  setLastDay: stmt('UPDATE users SET last_day = ? WHERE id = ? AND last_day IS ?'),
+  addMark: stmt('INSERT OR IGNORE INTO usage_marks (week, metric, mark) VALUES (?, ?, ?)'),
+  bumpDay: stmt('INSERT INTO usage_days (day, n) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1'),
+  bumpWeek: stmt('INSERT INTO usage_weeks (week, metric, n) VALUES (?, ?, 1) ON CONFLICT (week, metric) DO UPDATE SET n = n + 1'),
+  foldWeeks: stmt(`INSERT INTO usage_weeks (week, metric, n) SELECT week, metric, COUNT(*) FROM usage_marks WHERE week < ? GROUP BY week, metric
+    ON CONFLICT (week, metric) DO UPDATE SET n = MAX(n, excluded.n)`),
 
   // fun tab
   answers: stmt(`SELECT m.id, m.text, m.created, m.user_id, u.name, u.username FROM messages m JOIN users u ON u.id = m.user_id
@@ -604,7 +619,7 @@ async function currentUser(req) {
 }
 
 function publicUser(u) {
-  return { username: u.username, name: u.name, since: u.created, hasRecovery: !!(u.recovery || u.has_recovery), isAdmin: isAdmin(u) };
+  return { username: u.username, name: u.name, since: u.created, isOwner: isOwner(u), hasRecovery: !!(u.recovery || u.has_recovery), isAdmin: isAdmin(u) };
 }
 function parseData(s) { try { return JSON.parse(s); } catch (e) { return {}; } }
 
@@ -676,6 +691,112 @@ function openStream(req, res, user) {
 setInterval(() => {
   for (const set of streams.values()) for (const r of set) r.write(': ping\n\n');
 }, 25000).unref();
+
+// ---------- usage counts ----------
+// How many people use what, for the owner. Totals only.
+//  - To count each person once a week, a marker is kept: a scramble of the person and the thing, with a secret that
+//    changes weekly. Markers for different things cannot be linked, and markers and secret are deleted after the week.
+//  - The owner's own use is not counted, nor anyone whose browser sends Do Not Track or Global Privacy Control.
+//  - Wellbeing is never counted. Counts of 1 to 4 people are only ever given as "under 5".
+const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people'];
+const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin'];
+const USAGE_METRICS = ['active', ...USAGE_VIEWS.map((x) => 'v:' + x), ...USAGE_DID.map((x) => 'a:' + x)];
+const USAGE_FEW = 5;
+const usageDay = () => dayKey(process.env.USAGE_TEST_CLOCK ? new Date(Number(fs.readFileSync(process.env.USAGE_TEST_CLOCK, 'utf8'))) : undefined);
+const weekOf = (day) => shiftDay(day, -((new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7)); // its Monday
+const daysBetween = (from, to) => Math.round((Date.parse(to) - Date.parse(from)) / 864e5);
+const usageOptOut = (req) => req.headers['sec-gpc'] === '1' || req.headers.dnt === '1';
+let usageSecret = { week: '', value: '' }, usageKnown = new Set();
+
+async function usageSecretFor(week) {
+  if (usageSecret.week === week) return usageSecret.value;
+  await foldUsage(week);
+  await q.addSetting.run('usage_secret:' + week, crypto.randomBytes(32).toString('hex'));
+  usageSecret = { week, value: (await q.setting.get('usage_secret:' + week)).value };
+  usageKnown = new Set();
+  return usageSecret.value;
+}
+const usageMark = (secret, metric, userId) => crypto.createHmac('sha256', secret).update(metric + ':' + userId).digest('hex').slice(0, 32);
+// Weeks that are over become plain totals; their markers and secret are deleted.
+async function foldUsage(week) {
+  await q.foldWeeks.run(week);
+  await exec('DELETE FROM usage_marks WHERE week < ?', [week]);
+  await exec("DELETE FROM settings WHERE key LIKE 'usage_secret:%' AND key < ?", ['usage_secret:' + week]);
+}
+async function mark(user, metric) {
+  const week = weekOf(usageDay()), secret = await usageSecretFor(week), known = metric + ':' + user.id;
+  if (usageKnown.has(known)) return;
+  await q.addMark.run(week, metric, usageMark(secret, metric, user.id));
+  if (usageKnown.size < 50000) usageKnown.add(known);
+}
+// Something they did. Never slows the request down or makes it fail.
+function did(req, user, what) {
+  if (isOwner(user) || usageOptOut(req)) return;
+  mark(user, 'a:' + what).catch((e) => console.error('Usage count failed: ' + e.message));
+}
+async function opened(user, view) {
+  const today = usageDay(), row = await q.lastDay.get(user.id);
+  if (row && row.last_day !== today && (await q.setLastDay.run(today, user.id, row.last_day)).changes) {
+    await q.bumpDay.run(today);
+    // First visit in a new 7-day stretch since joining: count it as having come back.
+    const joined = dayKey(new Date(row.created)), k = Math.floor(daysBetween(joined, today) / 7);
+    const before = row.last_day ? Math.floor(daysBetween(joined, row.last_day) / 7) : 0;
+    if (k >= 1 && k <= 8 && k > before) await q.bumpWeek.run(weekOf(joined), 'back' + k);
+  }
+  await mark(user, 'active');
+  if (USAGE_VIEWS.includes(view)) await mark(user, 'v:' + view);
+}
+async function forgetUsage(userId) {
+  const week = weekOf(usageDay()), secret = await usageSecretFor(week);
+  for (const m of USAGE_METRICS) await exec('DELETE FROM usage_marks WHERE week = ? AND metric = ? AND mark = ?', [week, m, usageMark(secret, m, userId)]);
+  for (const m of USAGE_METRICS) usageKnown.delete(m + ':' + userId);
+}
+async function usageReport() {
+  const today = usageDay(), week = weekOf(today);
+  await foldUsage(week);
+  if (!(await q.setting.get('usage_from'))) await q.addSetting.run('usage_from', today);
+  const from = (await q.setting.get('usage_from')).value;
+  const totals = {};
+  for (const x of (await exec('SELECT week, metric, n FROM usage_weeks')).rows) (totals[x.week] = totals[x.week] || {})[x.metric] = x.n;
+  for (const x of (await exec('SELECT metric, COUNT(*) AS n FROM usage_marks WHERE week = ? GROUP BY metric', [week])).rows) (totals[week] = totals[week] || {})[x.metric] = x.n;
+  const get = (w, m) => (totals[w] && totals[w][m]) || 0;
+  const people = (await exec('SELECT username, created, banned FROM users')).rows.filter((u) => u.username !== OWNER);
+  const joined = {};
+  for (const u of people) { const w = weekOf(dayKey(new Date(u.created))); joined[w] = (joined[w] || 0) + 1; }
+  const few = (x) => (x > 0 && x < USAGE_FEW ? { few: true } : { n: x });
+  const last = shiftDay(week, -7), counted = (w) => shiftDay(w, 6) >= from;
+  const byDay = {};
+  for (const x of (await exec('SELECT day, n FROM usage_days WHERE day > ?', [shiftDay(today, -28)])).rows) byDay[x.day] = x.n;
+  const weeks = [];
+  for (let i = 0; i < 8; i++) {
+    const w = shiftDay(week, -7 * i);
+    // "Came back" = opened it 8 to 14 days after joining. Known for everyone in a week only once 13 + 6 days have passed.
+    weeks.push({ week: w, joined: joined[w] || 0, active: counted(w) ? get(w, 'active') : null, back: w >= weekOf(from) && shiftDay(w, 7) <= today ? get(w, 'back1') : null, final: shiftDay(w, 6 + 14) <= today });
+  }
+  const line = (key) => ({ key, now: few(get(week, key)), before: counted(last) ? few(get(last, key)) : null });
+  return {
+    from, week, few: USAGE_FEW, members: people.filter((u) => !u.banned).length, joinedNow: joined[week] || 0, activeNow: get(week, 'active'),
+    days: Array.from({ length: 28 }, (_, i) => { const day = shiftDay(today, i - 27); return { day, n: day >= from ? byDay[day] || 0 : null }; }),
+    weeks, did: USAGE_DID.map((x) => line('a:' + x)), views: USAGE_VIEWS.map((x) => line('v:' + x)),
+    notify: few((await exec('SELECT COUNT(DISTINCT user_id) AS n FROM push_subs')).rows[0].n)
+  };
+}
+async function usageApi(req, res, route, user) {
+  if (req.method === 'POST' && route === '/usage') {
+    limit('usage:' + user.id, 120, 10 * 60000);
+    const b = await readBody(req);
+    if (!isOwner(user) && !usageOptOut(req)) await opened(user, String(b.view || '')).catch((e) => console.error('Usage count failed: ' + e.message));
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (req.method === 'GET' && route === '/usage') {
+    if (!isOwner(user)) throw new HttpError(403, 'Only the site owner can see this.');
+    limit('usageread:' + user.id, 60, 60000);
+    send(res, 200, await usageReport());
+    return true;
+  }
+  return false;
+}
 
 // ---------- read receipts (private chats) ----------
 // Both people must have said yes. Referral requests are "quiet": they never show Seen, so helpers are not pressured.
@@ -823,6 +944,7 @@ async function pushTick() {
         if (!how.sent && how.failed) for (const k of mine) await q.unclaimSent.run(p.id, k); // try again next time
       }
     }
+    if (once('usage-tidy', 3600000)) await foldUsage(weekOf(usageDay()));
     if (once('push-tidy', 6 * 3600000)) {
       await exec('DELETE FROM push_sent WHERE created < ?', [Date.now() - 14 * 864e5]);
       await exec('DELETE FROM push_subs WHERE session NOT IN (SELECT token_hash FROM sessions WHERE expires > ?)', [Date.now()]);
@@ -938,6 +1060,7 @@ async function deleteAccount(u) {
   await exec('DELETE FROM profiles WHERE user_id = ?', [id]);
   for (const t of ['push_subs', 'push_prefs', 'push_sent', 'receipts', 'dm_reads']) await exec('DELETE FROM ' + t + ' WHERE user_id = ?', [id]);
   trackerDates.delete(id);
+  await forgetUsage(id);
   await q.emptyUser.run('~' + id, crypto.randomBytes(64).toString('hex'), crypto.randomBytes(16).toString('hex'), id);
   await q.dropUserSessions.run(id);
   closeStreams(id);
@@ -1053,7 +1176,7 @@ async function api(req, res, route) {
     const full = await q.userById.get(user.id);
     const out = {
       exported: new Date().toISOString(),
-      account: { username: full.username, name: full.name, joined: new Date(full.created).toISOString() },
+      account: { username: full.username, name: full.name, joined: new Date(full.created).toISOString(), lastOpened: full.last_day || null },
       private: parseData(full.data)
     };
     for (const [name, sql, args] of EXPORTS) {
@@ -1121,6 +1244,7 @@ async function api(req, res, route) {
     const body = text(b.text, 600, 'Post');
     const tag = TAGS.includes(b.tag) ? b.tag : 'Win';
     const info = await q.addPost.run(user.id, tag, body, Date.now());
+    did(req, user, 'post');
     return send(res, 201, { id: info.lastId });
   }
 
@@ -1160,6 +1284,7 @@ async function api(req, res, route) {
   if (await referralApi(req, res, route, user)) return;
   if (await buddyApi(req, res, route, user)) return;
   if (await pushApi(req, res, route, user)) return;
+  if (await usageApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
 }
 
@@ -1573,6 +1698,7 @@ async function referralApi(req, res, route, user) {
     if (mine.length >= MAX_REF_OFFERS) throw new HttpError(400, 'You can list up to ' + MAX_REF_OFFERS + ' companies. Remove one to add another.');
     const t = Date.now();
     await q.addRefOffer.run(user.id, company, kind, roles, note, t, t);
+    did(req, user, 'referral');
     send(res, 201, { ok: true });
     return true;
   }
@@ -1614,6 +1740,7 @@ async function referralApi(req, res, route, user) {
       const body = 'Referral request for ' + offer.company + ': ' + role + (url ? '\n' + url : '') + '\n\n' + message + '\n\n(Sent from the Referral board)';
       await sendDm(user, peer, body, true);
       await q.saveRefAsk.run(offer.id, user.id, Date.now());
+      did(req, user, 'referral');
       send(res, 201, { ok: true, username: peer.username });
       return true;
     }
@@ -2036,6 +2163,7 @@ async function chatApi(req, res, route, user) {
       const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
       const blockers = new Set((await q.blockersOf.all(user.id)).map((r) => r.blocker_id));
       pushAll({ type: 'msg', channel, msg }, blockers);
+      did(req, user, 'room');
       send(res, 201, { msg });
       return true;
     }
@@ -2076,7 +2204,9 @@ async function chatApi(req, res, route, user) {
       limit('chat:' + user.id, 20, 60000);
       const b = await readBody(req);
       const body = text(b.text, MSG_MAX, 'Message');
-      send(res, 201, { msg: await sendDm(user, peer, body) });
+      const msg = await sendDm(user, peer, body);
+      did(req, user, 'dm');
+      send(res, 201, { msg });
       return true;
     }
   }
@@ -2363,6 +2493,7 @@ async function buddyApi(req, res, route, user) {
     const done = b.done === undefined ? !!(prev && prev.done) : !!b.done;
     if (done && !plan) throw new HttpError(400, 'Write today\'s plan first.');
     await q.saveCheckin.run(user.id, today, plan, done ? 1 : 0, Date.now());
+    did(req, user, 'checkin');
     const cur = await currentPair(user.id);
     if (cur) pushBuddy(cur.other.id, done && !(prev && prev.done) ? 'done' : 'checkin', user.name);
     send(res, 200, await buddyState(user));
@@ -2496,7 +2627,7 @@ function startKeepAwake() {
     (hours === 'all' ? ', all day' : ' between ' + hours.replace('-', ':00 and ') + ':00 India time'));
 }
 
-initDb().then(loadSiteKey).then(loadReceiptsStart).then(() => {
+initDb().then(loadSiteKey).then(loadReceiptsStart).then(() => q.addSetting.run('usage_from', usageDay())).then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
     ensureJobs(); // warm the job listings so the first visitor does not wait

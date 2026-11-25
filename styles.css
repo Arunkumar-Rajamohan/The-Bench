@@ -1113,3 +1113,25 @@ main.enter > *:nth-child(3) { animation-delay: .08s; }
 .receipt-switch { gap: 8px; flex-wrap: nowrap; }
 .receipt-switch input { flex: none; }
 @media (max-width: 860px) { .receipt-note { margin: 8px 10px 0; } }
+
+/* Usage (site owner) */
+:root { --chart: #3c64a0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart: #5f8fe0; } }
+:root[data-theme="dark"] { --chart: #5f8fe0; }
+.uchart { position: relative; padding-top: 28px; margin-top: -22px; }
+.uchart svg { width: 100%; height: auto; display: block; border-radius: 6px; touch-action: pan-y; }
+.ugrid { stroke: var(--line); stroke-width: 1; }
+.ugrid.base { stroke: var(--line-2); }
+.utick { font: 500 11px var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+.uval { font: 600 12px var(--sans); fill: var(--ink); }
+.ubar { fill: var(--chart); }
+.uhit { fill: transparent; }
+.uhit.on { fill: color-mix(in srgb, var(--ink) 8%, transparent); }
+.utip { position: absolute; top: 0; pointer-events: none; display: flex; gap: 8px; align-items: baseline; padding: 4px 10px; border-radius: 8px; background: var(--ink); color: var(--bg); font-size: .8rem; white-space: nowrap; }
+.utip[hidden] { display: none; }
+.utip span { opacity: .8; }
+.udetails summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--ink-2); }
+.usage-grid { margin-top: 18px; }
+.utable th { white-space: normal; vertical-align: bottom; }
+.stats + .muted { margin: 12px 0 18px; }
+@media (max-width: 860px) { .utick { font-size: 19px; } .uval { font-size: 20px; } }

@@ -651,6 +651,7 @@
     buddy.state = null; buddy.suggestions = null; buddy.editing = false;
     refs.list = null; refs.asking = null; jobs.leads = null;
     setReports(0);
+    usage.data = null; usage.error = '';
   }
   var toastTimer = null;
   function toast(msg) {
@@ -696,7 +697,7 @@
   ];
   function privacyHtml() {
     var sec = function (t, items) { return '<section class="card stack"><h2>' + t + '</h2><ul class="sal-tips">' + items.map(function (i) { return '<li>' + i + '</li>'; }).join('') + '</ul></section>'; };
-    return head('Your privacy', 'What The Bench stores, who can see it, and how to remove it. Last updated 25 November 2026.') +
+    return head('Your privacy', 'What The Bench stores, who can see it, and how to remove it. Last updated 26 November 2026.') +
       '<div class="grid2">' +
       sec('What every member can see', [
         'Your name, username and profile, including where you can refer people.',
@@ -716,6 +717,7 @@
       ]) +
       sec('Where it is kept', [
         'The site runs on Render, and the database is kept by Turso. They are separate companies with their own policies.',
+        'To see what is useful, the site owner gets totals of how many people open each page or post: never who, and never Wellbeing. To count each person once, scrambled markers are kept until the week ends, then deleted. We also keep the last day you opened The Bench, which other members never see. If your browser sends Do Not Track or Global Privacy Control, you are left out.',
         'We use one cookie to keep you logged in, and your browser’s storage for small settings. Changes that have not reached the server yet are also kept in your browser until they do, or until you log out. There are no ads and no tracking scripts.',
         'If you turn on notifications, they travel through your browser’s own service (Google, Apple, Mozilla or Microsoft). They are encrypted on the way and never include message text, job titles or company names. For tracker reminders, our server reads the dates in your tracker.',
         'Outside links, such as job posts, courses or Google Calendar, go to other websites. Google gets an interview’s job title, company and time only if you tap its button.'
@@ -1436,6 +1438,7 @@
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
         (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2>' + reportCount() + '<a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        (me.isOwner ? '<section class="card stack"><h2>' + ico('tracker') + ' Usage</h2><p class="small">How many people join, come back and use each part. Only you can see it.</p><a class="btn" href="#/usage">See usage</a></section>' : '') +
         '<section class="card stack" id="pushcard">' + pushCard() + '</section>' +
         '<div id="keptcopies">' + keptHtml() + '</div>' +
         '<section class="card stack"><h2>Your data</h2><p class="small">Download everything stored about you as one file, or read <a href="#/privacy">what we store and who can see it</a>.</p>' +
@@ -1544,6 +1547,11 @@
       if (!me.isAdmin) return head('Moderators only', 'This page is for moderators.');
       return head('Moderation', 'Reports from members. A private message only shows up here when one of the two people in it reports it.') +
         '<div id="adminbody"><p class="muted">Loading reports…</p></div>';
+    },
+
+    usage: function () {
+      if (!me.isOwner) return head('Owner only', 'Only the site owner can see this page.');
+      return head('Usage', 'How many people use The Bench, and what they find useful. Totals only.') + '<div id="usagebody">' + usageHtml() + '</div>';
     },
 
     feed: function () {
@@ -3904,6 +3912,95 @@
     });
   }
 
+  // ---------- usage counts ----------
+  // Tells the server "someone opened this page", at most once a day per page. The server turns it into totals.
+  var told = {};
+  function tellOpened() {
+    if (!me || me.isOwner || ui.newCode || document.visibilityState !== 'visible') return;
+    if (navigator.globalPrivacyControl || navigator.doNotTrack === '1') return;
+    var v = currentView(), key = me.username + '|' + today() + '|' + v;
+    if (told[key]) return;
+    told[key] = 1;
+    // Wellbeing is never named, so it is never counted.
+    api('POST', '/api/usage', { view: v === 'mood' || v === 'account' || v === 'privacy' ? 'home' : v }).catch(function () { /* not important */ });
+  }
+  var USAGE_NAMES = { 'a:post': 'Posted in the feed', 'a:room': 'Wrote in a chat room', 'a:dm': 'Sent a private message', 'a:referral': 'Offered or asked for a referral', 'a:checkin': 'Did a daily check-in',
+    'v:feed': 'Feed', 'v:chat': 'Chat', 'v:fun': 'Fun', 'v:jobs': 'Jobs', 'v:tracker': 'Tracker', 'v:routine': 'Routine', 'v:tools': 'Tools', 'v:resume': 'Resume builder', 'v:cover': 'Cover letter', 'v:prep': 'Resume checker',
+    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People' };
+  var usage = { data: null, error: '' };
+  function loadUsage() {
+    if (!me.isOwner) return;
+    api('GET', '/api/usage').then(function (j) { usage.data = j; usage.error = ''; }, function (e) { if (e.status === 401) return fail(e); usage.error = e.message; })
+      .then(function () { var el = document.getElementById('usagebody'); if (el && me) { el.innerHTML = usageHtml(); wireUsageChart(); } });
+  }
+  function shortDay(k) { return dayDate(k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+  function usageCount(x) { return x === null ? '<span class="muted">–</span>' : x.few ? 'under ' + usage.data.few : String(x.n); }
+  function usageBars(days) {
+    var W = 640, H = 190, left = 34, right = 8, top = 20, bottom = 28, known = days.filter(function (d) { return d.n !== null; });
+    var max = Math.max.apply(null, known.map(function (d) { return d.n; }).concat([1])), step = max <= 4 ? 1 : Math.ceil(max / 4 / 5) * 5 || 1, high = Math.ceil(max / step) * step;
+    if (max > 4 && max <= 10) { step = 2; high = Math.ceil(max / 2) * 2; }
+    var slot = (W - left - right) / days.length, bar = Math.min(24, slot - 4), y = function (v) { return top + (high - v) * (H - top - bottom) / high; };
+    var grid = '';
+    for (var g = 0; g <= high; g += step) grid += '<line class="ugrid' + (g ? '' : ' base') + '" x1="' + left + '" x2="' + (W - right) + '" y1="' + y(g) + '" y2="' + y(g) + '"/><text class="utick" x="' + (left - 8) + '" y="' + (y(g) + 4) + '" text-anchor="end">' + g + '</text>';
+    var peak = days.map(function (d) { return d.n || 0; }).lastIndexOf(max);
+    var marks = days.map(function (d, i) {
+      var x = left + i * slot + (slot - bar) / 2, h = y(0) - y(d.n || 0), rr = Math.min(4, h);
+      var path = d.n ? '<path class="ubar" d="M' + x.toFixed(1) + ' ' + y(0) + 'v-' + (h - rr).toFixed(1) + 'q0 -' + rr + ' ' + rr + ' -' + rr + 'h' + (bar - 2 * rr).toFixed(1) + 'q' + rr + ' 0 ' + rr + ' ' + rr + 'v' + (h - rr).toFixed(1) + 'z"/>' : '';
+      return path + (i === peak && d.n ? '<text class="uval" x="' + (x + bar / 2).toFixed(1) + '" y="' + (y(d.n) - 6).toFixed(1) + '" text-anchor="middle">' + d.n + '</text>' : '') +
+        '<rect class="uhit" data-i="' + i + '" x="' + (left + i * slot).toFixed(1) + '" y="' + top + '" width="' + slot.toFixed(1) + '" height="' + (H - top - bottom) + '"/>';
+    }).join('');
+    var labels = days.map(function (d, i) { return (days.length - 1 - i) % 7 === 0 ? '<text class="utick" x="' + (left + i * slot + slot / 2).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + (i === days.length - 1 ? 'end' : 'middle') + '">' + (i === days.length - 1 ? 'Today' : esc(shortDay(d.day))) + '</text>' : ''; }).join('');
+    return '<div class="uchart" id="uchart"><svg viewBox="0 0 ' + W + ' ' + H + '" tabindex="0" role="img" aria-label="People who opened The Bench each day, last 28 days. Use the arrow keys to read each day, or open the table below.">' + grid + marks + labels + '</svg><div class="utip" id="utip" role="status" hidden></div></div>';
+  }
+  // One tooltip, by pointer, touch or arrow keys. Every value is also in the table below the chart.
+  function wireUsageChart() {
+    var box = document.getElementById('uchart'), tip = document.getElementById('utip');
+    if (!box || !usage.data) return;
+    var svg = box.querySelector('svg'), at = -1, days = usage.data.days;
+    var show = function (i) {
+      at = Math.max(0, Math.min(days.length - 1, i));
+      var d = days[at], hit = box.querySelector('.uhit[data-i="' + at + '"]'), b = box.getBoundingClientRect(), h = hit.getBoundingClientRect();
+      box.querySelectorAll('.uhit').forEach(function (x) { x.classList.toggle('on', x === hit); });
+      tip.textContent = '';
+      var strong = document.createElement('b'); strong.textContent = d.n === null ? 'Not counted yet' : d.n + (d.n === 1 ? ' person' : ' people');
+      var small = document.createElement('span'); small.textContent = fmtDay(d.day);
+      tip.appendChild(strong); tip.appendChild(small); tip.hidden = false;
+      tip.style.left = Math.max(0, Math.min(b.width - tip.offsetWidth, h.left - b.left + h.width / 2 - tip.offsetWidth / 2)) + 'px';
+    };
+    var hide = function () { tip.hidden = true; at = -1; box.querySelectorAll('.uhit.on').forEach(function (x) { x.classList.remove('on'); }); };
+    box.addEventListener('pointermove', function (e) { var hit = e.target.closest('.uhit'); if (hit) show(Number(hit.dataset.i)); });
+    box.addEventListener('pointerdown', function (e) { var hit = e.target.closest('.uhit'); if (hit) show(Number(hit.dataset.i)); });
+    box.addEventListener('pointerleave', hide);
+    svg.addEventListener('blur', hide);
+    svg.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); show(at < 0 ? days.length - 1 : at + (e.key === 'ArrowLeft' ? -1 : 1)); } else if (e.key === 'Escape') hide();
+    });
+  }
+  function usageHtml() {
+    if (usage.error && !usage.data) return '<p class="card muted">' + esc(usage.error) + '</p>';
+    var d = usage.data;
+    if (!d) return '<p class="muted">Counting…</p>';
+    var tile = function (num, label, hot) { return '<div class="stat' + (hot ? ' hot' : '') + '"><b>' + num + '</b><span>' + label + '</span></div>'; };
+    var done = d.weeks.filter(function (w) { return w.final && w.back !== null && w.joined; })[0];
+    var table = function (title, rows, first) {
+      return '<section class="card"><h2>' + title + '</h2><table class="sal-table utable"><thead><tr><th>' + first + '</th><th>This week</th><th>Last week</th></tr></thead><tbody>' +
+        rows.map(function (x) { return '<tr><td>' + esc(USAGE_NAMES[x.key] || x.key) + '</td><td>' + usageCount(x.now) + '</td><td>' + usageCount(x.before) + '</td></tr>'; }).join('') + '</tbody></table></section>';
+    };
+    return '<div class="stats">' + tile(d.members, 'members') + tile(d.joinedNow, 'joined this week') + tile(d.activeNow, 'active this week', true) +
+      tile(done ? done.back + ' of ' + done.joined : '–', 'came back') + '</div>' +
+      '<p class="muted small">Weeks start on Monday, India time. You are not counted. Counting began on ' + esc(fmtDay(d.from)) + '.' + (done ? ' “Came back” is for people who joined in the week of ' + esc(shortDay(done.week)) + '.' : ' “Came back” appears about three weeks after someone joins.') + '</p>' +
+      '<section class="card stack"><h2>People each day</h2>' + usageBars(d.days) +
+      '<details class="udetails"><summary>Show as a table</summary><table class="sal-table utable"><thead><tr><th>Day</th><th>People</th></tr></thead><tbody>' +
+      d.days.slice().reverse().map(function (x) { return '<tr><td>' + esc(fmtDay(x.day)) + '</td><td>' + (x.n === null ? '<span class="muted">–</span>' : x.n) + '</td></tr>'; }).join('') + '</tbody></table></details></section>' +
+      '<div class="grid2 usage-grid"><section class="card"><h2>Week by week</h2><table class="sal-table utable"><thead><tr><th>Week of</th><th>Joined</th><th>Active</th><th>Came back</th></tr></thead><tbody>' +
+      d.weeks.map(function (w) {
+        return '<tr><td>' + esc(shortDay(w.week)) + '</td><td>' + w.joined + '</td><td>' + (w.active === null ? '<span class="muted">–</span>' : w.active) + '</td><td>' +
+          (w.back === null || !w.joined ? '<span class="muted">–</span>' : w.back + ' of ' + w.joined + (w.final ? '' : ' <span class="muted">so far</span>')) + '</td></tr>';
+      }).join('') + '</tbody></table><p class="muted small">“Came back” means opened The Bench in their second week, 8 to 14 days after joining. It is the number to watch.</p></section>' +
+      table('What people did', d.did, 'People who') + table('Pages opened', d.views, 'Page') +
+      '<section class="card stack"><h2>About these numbers</h2><ul class="sal-tips"><li>Totals only. They cannot show who did what, and small groups are shown as “under ' + d.few + '”.</li><li>Each person counts once per week for each line.</li><li>Wellbeing is never counted.</li><li>People whose browser asks not to be tracked are left out, so real numbers can be a little higher.</li><li>Notifications are on for ' + usageCount(d.notify) + ' ' + (d.notify.n === 1 ? 'person' : 'people') + ' right now.</li></ul></section></div>';
+  }
+
   // ---------- you: account bar (Home) and sidebar chip ----------
   function accountBar() {
     var u = esc(me.username);
@@ -4422,6 +4519,7 @@
       if (box && wideScreen()) box.focus();
     },
     account: function () { loadBlocks(); loadPush(); },
+    usage: loadUsage,
     admin: function () { if (me.isAdmin) loadAdmin(); },
     fun: function () {
       if (!S.bingo) { S.bingo = newBingo(0); save(); renderSection('bingo', bingoHtml()); }
@@ -4510,6 +4608,7 @@
     });
     updateBadge();
     updateMeChip();
+    tellOpened();
     if (afterRender[v]) afterRender[v]();
   }
 
@@ -4621,6 +4720,7 @@
   window.addEventListener('pagehide', function () { stash(); flush(true); stopStream(); });
   document.addEventListener('visibilitychange', function () {
     if (!me) return;
+    tellOpened();
     if (document.visibilityState === 'hidden') { stash(); flush(); } // phones often never say "pagehide"
     else if (Date.now() - sync.pulledAt > 5000) { pull(); loadReportCount(); }
   });

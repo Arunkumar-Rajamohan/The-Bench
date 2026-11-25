@@ -706,6 +706,7 @@
       sec('What other members cannot see', [
         'Your tracker, routine, moods and notes, resume, cover letters, salary numbers, interview practice and course progress.',
         'Private chats are for the two people in them. If one of you reports a message, moderators see that message.',
+        'Read receipts: nothing is shared until you choose. If you and the other person both have them on, each sees “Seen” on messages the other has read. We store how far you have read in each private chat, and forget it when you turn this off.',
         'Your buddy sees your check-ins, not the rest of your private data.'
       ]) +
       sec('What the site owner can see', [
@@ -1431,6 +1432,7 @@
         '<label>New password<input type="password" name="newPassword" minlength="8" maxlength="200" autocomplete="new-password" required></label>' +
         '<p class="muted small">This signs you out on every other device.</p>' +
         '<button class="btn">Change password</button></form>' +
+        '<section class="card stack" id="receiptcard">' + receiptCard() + '</section>' +
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
         (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2>' + reportCount() + '<a class="btn" href="#/admin">Open reports</a></section>' : '') +
@@ -2294,6 +2296,8 @@
     },
     breathe: function () { startBreathing(); return false; },
     'to-support': function () { var el = document.getElementById('support'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return false; },
+    'receipts-ok': function () { setReceipts(true); return false; },
+    'receipts-no': function () { setReceipts(false).then(function () { toast('Read receipts are off. You can change this on the Account page.'); }); return false; },
     'steps-hide': function () { S.steps.hide = true; },
     'push-on': function () { turnOnPush(); return false; },
     'push-off': function () { dropPush().then(function () { toast('Notifications are off on this device.'); showPush(); }); return false; },
@@ -2827,7 +2831,7 @@
   var BASE_TITLE = document.title;
   var chat = freshChat();
   function freshChat() {
-    return { summary: null, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false };
+    return { summary: null, receipts: null, read: {}, readSent: {}, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false };
   }
 
   function isChatView() { return !!me && !ui.newCode && currentView() === 'chat'; }
@@ -2927,7 +2931,7 @@
       var name = peer ? peer.name : (dmByUser(u) || {}).name || '@' + u;
       head = '<div class="grow"><h2><a class="plain-link" href="#/u/' + esc(u) + '">' + esc(name) + '</a></h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
         (peer ? '<button class="btn tiny ghost" data-act="' + (peer.blockedByMe ? 'unblock' : 'block') + '" data-u="' + esc(u) + '">' + (peer.blockedByMe ? 'Unblock' : 'Block') + '</button>' : '');
-      notice = '<p class="scam">' + ico('shield') + '<span>Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span></p>';
+      notice = '<p class="scam">' + ico('shield') + '<span>Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span></p>' + receiptNote(ch);
       composer = peer && peer.blockedByMe
         ? '<p class="composer-note muted small">You blocked this person. Unblock them to send messages.</p>'
         : composerHtml('Message ' + name);
@@ -2979,7 +2983,60 @@
     pane.innerHTML = paneHtml(ch);
     var nb = document.getElementById('chatbox');
     if (nb) { nb.value = draft; autosize(nb); if (focused) nb.focus(); }
+    paintSeen(ch);
     scrollMsgs();
+    tellRead(ch);
+  }
+
+  // ----- read receipts -----
+  // "Seen" under my newest message the other person has read. Hidden once they have replied: then it goes without saying.
+  function paintSeen(ch) {
+    var old = document.querySelector('#msgs .seen-mark');
+    if (old) old.remove();
+    var id = chat.read[ch];
+    if (!id || !isDm(ch) || !isChatView() || activeChannel() !== ch || !chat.receipts || !chat.receipts.on) return;
+    if ((chat.msgs[ch] || []).some(function (m) { return m.id > id && m.username !== me.username; })) return;
+    var el = document.querySelector('#msgs .msg[data-id="' + id + '"]'), box = msgsEl(), stick = box && nearBottom(box);
+    if (el) { el.insertAdjacentHTML('afterend', '<p class="seen-mark">' + ico('check') + 'Seen</p>'); if (stick) scrollMsgs(); }
+  }
+  // Only what is really on screen: this chat open, the page visible, and the messages loaded.
+  function tellRead(ch) {
+    if (!isDm(ch) || !chat.receipts || !chat.receipts.on || !isChatView() || activeChannel() !== ch || document.visibilityState !== 'visible' || chat.errors[ch]) return;
+    var last = 0;
+    (chat.msgs[ch] || []).forEach(function (m) { if (m.username !== me.username && m.id > last) last = m.id; });
+    if (!last || (chat.readSent[ch] || 0) >= last) return;
+    chat.readSent[ch] = last;
+    api('POST', channelUrl(ch) + '/read', { id: last }).catch(function () { if (chat.readSent[ch] === last) chat.readSent[ch] = 0; });
+  }
+  function setReceipts(on) {
+    var was = chat.receipts;
+    return api('PUT', '/api/chat/receipts', { on: on }).then(function (j) { applyReceipts(j.receipts); }, function (e) {
+      if (e.status === 401) return fail(e);
+      applyReceipts(was); toast(e.message);
+    });
+  }
+  function applyReceipts(x) {
+    chat.receipts = x;
+    if (!x || !x.on) { chat.read = {}; chat.readSent = {}; }
+    showReceiptCard();
+    var ch = isChatView() ? activeChannel() : '';
+    var note = document.getElementById('receiptnote');
+    if (note) note.outerHTML = receiptNote(ch);
+    if (!ch || !isDm(ch)) return;
+    paintSeen(ch);
+    if (x && x.on) { tellRead(ch); loadChannel(ch).then(function () { paintSeen(ch); }).catch(function () { /* shows at the next visit */ }); }
+  }
+  function receiptNote(ch) {
+    var off = '<span id="receiptnote" hidden></span>', peer = chat.peers[ch];
+    if (!isDm(ch) || !chat.receipts || chat.receipts.asked || (peer && peer.blockedByMe)) return off;
+    return '<div class="receipt-note" id="receiptnote"><p><b>New: read receipts.</b> People you chat with privately will see “Seen” once you have read their message, and you will see theirs. Nothing is shared until you choose.</p>' +
+      '<div class="row"><button type="button" class="btn tiny primary" data-act="receipts-ok">OK</button><button type="button" class="btn tiny ghost" data-act="receipts-no">Keep them off</button></div></div>';
+  }
+  function showReceiptCard() { var el = document.getElementById('receiptcard'); if (el) el.innerHTML = receiptCard(); }
+  function receiptCard() {
+    var x = chat.receipts;
+    return '<h2>Read receipts</h2>' + (x ? '<label class="row small receipt-switch"><input type="checkbox" id="receiptbox"' + (x.on ? ' checked' : '') + '> Show “Seen” in private chats</label>' : '<p class="muted small">Loading…</p>') +
+      '<p class="muted small">It works both ways: with this off, nobody sees when you have read their messages, and you do not see when they read yours. Referral requests never show it.</p>';
   }
   function appendMsg(m, ch) {
     var el = msgsEl();
@@ -3003,6 +3060,8 @@
   function loadSummary() {
     return api('GET', '/api/chat/summary').then(function (s) {
       chat.summary = { rooms: Array.isArray(s.rooms) ? s.rooms : [], dms: Array.isArray(s.dms) ? s.dms : [] };
+      chat.receipts = isObj(s.receipts) ? s.receipts : null;
+      showReceiptCard();
       if (chat.seedSeen) { // first visit on this device: count what is already there as read
         chat.seedSeen = false;
         chat.summary.rooms.forEach(function (r) { markSeen('room:' + r.slug, r.lastId); });
@@ -3021,6 +3080,7 @@
       chat.more[ch] = !!j.more;
       delete chat.errors[ch];
       if (j.peer) chat.peers[ch] = { username: j.peer.username, name: j.peer.name, blockedByMe: !!j.blockedByMe };
+      if (isDm(ch) && !older) chat.read[ch] = Number(j.seen) || 0;
     }, function (e) {
       if (e.status === 404 || e.status === 400) { chat.errors[ch] = e.message; return; }
       throw e;
@@ -3029,7 +3089,7 @@
 
   function openChannel(ch) {
     var ready = chat.msgs[ch] && !chat.errors[ch];
-    if (ready) { markLatest(ch); refreshChatList(); updateBadge(); }
+    if (ready) { markLatest(ch); refreshChatList(); updateBadge(); paintSeen(ch); tellRead(ch); }
     if (ready && chat.es) return; // the live stream keeps an open channel's cache current
     loadChannel(ch).then(function () {
       renderPane(ch);
@@ -3060,10 +3120,14 @@
       bumpSummary(ch, m, ev.peer);
       if ((open && document.visibilityState === 'visible') || m.username === me.username) markSeen(ch, m.id);
       refreshChatList(); updateBadge();
+      if (open) { paintSeen(ch); tellRead(ch); }
+    } else if (ev.type === 'seen') {
+      chat.read[ch] = Number(ev.id) || 0;
+      paintSeen(ch);
     } else if (ev.type === 'del') {
       var id = Number(ev.id);
       if (chat.msgs[ch]) chat.msgs[ch] = chat.msgs[ch].filter(function (x) { return x.id !== id; });
-      if (open) { var el = document.querySelector('#msgs .msg[data-id="' + id + '"]'); if (el) el.remove(); }
+      if (open) { var el = document.querySelector('#msgs .msg[data-id="' + id + '"]'); if (el) el.remove(); paintSeen(ch); }
     }
   }
 
@@ -3079,6 +3143,7 @@
       try { ev = JSON.parse(e.data); } catch (err) { return; /* ignore a bad event */ }
       if (ev && ev.type === 'jobs-updated') return loadAlerts();
       if (ev && ev.type === 'buddy') return onBuddyEvent(ev);
+      if (ev && ev.type === 'receipts') return applyReceipts({ asked: !!ev.asked, on: !!ev.on }); // changed on another device
       if (ev && ev.type === 'reports') {
         setReports(ev.open);
         if (currentView() === 'admin') loadAdmin();
@@ -4475,9 +4540,10 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible' || !isChatView()) return;
     var ch = activeChannel();
-    if (ch) { markLatest(ch); refreshChatList(); updateBadge(); }
+    if (ch) { markLatest(ch); refreshChatList(); updateBadge(); tellRead(ch); }
   });
   document.addEventListener('change', function (e) {
+    if (e.target.id === 'receiptbox') { setReceipts(e.target.checked); return; }
     if (e.target.dataset && e.target.dataset.push && pushState.info) {
       var box = e.target, prefs = Object.assign({}, pushState.info.prefs);
       prefs[box.dataset.push] = box.checked;

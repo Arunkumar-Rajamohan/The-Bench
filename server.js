@@ -214,6 +214,9 @@ const SCHEMA = [
     fails INTEGER NOT NULL DEFAULT 0
   )`,
   'CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)',
+  // Read receipts. No row in receipts = not asked yet, which counts as off. dm_reads: how far a member has read a private chat.
+  'CREATE TABLE IF NOT EXISTS receipts (user_id INTEGER PRIMARY KEY, is_on INTEGER NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS dm_reads (user_id INTEGER NOT NULL, key TEXT NOT NULL, last_id INTEGER NOT NULL, PRIMARY KEY (user_id, key))',
   'CREATE TABLE IF NOT EXISTS push_prefs (user_id INTEGER PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS push_sent (user_id INTEGER NOT NULL, key TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (user_id, key))',
   `CREATE TABLE IF NOT EXISTS reports (
@@ -281,7 +284,8 @@ if (TURSO_URL) {
 const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN recovery TEXT',
   'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE users ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0' // goes up by one with every save of data
+  'ALTER TABLE users ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0', // goes up by one with every save of data
+  'ALTER TABLE messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0' // 1 = never shows "Seen" (referral requests)
 ];
 
 async function initDb() {
@@ -331,6 +335,15 @@ const q = {
       AND m.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
     ORDER BY m.id DESC LIMIT 50`),
   addMsg: stmt('INSERT INTO messages (channel, user_id, text, created) VALUES (?, ?, ?, ?)'),
+  addDmMsg: stmt('INSERT INTO messages (channel, user_id, text, created, quiet) VALUES (?, ?, ?, ?, ?)'),
+  receipts: stmt('SELECT is_on FROM receipts WHERE user_id = ?'),
+  saveReceipts: stmt('INSERT INTO receipts (user_id, is_on) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET is_on = excluded.is_on'),
+  dmRead: stmt('SELECT last_id FROM dm_reads WHERE user_id = ? AND key = ?'),
+  saveDmRead: stmt(`INSERT INTO dm_reads (user_id, key, last_id) VALUES (?, ?, ?)
+    ON CONFLICT (user_id, key) DO UPDATE SET last_id = excluded.last_id WHERE excluded.last_id > dm_reads.last_id`),
+  dropDmReads: stmt('DELETE FROM dm_reads WHERE user_id = ?'),
+  newestSeen: stmt('SELECT MAX(id) AS id FROM messages WHERE channel = ? AND user_id = ? AND deleted = 0 AND quiet = 0 AND id > ? AND id <= ?'),
+  newestMsg: stmt('SELECT MAX(id) AS id FROM messages'),
   msg: stmt('SELECT id, channel, user_id, deleted FROM messages WHERE id = ?'),
   // Keep the text of a message someone reported, so a moderator can still review it after the author deletes it.
   delMsg: stmt(`UPDATE messages SET deleted = 1,
@@ -664,6 +677,46 @@ setInterval(() => {
   for (const set of streams.values()) for (const r of set) r.write(': ping\n\n');
 }, 25000).unref();
 
+// ---------- read receipts (private chats) ----------
+// Both people must have said yes. Referral requests are "quiet": they never show Seen, so helpers are not pressured.
+let receiptsFrom = 0; // messages up to this one are from before receipts existed
+async function loadReceiptsStart() {
+  if (!(await q.setting.get('receipts_from'))) await q.addSetting.run('receipts_from', String((await q.newestMsg.get()).id || 0));
+  receiptsFrom = Number((await q.setting.get('receipts_from')).value) || 0;
+}
+async function receiptsOf(userId) {
+  const row = await q.receipts.get(userId);
+  return { asked: !!row, on: !!row && !!row.is_on };
+}
+// The newest message of `mine` that `reader` has read and that `mine` may know about; 0 if none.
+async function seenBy(mine, reader) {
+  const key = dmKey(mine, reader), read = await q.dmRead.get(reader, key);
+  if (!read || !(await receiptsOf(mine)).on || !(await receiptsOf(reader)).on) return 0;
+  if ((await q.isBlocked.get(mine, reader)) || (await q.isBlocked.get(reader, mine))) return 0;
+  return (await q.newestSeen.get('dm:' + key, mine, receiptsFrom, read.last_id)).id || 0;
+}
+function pushSeen(toId, readerName, id) { push(toId, { type: 'seen', channel: 'dm:' + readerName, id }); }
+async function markRead(user, peer, id) {
+  if (!(await receiptsOf(user.id)).on) return;
+  const key = dmKey(user.id, peer.id), dm = await q.dm.get(key);
+  if (!dm) return;
+  const before = await seenBy(peer.id, user.id);
+  await q.saveDmRead.run(user.id, key, Math.min(id, dm.last_id));
+  const now = await seenBy(peer.id, user.id);
+  if (now > before) pushSeen(peer.id, user.username, now);
+}
+async function setReceipts(user, on) {
+  await q.saveReceipts.run(user.id, on ? 1 : 0);
+  if (!on) {
+    await q.dropDmReads.run(user.id); // forget it, not just hide it
+    for (const d of await q.dmKeysOf.all(user.id, user.id)) {
+      const other = d.key.split(':').map(Number).find((x) => x !== user.id);
+      pushSeen(other, user.username, 0);
+    }
+  }
+  push(user.id, { type: 'receipts', channel: 'receipts', asked: true, on });
+}
+
 // ---------- phone notifications ----------
 // What is sent never includes message text, job titles or company names: it may appear on a lock screen.
 const PUSH_KINDS = ['dm', 'buddy', 'due', 'interview', 'mod'];
@@ -843,6 +896,7 @@ const EXPORTS = [
   ['jobAlerts', 'SELECT what, place, remote, field, created FROM job_alerts WHERE user_id = ?', 1],
   ['buddySettings', 'SELECT seeking, goal, updated FROM buddy_prefs WHERE user_id = ?', 1],
   ['buddyRequestsSent', 'SELECT note, status, created FROM buddy_requests WHERE from_id = ?', 1],
+  ['readReceiptSetting', 'SELECT is_on FROM receipts WHERE user_id = ?', 1],
   ['notificationSettings', 'SELECT data FROM push_prefs WHERE user_id = ?', 1],
   ['notificationDevices', 'SELECT created FROM push_subs WHERE user_id = ?', 1],
   ['checkins', 'SELECT day, plan, done, updated FROM checkins WHERE user_id = ?', 1],
@@ -859,7 +913,10 @@ async function deleteAccount(u) {
   const pair = await q.activePair.get(id, id);
   if (pair) await endPairBetween(id, buddyPeer(pair, id));
   const gone = await q.recentMsgsOf.all(id);
-  for (const d of await q.dmKeysOf.all(id, id)) await exec(BLANK_MSG + 'WHERE channel = ?', ['dm:' + d.key]);
+  for (const d of await q.dmKeysOf.all(id, id)) {
+    await exec(BLANK_MSG + 'WHERE channel = ?', ['dm:' + d.key]);
+    await exec('DELETE FROM dm_reads WHERE key = ?', [d.key]);
+  }
   await exec(BLANK_MSG + 'WHERE user_id = ?', [id]);
   await exec('DELETE FROM msg_reacts WHERE user_id = ?', [id]);
   await exec('DELETE FROM dms WHERE a = ? OR b = ?', [id, id]);
@@ -879,7 +936,7 @@ async function deleteAccount(u) {
   await exec('DELETE FROM checkins WHERE user_id = ?', [id]);
   await exec('DELETE FROM puzzle_plays WHERE user_id = ?', [id]);
   await exec('DELETE FROM profiles WHERE user_id = ?', [id]);
-  for (const t of ['push_subs', 'push_prefs', 'push_sent']) await exec('DELETE FROM ' + t + ' WHERE user_id = ?', [id]);
+  for (const t of ['push_subs', 'push_prefs', 'push_sent', 'receipts', 'dm_reads']) await exec('DELETE FROM ' + t + ' WHERE user_id = ?', [id]);
   trackerDates.delete(id);
   await q.emptyUser.run('~' + id, crypto.randomBytes(64).toString('hex'), crypto.randomBytes(16).toString('hex'), id);
   await q.dropUserSessions.run(id);
@@ -1555,7 +1612,7 @@ async function referralApi(req, res, route, user) {
       const url = b.url ? leadUrl(b.url) : '';
       const message = text(b.message, 700, 'Message');
       const body = 'Referral request for ' + offer.company + ': ' + role + (url ? '\n' + url : '') + '\n\n' + message + '\n\n(Sent from the Referral board)';
-      await sendDm(user, peer, body);
+      await sendDm(user, peer, body, true);
       await q.saveRefAsk.run(offer.id, user.id, Date.now());
       send(res, 201, { ok: true, username: peer.username });
       return true;
@@ -1912,7 +1969,7 @@ async function removeMessage(m) {
 }
 
 // Send a private message (checks blocks and the new-conversations limit). Used by chat and by referral requests.
-async function sendDm(user, peer, body) {
+async function sendDm(user, peer, body, quiet) {
   const key = dmKey(user.id, peer.id);
   if (await q.isBlocked.get(user.id, peer.id)) throw new HttpError(403, 'You blocked this person. Unblock them to send a message.');
   if (await q.isBlocked.get(peer.id, user.id)) throw new HttpError(403, 'You cannot message this person.');
@@ -1924,7 +1981,7 @@ async function sendDm(user, peer, body) {
     await q.addDm.run(key, Math.min(user.id, peer.id), Math.max(user.id, peer.id), user.id, Date.now());
   }
   const now = Date.now();
-  const info = await q.addMsg.run('dm:' + key, user.id, body, now);
+  const info = await q.addDmMsg.run('dm:' + key, user.id, body, now, quiet ? 1 : 0);
   await q.touchDm.run(info.lastId, key);
   const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
   push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
@@ -1957,7 +2014,7 @@ async function chatApi(req, res, route, user) {
     const dms = (await q.myDms.all(user.id, user.id, user.id)).map((d) => ({
       username: d.username, name: d.name, lastId: d.last_id, lastText: d.last_text || '', lastFromMe: d.last_from === user.id
     }));
-    send(res, 200, { rooms: ROOMS.map((r) => ({ slug: r.slug, desc: r.desc, lastId: last['room:' + r.slug] || 0 })), dms });
+    send(res, 200, { rooms: ROOMS.map((r) => ({ slug: r.slug, desc: r.desc, lastId: last['room:' + r.slug] || 0 })), dms, receipts: await receiptsOf(user.id) });
     return true;
   }
 
@@ -1984,6 +2041,23 @@ async function chatApi(req, res, route, user) {
     }
   }
 
+  if (method === 'PUT' && route === '/chat/receipts') {
+    limit('receipts:' + user.id, 20, 10 * 60000);
+    const b = await readBody(req);
+    if (typeof b.on !== 'boolean') throw new HttpError(400, 'Say on or off.');
+    await setReceipts(user, b.on);
+    send(res, 200, { receipts: { asked: true, on: b.on } });
+    return true;
+  }
+  if (method === 'POST' && (m = /^\/chat\/dm\/([a-z0-9_]{3,20})\/read$/.exec(route))) {
+    limit('read:' + user.id, 240, 60000);
+    const b = await readBody(req), peer = await peerByName(m[1], user);
+    if (!Number.isSafeInteger(b.id) || b.id < 1) throw new HttpError(400, 'Which message?');
+    await markRead(user, peer, b.id);
+    send(res, 200, { ok: true });
+    return true;
+  }
+
   if ((m = /^\/chat\/dm\/([a-z0-9_]{3,20})$/.exec(route))) {
     const peer = await peerByName(m[1], user);
     const key = dmKey(user.id, peer.id);
@@ -1993,7 +2067,8 @@ async function chatApi(req, res, route, user) {
       send(res, 200, {
         messages: rows.reverse().map(wire), more: rows.length === 50,
         peer: { username: peer.username, name: peer.name },
-        blockedByMe: !!(await q.isBlocked.get(user.id, peer.id))
+        blockedByMe: !!(await q.isBlocked.get(user.id, peer.id)),
+        seen: await seenBy(user.id, peer.id)
       });
       return true;
     }
@@ -2034,7 +2109,7 @@ async function chatApi(req, res, route, user) {
   }
   if ((m = /^\/blocks\/([a-z0-9_]{3,20})$/.exec(route)) && (method === 'POST' || method === 'DELETE')) {
     const peer = await peerByName(m[1], user);
-    if (method === 'POST') { await q.addBlock.run(user.id, peer.id, Date.now()); await endPairBetween(user.id, peer.id); }
+    if (method === 'POST') { await q.addBlock.run(user.id, peer.id, Date.now()); await endPairBetween(user.id, peer.id); pushSeen(peer.id, user.username, 0); pushSeen(user.id, peer.username, 0); }
     else await q.delBlock.run(user.id, peer.id);
     send(res, 200, { ok: true });
     return true;
@@ -2421,7 +2496,7 @@ function startKeepAwake() {
     (hours === 'all' ? ', all day' : ' between ' + hours.replace('-', ':00 and ') + ':00 India time'));
 }
 
-initDb().then(loadSiteKey).then(() => {
+initDb().then(loadSiteKey).then(loadReceiptsStart).then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
     ensureJobs(); // warm the job listings so the first visitor does not wait

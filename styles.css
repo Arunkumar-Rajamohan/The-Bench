@@ -1104,3 +1104,12 @@ main.enter > *:nth-child(3) { animation-delay: .08s; }
 .push-list label { gap: 8px; align-items: flex-start; font-weight: 400; flex-wrap: nowrap; }
 .push-list input { flex: none; margin-top: 4px; }
 #pushcard h2 .ico { width: 18px; height: 18px; color: var(--accent); vertical-align: -3px; }
+
+/* Read receipts */
+.seen-mark { display: flex; align-items: center; gap: 4px; margin: -2px 0 4px; font-size: .74rem; color: var(--muted); }
+.seen-mark .ico { width: 12px; height: 12px; color: var(--good); }
+.receipt-note { margin: 10px 20px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sunk); display: grid; gap: 10px; font-size: .86rem; }
+.receipt-note p { margin: 0; }
+.receipt-switch { gap: 8px; flex-wrap: nowrap; }
+.receipt-switch input { flex: none; }
+@media (max-width: 860px) { .receipt-note { margin: 8px 10px 0; } }

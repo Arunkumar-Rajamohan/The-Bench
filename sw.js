@@ -3,7 +3,7 @@
    Fonts and icons: cache first (they never change). API calls and the live stream are never cached. */
 'use strict';
 
-const CACHE = 'bench-shell-v13';
+const CACHE = 'bench-shell-v14';
 const SHELL = [
   '/', '/styles.css', '/app.js', '/favicon.svg', '/manifest.webmanifest',
   '/fonts/inter.woff2', '/fonts/fraunces.woff2', '/fonts/fraunces-italic.woff2',
@@ -50,4 +50,31 @@ self.addEventListener('fetch', (e) => {
     }).catch(() => caches.match(req.mode === 'navigate' ? '/' : req).then((hit) =>
       hit || (req.mode === 'navigate' ? new Response(OFFLINE_PAGE, { headers: { 'Content-Type': 'text/html; charset=utf-8' } }) : Response.error())))
   );
+});
+
+// ---------- notifications ----------
+self.addEventListener('push', (e) => {
+  let m = {};
+  try { m = e.data.json(); } catch (x) { /* show something anyway: Safari withdraws permission if nothing appears */ }
+  const url = typeof m.url === 'string' && m.url.startsWith('/#/') ? m.url : '/#/home';
+  const safari = /AppleWebKit/.test(self.navigator.userAgent) && !/Chrome|Chromium|Edg/.test(self.navigator.userAgent);
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((all) => {
+    // Already looking at The Bench: the page shows it itself.
+    if (!safari && m.tag !== 'test' && all.some((c) => c.visibilityState === 'visible' && c.focused)) return undefined;
+    return self.registration.showNotification(String(m.title || 'The Bench'), {
+      body: String(m.body || 'Something new is waiting for you.'), tag: String(m.tag || 'bench'), renotify: true,
+      icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', data: { url }
+    });
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/#/home';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((all) => {
+    const c = all.find((x) => new URL(x.url).origin === self.location.origin);
+    if (!c) return self.clients.openWindow(url);
+    c.postMessage({ type: 'open', url });
+    return c.focus ? c.focus() : undefined;
+  }));
 });

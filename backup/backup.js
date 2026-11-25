@@ -19,8 +19,8 @@ const CONFIG = path.join(HOME, '.the-bench-backup.json');
 const FOLDER = path.join(HOME, 'TheBenchBackups');
 const KEEP_DAYS = 90;
 const MAGIC = Buffer.from('BENCHBK1');
-// Never copied: log-in sessions. After a restore everyone simply logs in again.
-const SKIP_ROWS = new Set(['sessions']);
+// Never copied: log-in sessions and notification devices. After a restore everyone simply logs in again.
+const SKIP_ROWS = new Set(['sessions', 'push_subs']);
 
 class Stop extends Error {} // a problem to explain plainly, without a stack trace
 const say = (...a) => console.log(...a);

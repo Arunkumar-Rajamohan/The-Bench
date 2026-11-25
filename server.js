@@ -202,6 +202,20 @@ const SCHEMA = [
     updated INTEGER NOT NULL,
     PRIMARY KEY (user_id, day)
   )`,
+  // Phone notifications. A device only gets them while the log-in it was turned on from is still valid.
+  'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+  `CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    session TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    fails INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id)',
+  'CREATE TABLE IF NOT EXISTS push_prefs (user_id INTEGER PRIMARY KEY, data TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS push_sent (user_id INTEGER NOT NULL, key TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (user_id, key))',
   `CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY,
     message_id INTEGER NOT NULL,
@@ -343,6 +357,22 @@ const q = {
       au.username AS author, au.name AS author_name, au.banned AS author_banned, ru.username AS reporter
     FROM reports r JOIN messages m ON m.id = r.message_id JOIN users au ON au.id = m.user_id JOIN users ru ON ru.id = r.reporter_id
     WHERE r.resolved = 0 ORDER BY r.id LIMIT 100`),
+  setting: stmt('SELECT value FROM settings WHERE key = ?'),
+  addSetting: stmt('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'),
+  pushSubs: stmt(`SELECT p.* FROM push_subs p JOIN sessions s ON s.token_hash = p.session AND s.user_id = p.user_id AND s.expires > ?
+    JOIN users u ON u.id = p.user_id AND u.banned = 0 WHERE p.user_id = ? ORDER BY p.created`),
+  pushPeople: stmt(`SELECT DISTINCT u.id, u.data_rev FROM push_subs p JOIN sessions s ON s.token_hash = p.session AND s.user_id = p.user_id AND s.expires > ?
+    JOIN users u ON u.id = p.user_id AND u.banned = 0`),
+  savePushSub: stmt(`INSERT INTO push_subs (endpoint, user_id, p256dh, auth, session, created) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, session = excluded.session, fails = 0`),
+  delPushSub: stmt('DELETE FROM push_subs WHERE endpoint = ?'),
+  delMyPushSub: stmt('DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?'),
+  failPushSub: stmt('UPDATE push_subs SET fails = fails + 1 WHERE endpoint = ?'),
+  okPushSub: stmt('UPDATE push_subs SET fails = 0 WHERE endpoint = ? AND fails > 0'),
+  pushPrefs: stmt('SELECT data FROM push_prefs WHERE user_id = ?'),
+  savePushPrefs: stmt('INSERT INTO push_prefs (user_id, data) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET data = excluded.data'),
+  claimSent: stmt('INSERT OR IGNORE INTO push_sent (user_id, key, created) VALUES (?, ?, ?)'),
+  unclaimSent: stmt('DELETE FROM push_sent WHERE user_id = ? AND key = ?'),
   openReportCount: stmt('SELECT COUNT(*) AS n FROM reports r JOIN messages m ON m.id = r.message_id WHERE r.resolved = 0'),
   report: stmt('SELECT * FROM reports WHERE id = ?'),
   resolveReport: stmt('UPDATE reports SET resolved = 1 WHERE id = ?'),
@@ -634,6 +664,172 @@ setInterval(() => {
   for (const set of streams.values()) for (const r of set) r.write(': ping\n\n');
 }, 25000).unref();
 
+// ---------- phone notifications ----------
+// What is sent never includes message text, job titles or company names: it may appear on a lock screen.
+const PUSH_KINDS = ['dm', 'buddy', 'due', 'interview', 'mod'];
+const PUSH_DEVICES = 6;
+const BUDDY_PUSH = {
+  request: 'would like to be your accountability buddy.', accepted: 'said yes. You are buddies now.', checkin: 'checked in for today.',
+  done: 'finished today\'s plan.', cheer: 'cheered you on.', nudge: 'is nudging you to check in.'
+};
+// Tests only: send to a stand-in push service, with a pretend clock. Never set on the live site.
+const PUSH_TEST_ORIGIN = process.env.PUSH_TEST_ORIGIN || '';
+const pushNow = () => (PUSH_TEST_ORIGIN && process.env.PUSH_TEST_CLOCK ? Number(fs.readFileSync(process.env.PUSH_TEST_CLOCK, 'utf8')) : Date.now());
+const pushContact = /^https:\/\//.test(process.env.RENDER_EXTERNAL_URL || '') ? process.env.RENDER_EXTERNAL_URL : 'https://the-bench-xcss.onrender.com';
+let siteKey = null;
+
+// Made once, the first time the server starts, and kept in the database.
+async function loadSiteKey() {
+  if (!(await q.setting.get('push_key'))) await q.addSetting.run('push_key', JSON.stringify(webpush.newSiteKey()));
+  siteKey = JSON.parse((await q.setting.get('push_key')).value);
+}
+const lately = new Map();
+function once(key, ms) { // true the first time, then false until ms have passed
+  const now = Date.now();
+  if (lately.get(key) > now) return false;
+  if (lately.size > 5000) for (const [k, until] of lately) if (until < now) lately.delete(k);
+  lately.set(key, now + ms);
+  return true;
+}
+async function claim(userId, key) { return (await q.claimSent.run(userId, key, Date.now())).changes > 0; }
+function cleanPrefs(raw, admin) {
+  const out = {};
+  for (const k of PUSH_KINDS) if (k !== 'mod' || admin) out[k] = !(raw && raw[k] === false);
+  return out;
+}
+async function prefsForPush(userId) {
+  const row = await q.pushPrefs.get(userId);
+  return cleanPrefs(row ? parseData(row.data) : null, true);
+}
+async function deliver(sub, msg) {
+  if (!webpush.goodEndpoint(sub.endpoint, PUSH_TEST_ORIGIN)) { await q.delPushSub.run(sub.endpoint); return 'gone'; }
+  let status = 0;
+  try {
+    const res = await fetch(sub.endpoint, {
+      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
+      headers: {
+        Authorization: webpush.authorization(sub.endpoint, siteKey, pushContact), 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream',
+        TTL: String(msg.ttl || 3600), Urgency: msg.urgent ? 'high' : 'normal', Topic: sha(msg.tag).slice(0, 30)
+      },
+      body: webpush.encrypt(JSON.stringify({ title: msg.title, body: msg.body, url: msg.url, tag: msg.tag }), sub.p256dh, sub.auth)
+    });
+    status = res.status;
+    if (res.body) res.body.cancel().catch(() => {});
+  } catch (e) { /* could not reach the push service */ }
+  if (status >= 200 && status < 300) { await q.okPushSub.run(sub.endpoint); return 'sent'; }
+  if (status === 404 || status === 410) { await q.delPushSub.run(sub.endpoint); return 'gone'; } // turned off in the browser
+  if (status !== 429 && status < 500 && status) console.error('Push service said HTTP ' + status);
+  if (sub.fails >= 9) await q.delPushSub.run(sub.endpoint); else await q.failPushSub.run(sub.endpoint);
+  return 'failed';
+}
+// Never throws and never holds anything up. Resolves to how it went.
+async function notify(userId, kind, msg) {
+  const out = { sent: 0, failed: 0, gone: 0 };
+  try {
+    if (!siteKey) return out;
+    const subs = await q.pushSubs.all(Date.now(), userId);
+    if (!subs.length || (kind && !(await prefsForPush(userId))[kind])) return out;
+    msg = Object.assign({}, msg, { title: String(msg.title).slice(0, 60), body: String(msg.body).slice(0, 160) });
+    for (const how of await Promise.all(subs.map((s) => deliver(s, msg)))) out[how]++;
+  } catch (e) { console.error('Notification failed: ' + e.message); }
+  return out;
+}
+
+// Every few minutes: anyone with an interview or follow-up coming due?
+const trackerDates = new Map(); // user id -> { rev, items }, so unchanged trackers are not read again
+let pushTicking = false;
+async function pushTick() {
+  if (pushTicking || !siteKey) return;
+  pushTicking = true;
+  try {
+    const people = await q.pushPeople.all(Date.now());
+    for (const id of trackerDates.keys()) if (!people.some((p) => p.id === id)) trackerDates.delete(id);
+    for (const p of people) {
+      const prefs = await prefsForPush(p.id);
+      if (!prefs.due && !prefs.interview) continue;
+      let known = trackerDates.get(p.id);
+      if (!known || known.rev !== p.data_rev) {
+        const row = await q.dataOf.get(p.id);
+        known = { rev: row.data_rev, items: webpush.datesOf(parseData(row.data)) };
+        trackerDates.set(p.id, known);
+      }
+      for (const d of webpush.dueNow(known.items, pushNow(), prefs)) {
+        const mine = [];
+        let text = d.text;
+        if (d.digest) {
+          const fresh = [];
+          for (const x of d.digest) if (await claim(p.id, x.key)) { fresh.push(x); mine.push(x.key); }
+          if (!fresh.length) continue;
+          text = webpush.digestText(fresh);
+        } else {
+          if (!(await claim(p.id, d.keys[0]))) continue;
+          mine.push(d.keys[0]);
+          for (const k of d.keys.slice(1)) if (await claim(p.id, k)) mine.push(k);
+        }
+        const how = await notify(p.id, d.urgent ? 'interview' : null, { title: 'The Bench', body: text, url: '/#/tracker', tag: d.tag, ttl: d.urgent ? 3600 : 21600, urgent: d.urgent });
+        if (!how.sent && how.failed) for (const k of mine) await q.unclaimSent.run(p.id, k); // try again next time
+      }
+    }
+    if (once('push-tidy', 6 * 3600000)) {
+      await exec('DELETE FROM push_sent WHERE created < ?', [Date.now() - 14 * 864e5]);
+      await exec('DELETE FROM push_subs WHERE session NOT IN (SELECT token_hash FROM sessions WHERE expires > ?)', [Date.now()]);
+    }
+  } catch (e) { console.error('Reminder check failed: ' + e.message); }
+  pushTicking = false;
+}
+function startPushTimer() {
+  const every = PUSH_TEST_ORIGIN && process.env.PUSH_TICK_MS ? Number(process.env.PUSH_TICK_MS) : 5 * 60000;
+  setInterval(pushTick, every).unref();
+  setTimeout(pushTick, Math.min(every, 30000)).unref();
+}
+
+async function pushApi(req, res, route, user) {
+  const method = req.method;
+  if (!/^\/push(\/|$)/.test(route)) return false;
+  const admin = isAdmin(user);
+
+  if (method === 'GET' && route === '/push') {
+    const row = await q.pushPrefs.get(user.id);
+    send(res, 200, { key: siteKey ? siteKey.pub : '', prefs: cleanPrefs(row ? parseData(row.data) : null, admin), devices: (await q.pushSubs.all(Date.now(), user.id)).length });
+    return true;
+  }
+  if (method === 'POST' && route === '/push/on') {
+    limit('push:' + user.id, 60, 10 * 60000);
+    const b = await readBody(req), keys = b.keys || {};
+    if (!webpush.goodEndpoint(b.endpoint, PUSH_TEST_ORIGIN)) throw new HttpError(400, 'This browser\'s notification service is not supported.');
+    if (!webpush.goodKeys(keys.p256dh, keys.auth)) throw new HttpError(400, 'Those notification keys are not valid.');
+    await q.savePushSub.run(b.endpoint, user.id, keys.p256dh, keys.auth, sha(tokenOf(req)), Date.now());
+    const mine = await q.pushSubs.all(Date.now(), user.id);
+    for (const old of mine.slice(0, Math.max(0, mine.length - PUSH_DEVICES))) if (old.endpoint !== b.endpoint) await q.delPushSub.run(old.endpoint);
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (method === 'POST' && route === '/push/off') {
+    const b = await readBody(req);
+    await q.delMyPushSub.run(String(b.endpoint || ''), user.id);
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (method === 'PUT' && route === '/push/prefs') {
+    limit('push:' + user.id, 60, 10 * 60000);
+    const prefs = cleanPrefs(await readBody(req), admin);
+    await q.savePushPrefs.run(user.id, JSON.stringify(prefs));
+    send(res, 200, { prefs });
+    return true;
+  }
+  if (method === 'POST' && route === '/push/test') {
+    limit('pushtest:' + user.id, 6, 10 * 60000);
+    const b = await readBody(req);
+    const sub = (await q.pushSubs.all(Date.now(), user.id)).find((s) => s.endpoint === b.endpoint);
+    if (!sub) throw new HttpError(404, 'Notifications are not on for this device. Turn them on first.');
+    const how = await deliver(sub, { title: 'The Bench', body: 'Notifications are working on this device.', url: '/#/account', tag: 'test', ttl: 300, urgent: true });
+    if (how !== 'sent') throw new HttpError(502, how === 'gone' ? 'This device is no longer registered. Turn notifications off and on again.' : 'The notification service did not accept it. Try again in a minute.');
+    send(res, 200, { ok: true });
+    return true;
+  }
+  return false;
+}
+
 // ---------- deleting an account ----------
 // [name in the file, query, how many times the member's id appears]
 const EXPORTS = [
@@ -647,6 +843,8 @@ const EXPORTS = [
   ['jobAlerts', 'SELECT what, place, remote, field, created FROM job_alerts WHERE user_id = ?', 1],
   ['buddySettings', 'SELECT seeking, goal, updated FROM buddy_prefs WHERE user_id = ?', 1],
   ['buddyRequestsSent', 'SELECT note, status, created FROM buddy_requests WHERE from_id = ?', 1],
+  ['notificationSettings', 'SELECT data FROM push_prefs WHERE user_id = ?', 1],
+  ['notificationDevices', 'SELECT created FROM push_subs WHERE user_id = ?', 1],
   ['checkins', 'SELECT day, plan, done, updated FROM checkins WHERE user_id = ?', 1],
   ['puzzles', 'SELECT day, guesses, solved, tries FROM puzzle_plays WHERE user_id = ?', 1],
   ['blocked', 'SELECT u.username FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ?', 1]
@@ -681,6 +879,8 @@ async function deleteAccount(u) {
   await exec('DELETE FROM checkins WHERE user_id = ?', [id]);
   await exec('DELETE FROM puzzle_plays WHERE user_id = ?', [id]);
   await exec('DELETE FROM profiles WHERE user_id = ?', [id]);
+  for (const t of ['push_subs', 'push_prefs', 'push_sent']) await exec('DELETE FROM ' + t + ' WHERE user_id = ?', [id]);
+  trackerDates.delete(id);
   await q.emptyUser.run('~' + id, crypto.randomBytes(64).toString('hex'), crypto.randomBytes(16).toString('hex'), id);
   await q.dropUserSessions.run(id);
   closeStreams(id);
@@ -902,6 +1102,7 @@ async function api(req, res, route) {
   if (await jobsApi(req, res, route, user)) return;
   if (await referralApi(req, res, route, user)) return;
   if (await buddyApi(req, res, route, user)) return;
+  if (await pushApi(req, res, route, user)) return;
   throw new HttpError(404, 'Not found.');
 }
 
@@ -925,6 +1126,7 @@ function plainText(s) {
 // Refreshed every 3 hours, filtered to roles in India, searched in memory. No keys, no middlemen.
 
 const EMPLOYERS = require('./employers');
+const webpush = require('./push.js');
 const JOBS_REFRESH = (Number(process.env.JOBS_REFRESH_MINUTES) || 180) * 60000; // default: every 3 hours
 const JOBS_PAGE = 20;
 const FEED_BASE = { // overridable for local testing only
@@ -1264,7 +1466,7 @@ async function jobsApi(req, res, route, user) {
       const snapshot = [lead.title + ' at ' + lead.company, lead.location, lead.note, lead.url].filter(Boolean).join('\n');
       const info = await q.addMsg.run('lead:' + lead.id, lead.user_id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
-      await tellModerators();
+      await tellModerators(true);
       send(res, 201, { ok: true });
       return true;
     }
@@ -1367,7 +1569,7 @@ async function referralApi(req, res, route, user) {
       const snapshot = [(offer.kind === 'refer' ? 'Can refer at ' : 'Knows people at ') + offer.company, offer.roles, offer.note].filter(Boolean).join('\n');
       const info = await q.addMsg.run('ref:' + offer.id, offer.user_id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
-      await tellModerators();
+      await tellModerators(true);
       send(res, 201, { ok: true });
       return true;
     }
@@ -1505,7 +1707,7 @@ async function profileApi(req, res, route, user) {
         p.skills.length && 'Skills: ' + p.skills.join(', '), p.link].filter(Boolean).join('\n');
       const info = await q.addMsg.run('profile:' + u.id, u.id, snapshot, Date.now());
       await q.addReport.run(info.lastId, user.id, reason, Date.now());
-      await tellModerators();
+      await tellModerators(true);
       send(res, 201, { ok: true });
       return true;
     }
@@ -1726,17 +1928,19 @@ async function sendDm(user, peer, body) {
   await q.touchDm.run(info.lastId, key);
   const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
   push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
+  if (once('dm:' + user.id + ':' + peer.id, 60000)) notify(peer.id, 'dm', { title: user.name, body: 'Sent you a private message.', url: '/#/dm/' + user.username, tag: 'dm-' + user.username, ttl: 86400, urgent: true });
   push(user.id, { type: 'msg', channel: 'dm:' + peer.username, msg, peer: { username: peer.username, name: peer.name } });
   return msg;
 }
 
 // Keep every moderator's badge current. A problem here must never get in the way of reporting something.
-async function tellModerators() {
+async function tellModerators(isNew) {
   try {
     const open = (await q.openReportCount.get()).n;
     for (const name of ADMINS) {
       const u = await q.userByName.get(name);
       if (u) push(u.id, { type: 'reports', channel: 'reports', open });
+      if (u && isNew && once('mod:' + u.id, 10 * 60000)) notify(u.id, 'mod', { title: 'New report', body: 'A member reported something.', url: '/#/admin', tag: 'mod', ttl: 86400 });
     }
   } catch (e) { console.error('Could not tell moderators: ' + e.message); }
 }
@@ -1818,7 +2022,7 @@ async function chatApi(req, res, route, user) {
       const b = await readBody(req);
       const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
       await q.addReport.run(msg.id, user.id, reason, Date.now());
-      await tellModerators();
+      await tellModerators(true);
       send(res, 201, { ok: true });
       return true;
     }
@@ -1914,7 +2118,14 @@ async function prefsOf(userId) {
   return { seeking: !!(p && p.seeking), goal: (p && p.goal) || '' };
 }
 function buddyPeer(pair, userId) { return pair.a === userId ? pair.b : pair.a; }
-function pushBuddy(userId, kind, from) { push(userId, { type: 'buddy', channel: 'buddy', kind, from }); }
+function pushBuddy(userId, kind, from) {
+  push(userId, { type: 'buddy', channel: 'buddy', kind, from });
+  const text = BUDDY_PUSH[kind];
+  if (!text) return;
+  // The same thing from the same person at most once a day, however often it happens.
+  claim(userId, 'b:' + kind + ':' + from + ':' + dayKey()).then((first) => first && notify(userId, 'buddy', { title: 'Your buddy', body: from + ' ' + text, url: '/#/buddy', tag: 'buddy-' + kind, ttl: 43200 }))
+    .catch((e) => console.error('Buddy notification failed: ' + e.message));
+}
 
 // The current pairing, or null. A pairing with a banned member is closed on sight.
 async function currentPair(userId) {
@@ -2133,6 +2344,7 @@ const STATIC = {
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], // served from the root so it can look after the whole site
   '/icons/icon-192.png': ['icons/icon-192.png', 'image/png', FOREVER],
   '/icons/icon-512.png': ['icons/icon-512.png', 'image/png', FOREVER],
+  '/icons/badge-96.png': ['icons/badge-96.png', 'image/png', FOREVER], // the small white shape in a phone's status bar
   '/icons/maskable-512.png': ['icons/maskable-512.png', 'image/png', FOREVER],
   '/icons/apple-touch-icon.png': ['icons/apple-touch-icon.png', 'image/png', FOREVER],
   '/fonts/inter.woff2': ['fonts/inter.woff2', 'font/woff2', FOREVER],
@@ -2209,11 +2421,12 @@ function startKeepAwake() {
     (hours === 'all' ? ', all day' : ' between ' + hours.replace('-', ':00 and ') + ':00 India time'));
 }
 
-initDb().then(() => {
+initDb().then(loadSiteKey).then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
     ensureJobs(); // warm the job listings so the first visitor does not wait
     startKeepAwake();
+    startPushTimer();
   });
 }).catch((e) => {
   console.error('Could not start: ' + e.message);

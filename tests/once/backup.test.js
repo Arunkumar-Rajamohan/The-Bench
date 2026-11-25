@@ -88,6 +88,7 @@ const files = () => (fs.existsSync(folder) ? fs.readdirSync(folder).sort() : [])
     await S.call('PUT', '/api/me/data', { resume: SECRET + " it's ₹6,50,000\nline two 日本", moodlog: {} }, a.cookie);
     await S.call('POST', '/api/posts', { text: 'Post with "quotes" and 🙌', tag: 'Win' }, a.cookie);
     await S.call('POST', '/api/chat/dm/beta_two', { text: SECRET + ' dm' }, a.cookie);
+    live.prepare('INSERT INTO push_subs VALUES (?,?,?,?,?,?,?)').run('https://fcm.googleapis.com/x', 1, 'a', 'b', 'c', 1, 0);
     // values a database can hold that text cannot
     live.exec('CREATE TABLE odd ("a b" INTEGER, f REAL, n TEXT, x BLOB)');
     live.prepare('INSERT INTO odd VALUES (?,?,?,?)').run(9007199254740993n, 1.5, null, Buffer.from([0, 255, 10]));
@@ -139,6 +140,7 @@ const files = () => (fs.existsSync(folder) ? fs.readdirSync(folder).sort() : [])
     check('never overwrites a file', r.code === 1 && /already exists/.test(r.out), r);
     const rd = new DatabaseSync(path.join(dir, 'bench.db')), st = rd.prepare('SELECT * FROM odd'); st.setReadBigInts(true); const odd = st.get();
     check('odd values survive exactly', odd['a b'] === 9007199254740993n && odd.f === 1.5 && odd.n === null && Buffer.from(odd.x).equals(Buffer.from([0, 255, 10])), String(odd && odd['a b']));
+    check('notification devices are left out', rd.prepare('SELECT COUNT(*) AS n FROM push_subs').get().n === 0);
     check('log-in sessions are left out', rd.prepare('SELECT COUNT(*) AS n FROM sessions').get().n === 0 && live.prepare('SELECT COUNT(*) AS n FROM sessions').get().n > 0);
     const idx = (d) => d.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name").all().map((x) => x.name).join();
     check('indexes come back', idx(rd) === idx(live) && idx(rd).length > 0, idx(rd));

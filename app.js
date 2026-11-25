@@ -716,6 +716,7 @@
       sec('Where it is kept', [
         'The site runs on Render, and the database is kept by Turso. They are separate companies with their own policies.',
         'We use one cookie to keep you logged in, and your browser’s storage for small settings. Changes that have not reached the server yet are also kept in your browser until they do, or until you log out. There are no ads and no tracking scripts.',
+        'If you turn on notifications, they travel through your browser’s own service (Google, Apple, Mozilla or Microsoft). They are encrypted on the way and never include message text, job titles or company names. For tracker reminders, our server reads the dates in your tracker.',
         'Outside links, such as job posts, courses or Google Calendar, go to other websites. Google gets an interview’s job title, company and time only if you tap its button.'
       ]) +
       sec('Your choices', [
@@ -1405,6 +1406,7 @@
         (me.profileDone || stepsShown() ? '' : '<p class="banner">' + ico('users') + '<span><b>Say who you are.</b> Add the role you want and a line about yourself, so people know who they are chatting with. <a href="#/edit-profile">Set up your profile</a></span></p>') +
         (stepsShown() ? '' : installBanner()) +
         homeDueHtml() +
+        pushBanner() +
         homeBuddyHtml() +
         alertBanner() +
         (stepsShown() ? '' : '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>') +
@@ -1432,6 +1434,7 @@
         '<section class="card stack"><h2>Blocked people</h2><p class="muted small">Blocked people cannot message you, and you do not see their messages in rooms.</p>' +
         '<div id="blocklist"><p class="muted small">Loading…</p></div></section>' +
         (me.isAdmin ? '<section class="card stack"><h2>' + ico('shield') + ' Moderation</h2>' + reportCount() + '<a class="btn" href="#/admin">Open reports</a></section>' : '') +
+        '<section class="card stack" id="pushcard">' + pushCard() + '</section>' +
         '<div id="keptcopies">' + keptHtml() + '</div>' +
         '<section class="card stack"><h2>Your data</h2><p class="small">Download everything stored about you as one file, or read <a href="#/privacy">what we store and who can see it</a>.</p>' +
         '<div><button type="button" class="btn" data-act="export-data">' + ico('download') + 'Download my data</button></div></section>' +
@@ -2006,6 +2009,7 @@
     }
     recoverStash();
     loadReportCount();
+    syncPush();
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     loadAlerts();
     loadBuddy();
@@ -2193,7 +2197,7 @@
     logout: function () {
       flush().then(function () {
         if (dirty() && !window.confirm('Some changes have not been saved yet. Log out anyway and lose them?')) return;
-        return api('POST', '/api/logout').catch(function () {}).then(loggedOut);
+        return dropPush().then(function () { return api('POST', '/api/logout'); }).catch(function () {}).then(loggedOut);
       });
       function loggedOut() {
         var who = me && me.username;
@@ -2291,6 +2295,20 @@
     breathe: function () { startBreathing(); return false; },
     'to-support': function () { var el = document.getElementById('support'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return false; },
     'steps-hide': function () { S.steps.hide = true; },
+    'push-on': function () { turnOnPush(); return false; },
+    'push-off': function () { dropPush().then(function () { toast('Notifications are off on this device.'); showPush(); }); return false; },
+    'push-later': function () {
+      try { localStorage.setItem('bench:push-later', '1'); } catch (e) { /* storage blocked */ }
+      var b = document.getElementById('pushbanner'); if (b) b.outerHTML = pushBanner();
+      return false;
+    },
+    'push-test': function (d, btn) {
+      if (!pushState.sub) return false;
+      btn.disabled = true;
+      api('POST', '/api/push/test', { endpoint: pushState.sub.endpoint }).then(function () { toast('Sent. It should appear in a few seconds.'); }, function (e) { if (e.status === 401) fail(e); else toast(e.message); })
+        .then(function () { btn.disabled = false; });
+      return false;
+    },
     'sal-mode': function (d) { S.salary.compare = d.m === '2'; },
     'learn-field': function (d) { learn.field = d.f; refreshLearn(true); return false; },
     'learn-set': function (d) {
@@ -2756,7 +2774,7 @@
     password: function (f, form) {
       form.querySelector('button').disabled = true;
       api('POST', '/api/me/password', { password: String(f.get('password')), newPassword: String(f.get('newPassword')) })
-        .then(function () { ui.acctMsg = { ok: true, text: 'Password changed. Other devices have been signed out.' }; })
+        .then(function () { ui.acctMsg = { ok: true, text: 'Password changed. Other devices have been signed out.' }; syncPush(); })
         .catch(function (e) { if (e.status === 429 || e.status === 401 || e.status === 400) ui.acctMsg = { ok: false, text: e.message }; else fail(e); })
         .then(render);
       return false;
@@ -3697,6 +3715,130 @@
     if (currentView() === 'buddy' && (ev.kind === 'ended' || ev.kind === 'declined')) loadSuggestions();
   }
 
+  // ---------- phone notifications ----------
+  var PUSH_LABEL = [['dm', 'Private messages'], ['buddy', 'Buddy check-ins, cheers and requests'], ['due', 'Follow-ups due in your tracker'], ['interview', 'Interviews: the day before, and about an hour before'], ['mod', 'New reports (moderators)']];
+  var pushState = { info: null, sub: null, busy: false, loaded: false };
+  function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+  function pushFlag(set) { // which member turned notifications on in this browser
+    try {
+      if (set === undefined) return localStorage.getItem('bench:push') || '';
+      if (set) localStorage.setItem('bench:push', set); else localStorage.removeItem('bench:push');
+    } catch (e) { /* storage blocked */ }
+    return '';
+  }
+  // The service worker, or a clear error: "ready" alone can wait for ever.
+  function swReady() {
+    return Promise.race([navigator.serviceWorker.ready, new Promise(function (ok, no) { setTimeout(function () { no(new Error('This browser did not start the notification helper. Reload the page and try again.')); }, 6000); })]);
+  }
+  function keyBytes(s) {
+    var bin = atob((s + '==='.slice((s.length + 3) % 4)).replace(/-/g, '+').replace(/_/g, '/')), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function sameKey(sub, key) {
+    var have = sub.options && sub.options.applicationServerKey;
+    if (!have) return true; // older browsers do not say
+    var a = new Uint8Array(have), b = keyBytes(key);
+    return a.length === b.length && a.every(function (x, i) { return x === b[i]; });
+  }
+  function register(reg, key) {
+    return reg.pushManager.getSubscription().then(function (sub) {
+      if (sub && !sameKey(sub, key)) return sub.unsubscribe().then(function () { return null; });
+      return sub;
+    }).then(function (sub) {
+      // Some browsers never answer when they cannot reach their notification service.
+      return sub || Promise.race([reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) }),
+        new Promise(function (ok, no) { setTimeout(function () { no(new Error('push service timeout')); }, 25000); })]);
+    }).then(function (sub) {
+      var j = sub.toJSON();
+      return api('POST', '/api/push/on', { endpoint: j.endpoint, keys: j.keys }).then(function () { pushState.sub = sub; pushFlag(me ? me.username : ''); return sub; });
+    });
+  }
+  // After logging in: keep this device registered for its owner, and make sure it is not still registered for someone else.
+  function syncPush() {
+    pushState.info = null; pushState.sub = null; pushState.loaded = false;
+    if (!pushSupported() || !me) return;
+    var who = me;
+    if (Notification.permission !== 'granted') return;
+    swReady().then(function (reg) {
+      return reg.pushManager.getSubscription().then(function (sub) {
+        if (me !== who) return;
+        if (pushFlag() !== who.username) { pushFlag(''); return sub ? sub.unsubscribe() : undefined; }
+        return api('GET', '/api/push').then(function (j) { if (me === who && j.key) return register(reg, j.key); });
+      });
+    }).catch(function () { /* try again at the next visit */ });
+  }
+  function loadPush() {
+    if (!me) return;
+    var who = me, done = function () { if (me !== who) return; pushState.loaded = true; showPush(); };
+    api('GET', '/api/push').then(function (j) {
+      pushState.info = j;
+      if (!pushSupported() || Notification.permission !== 'granted' || pushFlag() !== who.username) return;
+      return swReady().then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) { pushState.sub = sub; });
+    }).catch(function (e) { if (e.status === 401) fail(e); }).then(done);
+  }
+  function showPush() { var el = document.getElementById('pushcard'); if (el) el.innerHTML = pushCard(); }
+  function pushCard() {
+    var h = '<h2>' + ico('bell') + ' Notifications</h2>';
+    if (!pushSupported()) {
+      return h + (install.ios && !install.standalone
+        ? '<p class="small">On iPhone and iPad, first add The Bench to your Home Screen (iOS 16.4 or newer). Open it from that icon, then come back here.</p><div><button type="button" class="btn" data-act="install-app">' + ico('phone') + 'How to add it</button></div>'
+        : '<p class="small">This browser cannot show notifications. Try Chrome, Edge or Firefox.</p>');
+    }
+    if (Notification.permission === 'denied') return h + '<p class="small"><b>Notifications are blocked for The Bench on this device.</b> Allow them in your browser or phone settings for this site, then reload.</p>';
+    if (!pushState.loaded) return h + '<p class="muted small">Checking…</p>';
+    if (!pushState.info || !pushState.info.key) return h + '<p class="small">Notifications are not available right now. Try again later.</p>';
+    if (!pushState.sub) {
+      return h + '<p class="small">Get told about messages, your buddy, interviews and follow-ups, even when The Bench is closed. They never show message text, job titles or company names.</p>' +
+        '<div><button type="button" class="btn primary" data-act="push-on"' + (pushState.busy ? ' disabled' : '') + '>Turn on for this device</button></div>';
+    }
+    return h + '<p class="small"><b>On for this device.</b> Tell me about:</p><div class="push-list">' + PUSH_LABEL.filter(function (k) { return k[0] in pushState.info.prefs; }).map(function (k) {
+      return '<label class="row small"><input type="checkbox" data-push="' + k[0] + '"' + (pushState.info.prefs[k[0]] ? ' checked' : '') + '> ' + k[1] + '</label>';
+    }).join('') + '</div><p class="muted small">These choices apply to all your devices. Times are India time. Reminders can be late if the site has been asleep overnight.</p>' +
+      '<div class="row"><button type="button" class="btn tiny" data-act="push-test"' + (pushState.busy ? ' disabled' : '') + '>Send a test</button><button type="button" class="link" data-act="push-off">Turn off on this device</button></div>';
+  }
+  function turnOnPush() {
+    if (pushState.busy) return;
+    var who = me;
+    pushState.busy = true; showPush();
+    // The question must come straight from the tap, so ask before anything else.
+    Promise.resolve(Notification.requestPermission()).then(function (p) {
+      if (p !== 'granted') { if (p === 'denied') toast('Notifications are blocked. You can allow them in your browser settings.'); return; }
+      return Promise.all([swReady(), api('GET', '/api/push')]).then(function (x) {
+        if (me !== who) return;
+        pushState.info = x[1];
+        if (!x[1].key) throw new Error('Notifications are not available right now.');
+        return register(x[0], x[1].key).then(function () { toast('Notifications are on for this device.'); });
+      });
+    }).catch(function (e) {
+      if (e.status === 401) return fail(e);
+      toast(/push service|AbortError|registration failed/i.test(e.name + ' ' + e.message) ? 'This browser could not reach its notification service. Try again later, or use another browser.' : e.message);
+    }).then(function () { pushState.busy = false; pushState.loaded = true; showPush(); var b = document.getElementById('pushbanner'); if (b) b.outerHTML = pushBanner(); });
+  }
+  // Stop notifications on this device (turning off, or logging out). Never blocks logging out.
+  function dropPush() {
+    pushFlag('');
+    if (!pushSupported() || Notification.permission !== 'granted') return Promise.resolve();
+    return swReady().then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) {
+      pushState.sub = null;
+      if (!sub) return;
+      return api('POST', '/api/push/off', { endpoint: sub.endpoint }).catch(function () { /* its log-in is about to end anyway */ }).then(function () { return sub.unsubscribe(); });
+    }).catch(function () { /* nothing to drop */ });
+  }
+  // On Home, once there is something worth being told about.
+  function pushBanner() {
+    var off = '<span id="pushbanner" hidden></span>', later = false;
+    try { later = localStorage.getItem('bench:push-later') === '1'; } catch (e) { /* storage blocked */ }
+    if (later || stepsShown() || !pushSupported() || Notification.permission !== 'default') return off;
+    if (!(S.apps.some(function (x) { return isDay(x.interview) || isDay(x.followUp); }) || (buddy.state && buddy.state.pair) || (chat.summary && chat.summary.dms.length))) return off;
+    return '<p class="banner" id="pushbanner">' + ico('bell') + '<span><b>Want a nudge on this device?</b> Messages, your buddy, interviews and follow-ups. <button type="button" class="link big" data-act="push-on">Turn on</button> · <button type="button" class="link" data-act="push-later">Not now</button></span></p>';
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function (e) {
+      if (e.data && e.data.type === 'open' && typeof e.data.url === 'string' && e.data.url.indexOf('/#/') === 0) location.hash = e.data.url.slice(1);
+    });
+  }
+
   // ---------- you: account bar (Home) and sidebar chip ----------
   function accountBar() {
     var u = esc(me.username);
@@ -4214,7 +4356,7 @@
       var box = document.getElementById('chatbox');
       if (box && wideScreen()) box.focus();
     },
-    account: loadBlocks,
+    account: function () { loadBlocks(); loadPush(); },
     admin: function () { if (me.isAdmin) loadAdmin(); },
     fun: function () {
       if (!S.bingo) { S.bingo = newBingo(0); save(); renderSection('bingo', bingoHtml()); }
@@ -4336,6 +4478,13 @@
     if (ch) { markLatest(ch); refreshChatList(); updateBadge(); }
   });
   document.addEventListener('change', function (e) {
+    if (e.target.dataset && e.target.dataset.push && pushState.info) {
+      var box = e.target, prefs = Object.assign({}, pushState.info.prefs);
+      prefs[box.dataset.push] = box.checked;
+      pushState.info.prefs = prefs;
+      api('PUT', '/api/push/prefs', prefs).catch(function (x) { if (x.status === 401) return fail(x); prefs[box.dataset.push] = !box.checked; showPush(); toast(x.message); });
+      return;
+    }
     if (e.target.id === 'learnfree') { learn.freeOnly = e.target.checked; refreshLearn(false); return; }
     if (e.target.id === 'cl-pick' && e.target.value && S.cl) {
       var app = find(S.apps, e.target.value);

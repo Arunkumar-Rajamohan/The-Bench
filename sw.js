@@ -3,7 +3,7 @@
    Fonts and icons: cache first (they never change). API calls and the live stream are never cached. */
 'use strict';
 
-const CACHE = 'bench-shell-v21';
+const CACHE = 'bench-shell-v22';
 const SHELL = [
   '/', '/styles.css', '/app.js', '/favicon.svg', '/manifest.webmanifest',
   '/fonts/inter.woff2', '/fonts/fraunces.woff2', '/fonts/fraunces-italic.woff2',

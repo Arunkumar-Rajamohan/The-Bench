@@ -86,6 +86,7 @@
 
   // ---------- fixed content ----------
   // Jobs come straight from employers' careers feeds (/api/jobs); leads are shared by members (/api/leads).
+  var JOB_TABS = ['employers', 'leads', 'refs', 'events'];
   var jobs = { tab: 'employers', list: [], total: 0, page: 1, what: '', where: '', remote: false, field: '', fields: [], nontech: 0, all: 0, partial: false, retry: null,
     companies: 0, loaded: false, loading: false, error: '',
     leads: null, leadsError: '' };
@@ -667,11 +668,13 @@
     fun.data = null; fun.yesterday = null; fun.order = null; fun.qDay = 'today';
     prof.people = null; jobs.activeAlert = null; jobs.newSince = 0; iv.seen = {}; iv.cur = null;
     ivx.list = null; ivx.summary = null; ivx.key = ''; ivx.q = ''; ivx.open = false; // "you" and "found it helpful" belong to the last person
+    evs.list = null; evs.city = ''; evs.open = false;
     setReports(0);
     usage.data = null; usage.error = '';
   }
-  var toastTimer = null;
+  var toastTimer = null, toastAt = 0;
   function toast(msg) {
+    toastAt = Date.now();
     var t = document.getElementById('toast');
     t.textContent = msg; t.hidden = false;
     clearTimeout(toastTimer);
@@ -1358,6 +1361,7 @@
       ]],
       ['People who can help', [
         ['users', 'Referrals', 'Ask members for a referral, or offer one.', '#/jobs', 'open-refs', ''],
+        ['calendar', 'Walk-ins and events', 'Walk-in drives, job fairs and free webinars shared by members.', '#/jobs/events', '', ''],
         ['buddy', 'Accountability buddy', 'Check in daily with someone else who is looking.', '#/buddy', '', buddy.state && buddy.state.pair ? 'With ' + buddy.state.pair.buddy.name : '']
       ]],
       ['Learn and look after yourself', [
@@ -1462,7 +1466,13 @@
   }
   function celebrate(list) {
     var msg = list.length === 1 ? 'New milestone: ' + list[0][3] + '. Nicely done!' : 'You earned ' + list.length + ' new milestones. See them in Tools.';
-    setTimeout(function () { if (!me) return; confetti(); toast(msg); refreshMilestones(); }, ui.booting ? 2600 : 250);
+    // Let any message just shown be read first, rather than replacing it straight away.
+    setTimeout(function show() {
+      if (!me) return;
+      var since = Date.now() - toastAt;
+      if (since < 2500) { setTimeout(show, 2500 - since); return; }
+      confetti(); toast(msg); refreshMilestones();
+    }, ui.booting ? 2600 : 250);
   }
   // The badge closest to being earned, to show what comes next.
   function nextMilestone() {
@@ -1724,6 +1734,116 @@
     });
   }
 
+  // ---------- walk-in drives and events (a tab on the Jobs page) ----------
+  var evs = { list: null, error: '', city: '', open: false, today: '' };
+  var EV_KINDS = [['walkin', 'Walk-in drive'], ['fair', 'Job fair'], ['webinar', 'Webinar or online session'], ['other', 'Other event']];
+  var EV_SHORT = { walkin: 'Walk-in', fair: 'Job fair', webinar: 'Webinar', other: 'Event' };
+  function evDayParts(k) { var d = dayDate(k); return { mon: d.toLocaleDateString(undefined, { month: 'short' }), day: d.getDate(), wk: d.toLocaleDateString(undefined, { weekday: 'short' }) }; }
+  function evWhen(e) {
+    var days = e.until ? shortDay(e.day) + ' – ' + shortDay(e.until) : fmtDay(e.day);
+    var time = e.start ? fmtTime(e.start) + (e.finish ? ' – ' + fmtTime(e.finish) : '') : '';
+    return days + (time ? ' · ' + time : '');
+  }
+  function evCityKey(c) { return String(c || '').trim().toLowerCase(); }
+  // India time to UTC, for calendar files and links: India is UTC+5:30 all year.
+  function evUtc(day, time) {
+    var p = day.split('-'), t = (time || '00:00').split(':');
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]), Number(t[0]), Number(t[1])) - 330 * 60000).toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+  }
+  function evSpan(e) { // [start, end] for calendars: timed events get their hours (two by default); others are all-day
+    if (!e.start) return [e.day.replace(/-/g, ''), addDays(e.until || e.day, 1).replace(/-/g, '')];
+    var end = e.finish || (function () { var h = Number(e.start.slice(0, 2)) + 2; return h > 23 ? '23:59' : String(h).padStart(2, '0') + e.start.slice(2); })();
+    return [evUtc(e.day, e.start), evUtc(e.day, end)];
+  }
+  function evPlace(e) { return e.online ? 'Online' : [e.venue, e.city].filter(Boolean).join(', '); }
+  function evNotes(e) { return [e.until ? 'Runs until ' + fmtDay(e.until) + '.' : '', e.details, e.url, 'Shared on The Bench. Real employers never charge a fee to attend.'].filter(Boolean).join('\n\n'); }
+  function evGoogleUrl(e) {
+    var s = evSpan(e);
+    return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(e.title + ' (' + e.org + ')') +
+      '&dates=' + s[0] + '/' + s[1] + '&location=' + encodeURIComponent(evPlace(e)) + '&details=' + encodeURIComponent(evNotes(e));
+  }
+  function evIcs(e) {
+    var s = evSpan(e), x = function (t) { return String(t).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1'); };
+    var dt = e.start ? ['DTSTART:' + s[0], 'DTEND:' + s[1]] : ['DTSTART;VALUE=DATE:' + s[0], 'DTEND;VALUE=DATE:' + s[1]];
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//The Bench//Events//EN', 'BEGIN:VEVENT', 'UID:event-' + e.id + '@thebench',
+      'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z'].concat(dt,
+      ['SUMMARY:' + x(e.title + ' (' + e.org + ')'), 'LOCATION:' + x(evPlace(e)), 'DESCRIPTION:' + x(evNotes(e)), 'END:VEVENT', 'END:VCALENDAR']).join('\r\n');
+  }
+  function evCard(e) {
+    var id = Number(e.id), d = evDayParts(e.day), opts = [], over = evs.today && e.day < evs.today;
+    if (!e.own) opts.push('<button type="button" data-act="ev-report" data-id="' + id + '">Report</button>');
+    if (e.own || me.isAdmin) opts.push('<button type="button" data-act="ev-del" data-id="' + id + '">Delete' + (e.own ? '' : ' (moderator)') + '</button>');
+    return '<article class="card job ev"><div class="ev-date' + (over ? ' running' : '') + '" aria-hidden="true"><span>' + esc(d.mon) + '</span><b>' + d.day + '</b><span>' + esc(d.wk) + '</span></div>' +
+      '<div class="ev-body"><div class="row between job-top"><div><span class="pill ev-kind ' + esc(e.kind) + '">' + esc(EV_SHORT[e.kind] || 'Event') + '</span><h3>' + esc(e.title) + '</h3></div>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') + '</div>' +
+      '<p class="meta"><b class="company">' + esc(e.org) + '</b> · ' + esc(e.city) + '</p>' +
+      '<p class="ev-when">' + ico('calendar') + '<span>' + esc(evWhen(e)) + (over ? ' <span class="muted">(on now)</span>' : '') + '</span></p>' +
+      (e.venue ? '<p class="ev-where">' + ico('pin') + '<span>' + esc(e.venue) + '</span></p>' : '') +
+      (e.details ? '<p class="ivx-text ev-details">' + esc(e.details) + '</p>' : '') +
+      '<div class="row between job-foot"><span class="muted small">Shared by <a class="plain-link" href="#/u/' + esc(e.username) + '"><b>' + esc(e.name) + '</b></a> · ' + ago(e.t) + '</span>' +
+      '<div class="row"><button class="btn tiny' + (e.mine ? ' primary' : '') + '" data-act="ev-going" data-id="' + id + '" aria-pressed="' + e.mine + '">' + (e.mine ? ico('check') + 'Going' : 'I’m going') + (e.going ? ' · ' + e.going : '') + '</button>' +
+      '<a class="btn tiny ghost" href="' + esc(evGoogleUrl(e)) + '" target="_blank" rel="noopener noreferrer">Google Calendar</a>' +
+      '<button type="button" class="btn tiny ghost" data-act="ev-ics" data-id="' + id + '" title="Downloads a calendar file for Outlook, Apple or any other calendar">Other calendar</button>' +
+      (e.url ? '<a class="btn tiny ghost" href="' + esc(e.url) + '" target="_blank" rel="noopener nofollow ugc">Details ↗</a>' : '') + '</div></div></div></article>';
+  }
+  function evCities() {
+    var seen = {}, out = [];
+    (evs.list || []).forEach(function (e) { var k = evCityKey(e.city); if (!seen[k]) { seen[k] = { key: k, name: e.city, n: 0 }; out.push(seen[k]); } seen[k].n++; });
+    return out.sort(function (a, b) { return b.n - a.n || (a.name < b.name ? -1 : 1); });
+  }
+  function evListHtml() {
+    if (evs.error && !evs.list) return '<p class="card muted">' + esc(evs.error) + '</p>';
+    if (!evs.list) return '<p class="muted">Loading events…</p>';
+    if (!evs.list.length) return '<p class="card muted">No upcoming walk-ins or events yet. Seen a walk-in drive in the paper or on a company page? Share it above.</p>';
+    var list = evs.list.filter(function (e) { return !evs.city || evCityKey(e.city) === evs.city; });
+    var cities = evCities();
+    return (cities.length > 1 ? '<div class="chips" aria-label="City"><button type="button" class="chip' + (evs.city ? '' : ' on') + '" data-act="ev-city" data-c="" aria-pressed="' + !evs.city + '">All <span>' + evs.list.length + '</span></button>' +
+      cities.map(function (c) { var on = evs.city === c.key; return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-act="ev-city" data-c="' + esc(c.key) + '" aria-pressed="' + on + '">' + esc(c.name) + ' <span>' + c.n + '</span></button>'; }).join('') + '</div>' : '') +
+      (list.length ? '<div class="jobs-list">' + list.map(evCard).join('') + '</div>' : '<p class="card muted">Nothing in that city yet.</p>') +
+      '<p class="muted small center-text">Events drop off once they are over.</p>';
+  }
+  function eventsPane() {
+    var t = today(), max = addDays(t, 120);
+    return '<details class="card share-lead share-ev"' + (evs.open ? ' open' : '') + '><summary><b>Share a walk-in or event</b> <span class="muted small">A walk-in drive, a job fair or a free webinar people should know about.</span></summary>' +
+      '<form class="stack lead-form ivx-form" data-form="event">' +
+      '<div class="grid2 tight"><label>What is it<select name="kind">' + EV_KINDS.map(function (k) { return '<option value="' + k[0] + '">' + k[1] + '</option>'; }).join('') + '</select></label>' +
+      '<label>Company or organiser<input type="text" name="org" maxlength="80" required placeholder="e.g. Kettle &amp; Co"></label></div>' +
+      '<label>Title<input type="text" name="title" maxlength="100" required placeholder="e.g. Walk-in drive: customer support (Tamil, English)"></label>' +
+      '<div class="grid2 tight"><label>Date<input type="date" name="day" min="' + t + '" max="' + max + '" required></label>' +
+      '<label>Last day <span class="muted">(if it runs several days)</span><input type="date" name="until" min="' + t + '" max="' + max + '"></label></div>' +
+      '<div class="grid2 tight"><label>Starts <span class="muted">(optional)</span><input type="time" name="start"></label><label>Ends <span class="muted">(optional)</span><input type="time" name="finish"></label></div>' +
+      '<label class="row small"><input type="checkbox" name="online" value="1"> It is online</label>' +
+      '<div class="grid2 tight ev-place"><label>City<input type="text" name="city" maxlength="40" placeholder="e.g. Chennai"></label>' +
+      '<label>Venue <span class="muted">(optional)</span><input type="text" name="venue" maxlength="200" placeholder="e.g. 4th floor, Tidel Park, Taramani"></label></div>' +
+      '<label>Link to the official post <span class="muted">(optional)</span><input type="url" name="url" maxlength="300" placeholder="https://"></label>' +
+      '<label>Details <span class="muted">(optional)</span><textarea name="details" rows="3" maxlength="600" placeholder="e.g. Freshers welcome. Bring 2 copies of your resume and an ID. Ask for the HR desk."></textarea></label>' +
+      '<p class="muted small">Only share real events. Times are India time. Never post anything that asks people to pay: real walk-ins never charge a fee.</p>' +
+      '<div class="row"><button class="btn primary">Share it</button></div></form></details>' +
+      '<p class="scam">' + ico('shield') + '<span>Real walk-ins and job fairs are free. Never pay a “registration”, “training” or “document” fee, and never hand over original certificates. Report anything that asks for money.</span></p>' +
+      '<div id="evlist">' + evListHtml() + '</div>';
+  }
+  function refreshEvents() { var el = document.getElementById('evlist'); if (el && currentView() === 'jobs' && jobs.tab === 'events') el.innerHTML = evListHtml(); }
+  function loadEvents() {
+    return api('GET', '/api/events').then(function (j) {
+      evs.list = Array.isArray(j.events) ? j.events : []; evs.today = j.today || ''; evs.error = '';
+      if (evs.city && !evs.list.some(function (e) { return evCityKey(e.city) === evs.city; })) evs.city = '';
+    }, function (e) { if (e.status === 401) return fail(e); evs.error = e.message; }).then(function () {
+      refreshEvents();
+      var form = document.querySelector('details.share-ev');
+      if (form && evs.list && !evs.list.length) form.open = true; // nothing to read yet: invite a share
+    });
+  }
+  // A walk-in you are going to goes into your tracker as an interview, so its reminders and calendar buttons work.
+  function trackWalkin(e) {
+    var jid = 'ev:' + e.id;
+    if (e.kind !== 'walkin' || S.apps.some(function (a) { return a.jobId === jid; })) return false;
+    var a = { id: uid(), jobId: jid, title: e.title.slice(0, 80), company: e.org.slice(0, 60), url: e.url, stage: 'Interview', interview: e.day, t: Date.now(),
+      note: ['Walk-in' + (e.until ? ' until ' + fmtDay(e.until) : ''), evPlace(e)].filter(Boolean).join(' · ').slice(0, 500) };
+    if (e.start) a.itime = e.start;
+    S.apps.push(a); save();
+    return true;
+  }
+
   function addGoal(m, g) {
     var w = weekFor(m);
     if (w.goals.length >= MAX_GOALS) { toast('Three goals is the most. Remove one first.'); return false; }
@@ -1950,13 +2070,16 @@
     },
 
     jobs: function () {
-      var tab = function (t, label) {
+      var sub = location.hash.replace(/^#\/?/, '').split('/')[1]; // "#/jobs/events" opens that tab
+      if (sub && JOB_TABS.indexOf(sub) > -1) jobs.tab = sub;
+      var tab = function (t, label, short) { // phones get the short name, so all four fit
         var on = jobs.tab === t;
-        return '<button type="button" data-act="jobs-tab" data-t="' + t + '" aria-pressed="' + on + '"' + (on ? ' class="on"' : '') + '>' + label + '</button>';
+        return '<button type="button" data-act="jobs-tab" data-t="' + t + '" aria-pressed="' + on + '"' + (on ? ' class="on"' : '') + '>' +
+          (short ? '<span class="tl">' + label + '</span><span class="ts" aria-hidden="true">' + short + '</span>' : label) + '</button>';
       };
-      return head('Jobs', 'Real openings in India, straight from the companies hiring, plus leads and referrals from members. No middlemen, no ads.') +
-        '<div class="seg big" role="group" aria-label="Which jobs">' + tab('employers', 'From employers') + tab('leads', 'Shared by members') + tab('refs', 'Referrals') + '</div>' +
-        '<div id="jobpane">' + (jobs.tab === 'leads' ? leadsPane() : jobs.tab === 'refs' ? refsPane() : employersPane()) + '</div>';
+      return head('Jobs', 'Real openings in India, straight from the companies hiring, plus leads, referrals and walk-in drives from members. No middlemen, no ads.') +
+        '<div class="seg big" role="group" aria-label="Which jobs">' + tab('employers', 'From employers', 'Employers') + tab('leads', 'Shared by members', 'From members') + tab('refs', 'Referrals') + tab('events', 'Walk-ins &amp; events', 'Walk-ins') + '</div>' +
+        '<div id="jobpane">' + (jobs.tab === 'leads' ? leadsPane() : jobs.tab === 'refs' ? refsPane() : jobs.tab === 'events' ? eventsPane() : employersPane()) + '</div>';
     },
 
     tracker: function () {
@@ -2931,8 +3054,47 @@
       return false;
     },
     'jobs-tab': function (d) {
-      jobs.tab = d.t === 'leads' || d.t === 'refs' ? d.t : 'employers';
-      render();
+      jobs.tab = JOB_TABS.indexOf(d.t) > -1 ? d.t : 'employers';
+      var want = '#/jobs/' + jobs.tab;
+      if (location.hash.split('/').length > 2 && location.hash !== want) location.hash = want; // keep "#/jobs/<tab>" in step
+      else render();
+      return false;
+    },
+    'ev-city': function (d) { evs.city = d.c || ''; refreshEvents(); return false; },
+    'ev-going': function (d) {
+      var e = find(evs.list || [], Number(d.id));
+      if (!e) return false;
+      api('POST', '/api/events/' + e.id + '/going', {}).then(function (j) {
+        e.mine = !!j.mine; e.going = Number(j.going) || 0;
+        var tracked = j.mine && trackWalkin(e);
+        toast(j.mine ? (tracked ? 'See you there! It is in your tracker as an interview, with reminders if notifications are on.' : 'See you there!')
+          : (e.kind === 'walkin' && S.apps.some(function (a) { return a.jobId === 'ev:' + e.id; }) ? 'Taken off the list. It is still in your tracker if you want it there.' : 'Taken off the list.'));
+        refreshEvents();
+      }).catch(function (x) { if (x.status === 401) fail(x); else toast(x.message); });
+      return false;
+    },
+    'ev-ics': function (d) {
+      var e = find(evs.list || [], Number(d.id));
+      if (!e) return false;
+      var link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([evIcs(e)], { type: 'text/calendar' }));
+      link.download = 'event-' + String(e.org).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.ics';
+      document.body.appendChild(link); link.click();
+      setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+      return false;
+    },
+    'ev-del': function (d) {
+      closeMenus();
+      if (!window.confirm('Delete this event?')) return false;
+      api('DELETE', '/api/events/' + Number(d.id)).then(function () { toast('Deleted.'); return loadEvents(); }).catch(fail);
+      return false;
+    },
+    'ev-report': function (d) {
+      closeMenus();
+      var reason = window.prompt('Report this event to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/events/' + Number(d.id) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
       return false;
     },
     'lead-vote': function (d) {
@@ -2986,7 +3148,7 @@
     'open-refs': function (d) {
       jobs.tab = 'refs';
       refs.q = d.q || '';
-      if (currentView() === 'jobs') render(); else location.hash = '#/jobs';
+      if (location.hash === '#/jobs' || location.hash === '#/jobs/refs') render(); else location.hash = '#/jobs';
       return false;
     },
     'lead-report': function (d) {
@@ -3297,6 +3459,25 @@
       if (btn) btn.disabled = true;
       api('POST', '/api/posts/' + Number(f.get('id')) + '/replies', { text: text })
         .then(loadPosts).then(render, function (e) { fail(e); if (btn) btn.disabled = false; });
+      return false;
+    },
+    event: function (f, form) {
+      var btn = form.querySelector('button.primary');
+      if (btn.disabled) return false;
+      var online = f.get('online') === '1';
+      var body = {
+        kind: String(f.get('kind') || 'walkin'), org: String(f.get('org') || ''), title: String(f.get('title') || ''),
+        day: String(f.get('day') || ''), until: String(f.get('until') || ''), start: String(f.get('start') || ''), finish: String(f.get('finish') || ''),
+        online: online, city: online ? '' : String(f.get('city') || ''), venue: online ? '' : String(f.get('venue') || ''),
+        url: String(f.get('url') || '').trim(), details: String(f.get('details') || '')
+      };
+      btn.disabled = true;
+      api('POST', '/api/events', body).then(function () {
+        form.reset(); evs.open = false;
+        var d = form.closest('details'); if (d) d.open = false;
+        toast('Thank you! It is on the list.');
+        return loadEvents();
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); }).then(function () { btn.disabled = false; });
       return false;
     },
     ivx: function (f, form) {
@@ -3923,7 +4104,7 @@
         (r.editedSince && !r.deleted ? '<p class="muted small">The author edited it after it was reported. Above is what was reported.</p>' : '') +
         '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
         '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
-        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : r.where === 'an interview experience' ? 'Delete experience' : 'Delete message') + '</button>' +
+        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : r.where === 'an interview experience' ? 'Delete experience' : r.where === 'a walk-in or event' ? 'Delete event' : 'Delete message') + '</button>' +
         (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
         '</div></article>';
     }).join('') || '<p class="card muted">No open reports. All quiet.</p>';
@@ -4601,7 +4782,7 @@
   }
   var USAGE_NAMES = { 'a:post': 'Posted in the feed', 'a:room': 'Wrote in a chat room', 'a:dm': 'Sent a private message', 'a:referral': 'Offered or asked for a referral', 'a:checkin': 'Did a daily check-in',
     'v:feed': 'Feed', 'v:chat': 'Chat', 'v:fun': 'Fun', 'v:jobs': 'Jobs', 'v:tracker': 'Tracker', 'v:routine': 'Routine', 'v:tools': 'Tools', 'v:resume': 'Resume builder', 'v:cover': 'Cover letter', 'v:prep': 'Resume checker',
-    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones', 'v:review': 'Weekly review', 'v:experiences': 'Interview experiences', 'a:story': 'Shared an interview experience' };
+    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones', 'v:review': 'Weekly review', 'v:experiences': 'Interview experiences', 'a:story': 'Shared an interview experience', 'a:event': 'Shared a walk-in or event' };
   var usage = { data: null, error: '' };
   function loadUsage() {
     if (!me.isOwner) return;
@@ -5207,6 +5388,7 @@
     jobs: function () {
       if (jobs.tab === 'leads') loadLeads();
       else if (jobs.tab === 'refs') loadRefs();
+      else if (jobs.tab === 'events') loadEvents();
       else if (!jobs.loaded && !jobs.loading) loadJobs(false);
     },
     'edit-profile': loadEditor,
@@ -5348,6 +5530,10 @@
     }
     if (e.target.id === 'learnfree') { learn.freeOnly = e.target.checked; refreshLearn(false); return; }
     if (e.target.id === 'posttag') { ui.postTag = e.target.value; ui.postTagTab = feedTab(); return; }
+    if (e.target.name === 'online' && e.target.form && e.target.form.dataset.form === 'event') { // online: no city or venue to ask for
+      var place = e.target.form.querySelector('.ev-place'); if (place) place.hidden = e.target.checked;
+      return;
+    }
     if (e.target.id === 'cl-pick' && e.target.value && S.cl) {
       var app = find(S.apps, e.target.value);
       if (app) {

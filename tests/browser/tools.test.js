@@ -46,15 +46,16 @@ const { device, startServer, stopServer, wait, tmp } = require('./devices.js');
     // tools page
     await A.go('tools'); await A.js(`document.getElementById('main').classList.remove('enter');`); await wait(200); await shot(A, 'tools-page.png');
     const tools = await A.js(`return [...document.querySelectorAll('.tool')].map(a => [a.querySelector('b').innerText, a.getAttribute('href'), a.querySelector('small') ? a.querySelector('small').innerText : '']);`);
-    check('thirteen tools', tools.length === 13, tools);
+    check('fourteen tools', tools.length === 14, tools);
     check('shows what you have so far', tools.find((x) => x[0] === 'Resume builder')[2] === 'Started' && tools.find((x) => x[0] === 'Wellbeing')[2] === '', tools);
     for (const [name] of tools) {
       await A.go('tools');
       await A.js(`[...document.querySelectorAll('.tool')].find(a => a.querySelector('b').innerText === ${JSON.stringify(name)}).click();`); await wait(900);
       const r = await A.js(`const on = [...document.querySelectorAll('#nav a.on')].map(a => a.innerText.trim()); return { hash: location.hash, h1: document.querySelector('#main h1') && document.querySelector('#main h1').innerText, on, crumb: !!document.querySelector('.crumb'), tab: (document.querySelector('[data-act=jobs-tab].on') || {}).innerText };`);
-      const inside = !['Referrals', 'Accountability buddy', 'Wins wall'].includes(name);
+      const inside = !['Referrals', 'Accountability buddy', 'Wins wall', 'Walk-ins and events'].includes(name);
       check('opens: ' + name, r.h1 && r.h1 !== 'Tools' && (inside ? r.on.join() === 'Tools' && r.crumb : !r.crumb) && (name !== 'Referrals' || (r.hash === '#/jobs' && r.tab === 'Referrals')) &&
-        (name !== 'Wins wall' || (r.hash === '#/feed/wins' && r.on.join() === 'Feed')), r);
+        (name !== 'Wins wall' || (r.hash === '#/feed/wins' && r.on.join() === 'Feed')) &&
+        (name !== 'Walk-ins and events' || (r.hash === '#/jobs/events' && r.tab === 'Walk-ins & events' && r.on.join() === 'Jobs')), r);
     }
     await A.go('salary'); await A.click('.crumb'); await wait(500); check('back link returns to Tools', (await A.js(`return location.hash;`)) === '#/tools');
     await A.go('mood'); await A.click('[data-act=mood][data-v="3"]'); await wait(400); await A.go('tools'); check('mood status updates', /Checked in today/.test(await A.js(`return document.getElementById('main').innerText;`)));

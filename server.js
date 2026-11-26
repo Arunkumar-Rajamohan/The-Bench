@@ -169,6 +169,31 @@ const SCHEMA = [
     user_id INTEGER NOT NULL,
     PRIMARY KEY (interview_id, user_id)
   )`,
+  // Walk-in drives, job fairs and webinars. day/until are India dates; start/end are 'HH:MM' India time, or ''.
+  `CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'walkin',
+    title TEXT NOT NULL,
+    org TEXT NOT NULL,
+    day TEXT NOT NULL,
+    until TEXT NOT NULL DEFAULT '',
+    start TEXT NOT NULL DEFAULT '',
+    finish TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    venue TEXT NOT NULL DEFAULT '',
+    online INTEGER NOT NULL DEFAULT 0,
+    url TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS events_day ON events(day)',
+  `CREATE TABLE IF NOT EXISTS event_going (
+    event_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (event_id, user_id)
+  )`,
   // Referral board: members who can refer people into a company (kind 'refer') or know people there (kind 'contact').
   `CREATE TABLE IF NOT EXISTS referral_offers (
     id INTEGER PRIMARY KEY,
@@ -517,6 +542,23 @@ const q = {
     ORDER BY i.id DESC LIMIT 300`),
   ivSpellings: stmt(`SELECT i.company_key AS k, i.company AS name, COUNT(*) AS n, MAX(i.id) AS last
     FROM interviews i JOIN users u ON u.id = i.user_id WHERE i.deleted = 0 AND u.banned = 0 GROUP BY i.company_key, i.company`),
+  evList: stmt(`SELECT e.*, u.name, u.username,
+      (SELECT COUNT(*) FROM event_going g WHERE g.event_id = e.id) AS going,
+      (SELECT COUNT(*) FROM event_going g WHERE g.event_id = e.id AND g.user_id = ?) AS mine
+    FROM events e JOIN users u ON u.id = e.user_id
+    WHERE e.deleted = 0 AND u.banned = 0 AND (CASE WHEN e.until = '' THEN e.day ELSE e.until END) >= ?
+      AND e.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+    ORDER BY e.day, e.start, e.id LIMIT 200`),
+  ev: stmt('SELECT * FROM events WHERE id = ?'),
+  evSince: stmt('SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND created > ?'),
+  addEv: stmt(`INSERT INTO events (user_id, kind, title, org, day, until, start, finish, city, venue, online, url, details, created)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+  delEv: stmt("UPDATE events SET deleted = 1, venue = '', details = '' WHERE id = ?"),
+  delEvGoing: stmt('DELETE FROM event_going WHERE event_id = ?'),
+  isGoing: stmt('SELECT 1 AS x FROM event_going WHERE event_id = ? AND user_id = ?'),
+  addGoing: stmt('INSERT OR IGNORE INTO event_going (event_id, user_id) VALUES (?, ?)'),
+  delGoing: stmt('DELETE FROM event_going WHERE event_id = ? AND user_id = ?'),
+  goingCount: stmt('SELECT COUNT(*) AS n FROM event_going WHERE event_id = ?'),
   iv: stmt('SELECT * FROM interviews WHERE id = ?'),
   ivSince: stmt('SELECT COUNT(*) AS n FROM interviews WHERE user_id = ? AND created > ?'),
   addIv: stmt(`INSERT INTO interviews (user_id, company, company_key, role, level, rounds, difficulty, outcome, wait_days, mode, month, questions, tips, anonymous, created)
@@ -770,7 +812,7 @@ setInterval(() => {
 //  - The owner's own use is not counted, nor anyone whose browser sends Do Not Track or Global Privacy Control.
 //  - Wellbeing is never counted. Counts of 1 to 4 people are only ever given as "under 5".
 const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones', 'review', 'experiences'];
-const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin', 'story'];
+const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin', 'story', 'event'];
 const USAGE_METRICS = ['active', ...USAGE_VIEWS.map((x) => 'v:' + x), ...USAGE_DID.map((x) => 'a:' + x)];
 const USAGE_FEW = 5;
 const usageDay = () => dayKey(process.env.USAGE_TEST_CLOCK ? new Date(Number(fs.readFileSync(process.env.USAGE_TEST_CLOCK, 'utf8'))) : undefined);
@@ -1096,6 +1138,8 @@ const EXPORTS = [
   ['messages', "SELECT channel, text, created FROM messages WHERE user_id = ? AND deleted = 0 AND (channel LIKE 'room:%' OR channel LIKE 'qotd:%' OR channel LIKE 'dm:%')", 1],
   ['jobLeads', 'SELECT title, company, location, url, note, created FROM job_leads WHERE user_id = ? AND deleted = 0', 1],
   ['referralOffers', 'SELECT company, kind, roles, note, open, created FROM referral_offers WHERE user_id = ? AND deleted = 0', 1],
+  ['eventsShared', 'SELECT kind, title, org, day, until, start, finish, city, venue, online, url, details, created FROM events WHERE user_id = ? AND deleted = 0', 1],
+  ['eventsGoing', 'SELECT e.title, e.org, e.day FROM event_going g JOIN events e ON e.id = g.event_id WHERE g.user_id = ?', 1],
   ['interviewExperiences', 'SELECT company, role, level, rounds, difficulty, outcome, wait_days, mode, month, questions, tips, anonymous, created FROM interviews WHERE user_id = ? AND deleted = 0', 1],
   ['referralRequests', 'SELECT o.company, a.created FROM referral_asks a JOIN referral_offers o ON o.id = a.offer_id WHERE a.user_id = ?', 1],
   ['jobAlerts', 'SELECT what, place, remote, field, created FROM job_alerts WHERE user_id = ?', 1],
@@ -1134,6 +1178,8 @@ async function deleteAccount(u) {
   await exec('DELETE FROM lead_votes WHERE user_id = ?', [id]);
   await exec('DELETE FROM interview_votes WHERE user_id = ? OR interview_id IN (SELECT id FROM interviews WHERE user_id = ?)', [id, id]);
   await exec('DELETE FROM interviews WHERE user_id = ?', [id]);
+  await exec('DELETE FROM event_going WHERE user_id = ? OR event_id IN (SELECT id FROM events WHERE user_id = ?)', [id, id]);
+  await exec('DELETE FROM events WHERE user_id = ?', [id]);
   await exec("UPDATE job_leads SET deleted = 1, title = '', company = '', location = '', url = '', note = '' WHERE user_id = ?", [id]);
   await exec('DELETE FROM referral_asks WHERE user_id = ? OR offer_id IN (SELECT id FROM referral_offers WHERE user_id = ?)', [id, id]);
   await exec("UPDATE referral_offers SET deleted = 1, company = '', roles = '', note = '' WHERE user_id = ?", [id]);
@@ -1375,6 +1421,7 @@ async function api(req, res, route) {
   if (await jobsApi(req, res, route, user)) return;
   if (await referralApi(req, res, route, user)) return;
   if (await interviewApi(req, res, route, user)) return;
+  if (await eventApi(req, res, route, user)) return;
   if (await buddyApi(req, res, route, user)) return;
   if (await pushApi(req, res, route, user)) return;
   if (await usageApi(req, res, route, user)) return;
@@ -2004,6 +2051,101 @@ async function interviewApi(req, res, route, user) {
   return false;
 }
 
+// ---------- walk-in drives and events ----------
+// Members post walk-in interview drives, job fairs and free webinars. "Going" is a count; a walk-in someone is going
+// to also goes into their own tracker (in the app), so the tracker's reminders cover it.
+const EV_KINDS = ['walkin', 'fair', 'webinar', 'other'];
+const EV_AHEAD = 120, EV_SPAN = 14, EV_PER_DAY = 5;
+// Walk-in scams ask for a "registration fee" or "pay to confirm your slot". Salaries in rupees are fine.
+const EV_FEES = /\b(registration|processing|training|security|interview|joining|documentation|verification|slot|booking)\s+(fees?|charges?|deposit|amount)\b|\bpay\s+(us|me|first|upfront|before|to\s+(register|apply|attend|book|confirm|join))\b|\b(fees?|deposit)\s*(of|is|:)?\s*(₹|rs\.?|inr)\s*\d/i;
+const isRealDay = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(s + 'T00:00:00Z').toISOString().slice(0, 10) === s;
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+function cleanEvent(b) {
+  const kind = EV_KINDS.includes(b.kind) ? b.kind : 'walkin';
+  const title = line(b.title, 100, 'Title');
+  if (!title) throw new HttpError(400, 'Give it a title, for example: Walk-in drive for customer support.');
+  const org = line(b.org, 80, 'Company or organiser');
+  if (!org) throw new HttpError(400, 'Who is holding it?');
+  const today = dayKey();
+  if (!isRealDay(b.day) || b.day < today || b.day > shiftDay(today, EV_AHEAD)) throw new HttpError(400, 'Pick a date from today up to four months ahead.');
+  let until = '';
+  if (b.until && b.until !== b.day) {
+    if (!isRealDay(b.until) || b.until < b.day || b.until > shiftDay(b.day, EV_SPAN)) throw new HttpError(400, 'The last day must be after the first, and within two weeks of it.');
+    until = b.until;
+  }
+  const start = b.start ? String(b.start) : '', finish = b.finish ? String(b.finish) : '';
+  if ((start && !HHMM.test(start)) || (finish && !HHMM.test(finish))) throw new HttpError(400, 'Times look like 10:00 or 14:30.');
+  if (start && finish && finish <= start) throw new HttpError(400, 'The end time must be after the start time.');
+  const online = b.online === true;
+  const city = online ? 'Online' : line(b.city, 40, 'City');
+  if (!city) throw new HttpError(400, 'Which city? Or tick "Online".');
+  const venue = online ? '' : line(b.venue, 200, 'Venue');
+  const url = b.url ? leadUrl(b.url) : '';
+  const details = para(b.details, 600, 'Details');
+  if (EV_FEES.test([title, org, venue, details].join(' '))) {
+    throw new HttpError(400, 'Real walk-ins and job fairs never charge you to attend, register or apply. Please remove anything about fees or payments.');
+  }
+  return { kind, title, org, day: b.day, until, start, finish: start ? finish : '', city, venue, online, url, details };
+}
+function evView(r, user) {
+  return {
+    id: r.id, kind: r.kind, title: r.title, org: r.org, day: r.day, until: r.until, start: r.start, finish: r.finish,
+    city: r.city, venue: r.venue, online: !!r.online, url: r.url, details: r.details, t: r.created,
+    name: r.name, username: r.username, own: r.user_id === user.id, going: Number(r.going) || 0, mine: !!Number(r.mine)
+  };
+}
+
+async function eventApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+  if (!route.startsWith('/events')) return false;
+
+  if (method === 'GET' && route === '/events') {
+    send(res, 200, { events: (await q.evList.all(user.id, dayKey(), user.id)).map((r) => evView(r, user)), today: dayKey() });
+    return true;
+  }
+  if (method === 'POST' && route === '/events') {
+    limit('write:' + user.id, 20, 60000);
+    const e = cleanEvent(await readBody(req));
+    if ((await q.evSince.get(user.id, Date.now() - 864e5)).n >= EV_PER_DAY) throw new HttpError(429, 'You have shared ' + EV_PER_DAY + ' events today. Thank you! Share more tomorrow.');
+    const info = await q.addEv.run(user.id, e.kind, e.title, e.org, e.day, e.until, e.start, e.finish, e.city, e.venue, e.online ? 1 : 0, e.url, e.details, Date.now());
+    did(req, user, 'event');
+    send(res, 201, { id: info.lastId });
+    return true;
+  }
+  if ((m = /^\/events\/(\d{1,15})(\/going|\/report)?$/.exec(route))) {
+    const e = await q.ev.get(Number(m[1]));
+    if (!e || e.deleted) throw new HttpError(404, 'That event is gone.');
+    if (method === 'POST' && m[2] === '/going') {
+      limit('react:' + user.id, 120, 60000);
+      if ((e.until || e.day) < dayKey()) throw new HttpError(400, 'That one is over.');
+      const was = !!(await q.isGoing.get(e.id, user.id));
+      if (was) await q.delGoing.run(e.id, user.id); else await q.addGoing.run(e.id, user.id);
+      send(res, 200, { mine: !was, going: Number((await q.goingCount.get(e.id)).n) });
+      return true;
+    }
+    if (method === 'DELETE' && !m[2]) {
+      if (e.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete events you shared.');
+      await q.delEv.run(e.id); await q.delEvGoing.run(e.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'POST' && m[2] === '/report') {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (e.user_id === user.id) throw new HttpError(400, 'You cannot report your own event.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      const snapshot = [e.title + ' (' + e.org + ')', e.day + (e.until ? ' to ' + e.until : '') + (e.start ? ' ' + e.start : '') + ', ' + e.city, e.venue, e.details, e.url].filter(Boolean).join('\n');
+      const info = await q.addMsg.run('ev:' + e.id, e.user_id, snapshot, Date.now());
+      await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      await tellModerators(true);
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------- profiles ----------
 // Visible to signed-in members only. Everything is optional except the display name.
 
@@ -2376,7 +2518,7 @@ async function peerByName(name, me) {
   return u;
 }
 // 'profile:<id>' messages are snapshots of a reported profile: never listed anywhere, only shown to moderators.
-const isPublicChannel = (channel) => /^(room|qotd|profile|lead|ref|iv):/.test(channel);
+const isPublicChannel = (channel) => /^(room|qotd|profile|lead|ref|iv|ev):/.test(channel);
 // Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
   if (isPublicChannel(channel)) return true;
@@ -2400,6 +2542,7 @@ async function removeMessage(m) {
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
   else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
   else if (m.channel.startsWith('ref:')) await q.delRefOffer.run(Number(m.channel.slice(4)));
+  else if (m.channel.startsWith('ev:')) { await q.delEv.run(Number(m.channel.slice(3))); await q.delEvGoing.run(Number(m.channel.slice(3))); }
   else if (m.channel.startsWith('iv:')) { await q.delIv.run(Number(m.channel.slice(3))); await q.delIvVotes.run(Number(m.channel.slice(3))); }
   else await broadcastDelete(m.channel, m.id);
 }
@@ -2610,7 +2753,8 @@ async function chatApi(req, res, route, user) {
           : r.channel.startsWith('profile:') ? 'a profile'
           : r.channel.startsWith('lead:') ? 'a job lead'
           : r.channel.startsWith('ref:') ? 'a referral offer'
-          : r.channel.startsWith('iv:') ? 'an interview experience' : 'a private message',
+          : r.channel.startsWith('iv:') ? 'an interview experience'
+          : r.channel.startsWith('ev:') ? 'a walk-in or event' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });

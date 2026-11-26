@@ -666,6 +666,7 @@
     // The next person on this device must not see the last one's puzzle guesses, answers or "you" markers, even for a moment.
     fun.data = null; fun.yesterday = null; fun.order = null; fun.qDay = 'today';
     prof.people = null; jobs.activeAlert = null; jobs.newSince = 0; iv.seen = {}; iv.cur = null;
+    ivx.list = null; ivx.summary = null; ivx.key = ''; ivx.q = ''; ivx.open = false; // "you" and "found it helpful" belong to the last person
     setReports(0);
     usage.data = null; usage.error = '';
   }
@@ -695,7 +696,7 @@
 
   // ---------- views ----------
   // Pages that live inside Tools: they light up Tools in the menu and get a link back to it.
-  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1, milestones: 1, review: 1 };
+  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1, milestones: 1, review: 1, experiences: 1 };
   function head(title, sub) {
     var v = currentView(), back = me && IN_TOOLS[v] && v !== 'tools' ? '<a class="crumb" href="#/tools">← Tools</a>' : '';
     return '<header class="head">' + back + '<h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
@@ -1037,7 +1038,7 @@
         '<br><span class="muted small">' + esc(interviewText(a)) + '</span></span>' +
         (withActions ? '<span class="row due-acts"><a class="btn tiny ghost" href="' + esc(googleCalUrl(a)) + '" target="_blank" rel="noopener noreferrer">' + ico('link') + 'Google Calendar</a>' +
           '<button type="button" class="btn tiny ghost" data-act="app-ics" data-id="' + id + '" title="Downloads a calendar file for Outlook, Apple or any other calendar">' + ico('download') + 'Other calendar</button>' +
-          '<a class="btn tiny ghost" href="#/interview">Practise</a></span>' : '') + '</li>';
+          '<a class="btn tiny ghost" href="#/interview">Practise</a>' + ivxSlot(a.company) + '</span>' : '') + '</li>';
     }
     var late = dayDiff(a.followUp, today());
     return '<li class="due-row"><span class="due-ico fu">' + ico('mail') + '</span><span class="grow">Follow up: ' + who +
@@ -1352,6 +1353,7 @@
       ]],
       ['Interviews and offers', [
         ['prep', 'Interview practice', 'Questions with tips, a timer and the STAR method.', '#/interview', '', p ? p + ' practised' : ''],
+        ['chat', 'Interview experiences', 'What interviews at a company were like, from members who went.', '#/experiences', '', ''],
         ['rupee', 'Salary and offers', 'Turn a CTC into monthly in-hand pay, and compare offers.', '#/salary', '', '']
       ]],
       ['People who can help', [
@@ -1433,7 +1435,8 @@
     ['course-1', 3, 'book', 'Course finished', 'Finish a free course and mark it done.', function () { return [coursesDone(), 1]; }],
     ['course-3', 3, 'book', 'Keen learner', 'Finish three free courses.', function () { return [coursesDone(), 3]; }],
     ['said-hi', 4, 'chat', 'Said hello', 'Say hi in a chat room or post on the feed.', function () { return [S.steps.hi || posts.some(function (p) { return p.own; }) ? 1 : 0, 1]; }],
-    ['shared-win', 4, 'trophy', 'Shared a win', 'Post a win on the feed, however small.', function () { return [S.badges['shared-win'] ? 1 : 0, 1]; }]
+    ['shared-win', 4, 'trophy', 'Shared a win', 'Post a win on the feed, however small.', function () { return [S.badges['shared-win'] ? 1 : 0, 1]; }],
+    ['shared-story', 4, 'chat', 'Paid it forward', 'Share what an interview was like, for the next person.', function () { return [S.badges['shared-story'] ? 1 : 0, 1]; }]
   ];
   function cleanBadges(raw) {
     var out = {};
@@ -1604,6 +1607,123 @@
     return '<a class="card mile-home" href="#/review"><span class="mile-badge got" aria-hidden="true">' + ico('calendar') + '</span><span class="grow"><b>Weekly review</b>' +
       '<span class="muted small">' + esc(line) + '</span></span><span class="mile-go" aria-hidden="true">→</span></a>';
   }
+  // ---------- interview experiences ----------
+  // What interviews at a company were like, shared by members. Read from #/experiences or #/experiences/<company>.
+  var ivx = { list: null, summary: null, key: '', company: '', error: '', q: '', companies: null, companiesAt: 0, open: false };
+  var IVX_LEVELS = [['', 'Not saying'], ['fresher', 'Fresher or student'], ['1-3', '1–3 years'], ['3-6', '3–6 years'], ['6+', '6+ years']];
+  var IVX_ROUNDS = ['Online test', 'Phone screen', 'Group discussion', 'Technical', 'Case study', 'Assignment', 'Manager', 'HR'];
+  var IVX_OUTCOMES = [['offer', 'Got an offer'], ['rejected', 'Not selected'], ['waiting', 'Still waiting'], ['no-reply', 'Never heard back'], ['withdrew', 'I withdrew']];
+  var IVX_MODES = [['', 'Not sure'], ['online', 'Online'], ['in-person', 'In person'], ['mixed', 'Both']];
+  var IVX_HARD = ['', 'Very easy', 'Easy', 'Medium', 'Hard', 'Very hard'];
+  // The same as companyKey() in server.js: one spelling per company.
+  function companyKey(name) {
+    var k = String(name || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9À-￿]+/g, ' ').trim();
+    return k.replace(/(\s+(pvt|private|ltd|limited|inc|llp|llc|corp|corporation|plc))+$/, '').trim().slice(0, 60);
+  }
+  function ivxRouteName() { var p = location.hash.replace(/^#\/?/, '').split('/'); if (p[0] !== 'experiences' || !p[1]) return ''; try { return decodeURIComponent(p[1]).slice(0, 60); } catch (e) { return ''; } }
+  function ivxRoute() { return companyKey(ivxRouteName()); }
+  function labelOf(list, v) { var x = list.filter(function (o) { return o[0] === v; })[0]; return x ? x[1] : ''; }
+  function monthName(m) { if (!/^\d{4}-\d{2}$/.test(m || '')) return ''; var p = m.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }); }
+  function ivxCount(name) { var k = companyKey(name), c = (ivx.companies || []).filter(function (x) { return x.key === k; })[0]; return c ? c.n : 0; }
+  function ivxShareForm() {
+    var month = today().slice(0, 7);
+    return '<details class="card share-lead share-ivx"' + (ivx.open ? ' open' : '') + '><summary><b>Share your interview experience</b> <span class="muted small">Two minutes of yours can save someone a lot of worry.</span></summary>' +
+      '<form class="stack lead-form ivx-form" data-form="ivx">' +
+      '<div class="grid2 tight"><label>Company<input type="text" name="company" maxlength="60" required value="' + esc(ivx.company) + '" placeholder="e.g. Kettle &amp; Co"></label>' +
+      '<label>Role<input type="text" name="role" maxlength="80" required placeholder="e.g. Customer support executive"></label></div>' +
+      '<div class="grid2 tight"><label>Month of the interview <span class="muted">(optional)</span><input type="month" name="month" min="2015-01" max="' + month + '"></label>' +
+      '<label>Your experience<select name="level">' + IVX_LEVELS.map(function (l) { return '<option value="' + l[0] + '">' + l[1] + '</option>'; }).join('') + '</select></label></div>' +
+      '<fieldset class="ivx-pick"><legend>Rounds <span class="muted">(tick each one you had)</span></legend><div class="ivx-chips">' +
+      IVX_ROUNDS.map(function (r) { return '<label class="chip-check"><input type="checkbox" name="rounds" value="' + esc(r) + '"><span>' + esc(r) + '</span></label>'; }).join('') + '</div></fieldset>' +
+      '<fieldset class="ivx-pick"><legend>How hard was it?</legend><div class="ivx-chips">' +
+      [1, 2, 3, 4, 5].map(function (n) { return '<label class="chip-check"><input type="radio" name="difficulty" value="' + n + '"' + (n === 3 ? ' checked' : '') + '><span>' + IVX_HARD[n] + '</span></label>'; }).join('') + '</div></fieldset>' +
+      '<div class="grid2 tight"><label>How it went<select name="outcome">' + IVX_OUTCOMES.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === 'waiting' ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
+      '<label>Heard back after <span class="muted">(days, optional)</span><input type="number" name="waitDays" min="0" max="365" step="1" inputmode="numeric" placeholder="e.g. 7"></label></div>' +
+      '<label>Format<select name="mode">' + IVX_MODES.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
+      '<label>Questions they asked <span class="muted">(optional)</span><textarea name="questions" rows="4" maxlength="1500" placeholder="e.g. Tell me about yourself. How would you calm down an angry customer? A question on Excel lookups."></textarea></label>' +
+      '<label>Tips for the next person <span class="muted">(optional)</span><textarea name="tips" rows="3" maxlength="600" placeholder="e.g. They care more about clear answers than tools. Keep it short and give examples."></textarea></label>' +
+      '<label class="row small"><input type="checkbox" name="anonymous" value="1"> Post without my name</label>' +
+      '<p class="muted small">Without your name, members see “A member”. Moderators can still see who posted it if someone reports it. Share what it was like, not confidential test papers, and do not name the people who interviewed you.</p>' +
+      '<div class="row"><button class="btn primary">Share experience</button></div></form></details>';
+  }
+  function ivxCard(x) {
+    var id = Number(x.id), opts = [];
+    if (!x.own) opts.push('<button type="button" data-act="ivx-report" data-id="' + id + '">Report</button>');
+    if (x.own || me.isAdmin) opts.push('<button type="button" data-act="ivx-del" data-id="' + id + '">Delete' + (x.own ? '' : ' (moderator)') + '</button>');
+    var facts = [labelOf(IVX_OUTCOMES, x.outcome), x.waitDays !== null && x.waitDays !== undefined ? (x.waitDays === 0 ? 'Heard back the same day' : 'Heard back in ' + x.waitDays + (x.waitDays === 1 ? ' day' : ' days')) : '', labelOf(IVX_MODES, x.mode) && x.mode ? labelOf(IVX_MODES, x.mode) : ''].filter(Boolean);
+    var dots = '<span class="ivx-hard" title="' + IVX_HARD[x.difficulty] + '"><span aria-hidden="true">' + [1, 2, 3, 4, 5].map(function (n) { return '<i' + (n <= x.difficulty ? ' class="on"' : '') + '></i>'; }).join('') + '</span>' + IVX_HARD[x.difficulty] + '</span>';
+    var who = x.anonymous ? (x.own ? 'You, without your name' : 'A member') : '<a class="plain-link" href="#/u/' + esc(x.username) + '"><b>' + esc(x.name) + '</b></a>';
+    var long = function (t) { return t.length > 420 ? '<details class="ivx-more"><summary><span class="ivx-text">' + esc(t.slice(0, 380).replace(/\s+\S*$/, '')) + '…</span> <span class="link small">Read more</span></summary><p class="ivx-text">' + esc(t) + '</p></details>' : '<p class="ivx-text">' + esc(t) + '</p>'; };
+    return '<article class="card job ivx"><div class="row between job-top"><h3>' + esc(x.role) + '</h3>' +
+      (opts.length ? '<details class="msg-menu"><summary aria-label="Options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') + '</div>' +
+      '<p class="meta"><a class="company plain-link" href="#/experiences/' + encodeURIComponent(x.key) + '"><b>' + esc(x.company) + '</b></a>' +
+      (x.month ? ' · ' + esc(monthName(x.month)) : '') + (x.level ? ' · ' + esc(labelOf(IVX_LEVELS, x.level)) : '') + '</p>' +
+      '<div class="row ivx-facts"><span class="pill ivx-out ' + esc(x.outcome) + '">' + esc(facts[0] || '') + '</span>' + dots + facts.slice(1).map(function (f) { return '<span class="muted small">' + esc(f) + '</span>'; }).join('') + '</div>' +
+      (x.rounds.length ? '<ol class="ivx-rounds" aria-label="Rounds">' + x.rounds.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ol>' : '') +
+      (x.questions ? '<h4>Questions they asked</h4>' + long(x.questions) : '') +
+      (x.tips ? '<h4>Tips</h4>' + long(x.tips) : '') +
+      '<div class="row between job-foot"><span class="muted small">' + who + ' · ' + ago(x.t) + '</span>' +
+      (x.own ? (x.helpful ? '<span class="muted small">' + x.helpful + ' found it helpful</span>' : '')
+        : '<button class="react' + (x.mine ? ' on' : '') + '" data-act="ivx-helpful" data-id="' + id + '" aria-pressed="' + !!x.mine + '">👍 Helpful' + (x.helpful ? ' · ' + x.helpful : '') + '</button>') + '</div></article>';
+  }
+  function ivxSummaryHtml() {
+    var s = ivx.summary, name = esc(ivx.company || ivx.key);
+    if (!s || !s.count) return '<section class="card ivx-sum"><h2>' + name + '</h2><p class="small">Nobody has shared an interview at ' + name + ' yet. Been there? Share yours below and help the next person.</p></section>';
+    var offers = s.outcomes.offer || 0;
+    return '<section class="card ivx-sum"><div class="row between"><h2>' + name + '</h2><a class="link small" href="#/experiences">All companies</a></div>' +
+      '<p class="muted small">' + s.count + (s.count === 1 ? ' experience' : ' experiences') + ' from members</p>' +
+      '<div class="stats ivx-stats"><div class="stat"><b>' + s.difficulty + '<small>/5</small></b><span>difficulty</span></div>' +
+      '<div class="stat"><b>' + offers + '<small> of ' + s.count + '</small></b><span>got an offer</span></div>' +
+      '<div class="stat"><b>' + (s.waitDays === null ? '–' : s.waitDays) + '</b><span>' + (s.waitDays === null ? 'days to hear back' : 'days to hear back, usually') + '</span></div>' +
+      '<div class="stat"><b>' + (s.outcomes['no-reply'] || 0) + '</b><span>never heard back</span></div></div>' +
+      (s.rounds.length ? '<p class="small"><b>Rounds people had:</b> ' + s.rounds.map(function (r) { return esc(r.name) + ' <span class="muted">(' + r.n + ')</span>'; }).join(', ') + '</p>' : '') +
+      '</section>';
+  }
+  function ivxListHtml() {
+    if (ivx.error && !ivx.list) return '<p class="card muted">' + esc(ivx.error) + '</p>';
+    if (!ivx.list) return '<p class="muted">Loading experiences…</p>';
+    var term = ivx.q.trim().toLowerCase();
+    var list = ivx.list.filter(function (x) { return !term || (x.company + ' ' + x.role + ' ' + x.questions + ' ' + x.tips).toLowerCase().indexOf(term) > -1; });
+    if (!ivx.list.length) return ivx.key ? '' : '<p class="card muted">No experiences yet. Be the first to share one: even a short one helps.</p>';
+    if (!list.length) return '<p class="card muted">Nothing matches “' + esc(ivx.q) + '”.</p>';
+    return '<div class="jobs-list">' + list.map(ivxCard).join('') + '</div>';
+  }
+  function ivxHtml() {
+    var chips = (ivx.companies || []).slice(0, 12);
+    return (ivx.key ? ivxSummaryHtml() : '') + ivxShareForm() +
+      '<div class="ivx-tools"><input type="search" id="ivxq" placeholder="' + (ivx.key ? 'Search these experiences' : 'Search by company, role or question') + '" aria-label="Search experiences" value="' + esc(ivx.q) + '">' +
+      (chips.length && !ivx.key ? '<div class="chips" aria-label="Companies">' + chips.map(function (c) { return '<a class="chip" href="#/experiences/' + encodeURIComponent(c.key) + '">' + esc(c.name) + ' <span>' + c.n + '</span></a>'; }).join('') + '</div>' : '') + '</div>' +
+      '<div id="ivxlist">' + ivxListHtml() + '</div>';
+  }
+  function refreshIvx() { if (currentView() === 'experiences') renderSection('ivxbody', ivxHtml()); }
+  function loadIvx() {
+    var key = ivxRoute();
+    if (ivx.key !== key) { ivx.list = null; ivx.summary = null; ivx.q = ''; ivx.company = ''; ivx.open = false; }
+    ivx.key = key;
+    return api('GET', '/api/interviews' + (key ? '?company=' + encodeURIComponent(key) : '')).then(function (j) {
+      if (ivxRoute() !== key) return;
+      ivx.list = Array.isArray(j.interviews) ? j.interviews : []; ivx.summary = j.summary || null; ivx.error = '';
+      if (key) ivx.company = j.company || ivxRouteName(); // nobody has shared one yet: the name as the link gave it
+      if (key && !ivx.list.length) ivx.open = true; // nothing to read yet: invite a share
+      return loadIvxCompanies(true);
+    }, function (e) { if (e.status === 401) return fail(e); ivx.error = e.message; }).then(refreshIvx);
+  }
+  function loadIvxCompanies(force) {
+    if (!force && ivx.companies && Date.now() - ivx.companiesAt < 300000) { fillIvxSlots(); return Promise.resolve(); }
+    return api('GET', '/api/interviews/companies').then(function (j) {
+      ivx.companies = Array.isArray(j.companies) ? j.companies : []; ivx.companiesAt = Date.now();
+      fillIvxSlots();
+    }, function () { /* links just do not show */ });
+  }
+  // Tracker cards and interview reminders get a link once we know there is something to read.
+  function ivxSlot(company) { return '<span class="ivx-slot" data-company="' + esc(company) + '"></span>'; }
+  function fillIvxSlots() {
+    document.querySelectorAll('.ivx-slot').forEach(function (el) {
+      var n = ivxCount(el.dataset.company);
+      el.innerHTML = n ? '<a class="ivx-link" href="#/experiences/' + encodeURIComponent(el.dataset.company) + '">' + ico('chat') + n + (n === 1 ? ' interview story' : ' interview stories') + '</a>' : '';
+    });
+  }
+
   function addGoal(m, g) {
     var w = weekFor(m);
     if (w.goals.length >= MAX_GOALS) { toast('Three goals is the most. Remove one first.'); return false; }
@@ -1730,6 +1850,7 @@
     interview: function () {
       if (!iv.cur) pickQ();
       return head('Interview practice', 'Pick a pack, answer out loud against the clock, then rate yourself. Other members cannot see your notes or history.') +
+        '<p class="banner">' + ico('chat') + '<span>Interviewing at a particular company? <a href="#/experiences">Read what members say its interviews were like</a>.</span></p>' +
         ivStats() + ivPacks() +
         '<div class="grid2 iv-grid"><div id="ivq">' + ivQuestion() + '</div>' +
         '<section class="card stack"><h2>Recent practice</h2>' + ivHistory() + '</section></div>';
@@ -1815,6 +1936,11 @@
           '<p class="card muted">' + (wins ? 'No wins yet. Be the first: even a small one counts.' : want ? 'Nothing here yet.' : 'It is quiet in here. Post the first win, rant, question or tip.') + '</p>') + '</div>';
     },
 
+    experiences: function () {
+      return head('Interview experiences', 'What interviews were really like, shared by members. Read up before yours, and share yours after.') +
+        '<div id="ivxbody">' + ivxHtml() + '</div>';
+    },
+
     review: function () {
       return head('Weekly review', 'Look back at your week and plan the next. Only you can see this.') + '<div id="reviewbody">' + reviewHtml(reviewWeek()) + '</div>';
     },
@@ -1842,7 +1968,7 @@
             var title = typeof a.url === 'string' && /^https?:\/\//.test(a.url)
               ? '<a class="plain-link" href="' + esc(a.url) + '" target="_blank" rel="noopener">' + esc(a.title) + '</a>' : esc(a.title);
             return '<div class="app' + (followDue(a) ? ' due' : '') + '"><b>' + title + '</b><span class="muted small">' + esc(a.company) + '</span>' +
-              appDates(a) +
+              appDates(a) + (s === 'Rejected' ? '' : ivxSlot(a.company)) +
               '<div class="row between"><div class="row">' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="-1" aria-label="Move back"' + (i === 0 ? ' disabled' : '') + '>←</button>' +
               '<button class="btn tiny ghost" data-act="move-app" data-id="' + id + '" data-dir="1" aria-label="Move forward"' + (i === STAGES.length - 1 ? ' disabled' : '') + '>→</button></div>' +
@@ -2448,6 +2574,24 @@
       return false;
     },
     'compose-cancel': function () { endCompose(); focusBox(); return false; },
+    'ivx-helpful': function (d) {
+      api('POST', '/api/interviews/' + Number(d.id) + '/helpful', {}).then(loadIvx).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); });
+      return false;
+    },
+    'ivx-del': function (d) {
+      closeMenus();
+      if (!window.confirm('Delete this interview experience?')) return false;
+      api('DELETE', '/api/interviews/' + Number(d.id)).then(function () { toast('Deleted.'); return loadIvx(); }).catch(fail);
+      return false;
+    },
+    'ivx-report': function (d) {
+      closeMenus();
+      var reason = window.prompt('Report this interview experience to the moderators.\nWhat is wrong with it? (optional)', '');
+      if (reason === null) return false;
+      api('POST', '/api/interviews/' + Number(d.id) + '/report', { reason: reason })
+        .then(function () { toast('Reported. Thanks for looking out for everyone.'); }).catch(fail);
+      return false;
+    },
     'review-week': function (d) { if (isDay(d.w)) ui.reviewWeek = d.w; render(); window.scrollTo(0, 0); return false; },
     'goal-idea': function (d) {
       var x = GOAL_IDEAS[Number(d.i)];
@@ -3155,6 +3299,27 @@
         .then(loadPosts).then(render, function (e) { fail(e); if (btn) btn.disabled = false; });
       return false;
     },
+    ivx: function (f, form) {
+      var btn = form.querySelector('button.primary');
+      if (btn.disabled) return false;
+      var wait = String(f.get('waitDays') || '').trim();
+      var body = {
+        company: String(f.get('company') || ''), role: String(f.get('role') || ''), month: String(f.get('month') || ''), level: String(f.get('level') || ''),
+        rounds: f.getAll('rounds'), difficulty: Number(f.get('difficulty')) || 3, outcome: String(f.get('outcome') || 'waiting'),
+        waitDays: wait === '' ? null : Number(wait), mode: String(f.get('mode') || ''),
+        questions: String(f.get('questions') || ''), tips: String(f.get('tips') || ''), anonymous: f.get('anonymous') === '1'
+      };
+      btn.disabled = true;
+      api('POST', '/api/interviews', body).then(function (j) {
+        form.reset(); ivx.open = false;
+        var d = form.closest('details'); if (d) d.open = false;
+        toast('Thank you! That will help someone walking in nervous.');
+        if (!S.badges['shared-story']) award('shared-story');
+        var target = '#/experiences/' + encodeURIComponent(body.company.trim());
+        if (ivxRoute() === j.key) loadIvx(); else location.hash = target;
+      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); }).then(function () { btn.disabled = false; });
+      return false;
+    },
     goal: function (f, form) {
       var text = String(f.get('text') || '').trim(), m = form.dataset.w;
       if (!text || !isDay(m) || !addGoal(m, { text: text.slice(0, 100) })) return false;
@@ -3758,7 +3923,7 @@
         (r.editedSince && !r.deleted ? '<p class="muted small">The author edited it after it was reported. Above is what was reported.</p>' : '') +
         '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
         '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
-        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : 'Delete message') + '</button>' +
+        '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : r.where === 'an interview experience' ? 'Delete experience' : 'Delete message') + '</button>' +
         (r.authorBanned ? '' : '<button class="btn tiny primary" data-act="mod" data-id="' + id + '" data-a="ban" data-u="' + a + '">Delete and ban @' + a + '</button>') +
         '</div></article>';
     }).join('') || '<p class="card muted">No open reports. All quiet.</p>';
@@ -4436,7 +4601,7 @@
   }
   var USAGE_NAMES = { 'a:post': 'Posted in the feed', 'a:room': 'Wrote in a chat room', 'a:dm': 'Sent a private message', 'a:referral': 'Offered or asked for a referral', 'a:checkin': 'Did a daily check-in',
     'v:feed': 'Feed', 'v:chat': 'Chat', 'v:fun': 'Fun', 'v:jobs': 'Jobs', 'v:tracker': 'Tracker', 'v:routine': 'Routine', 'v:tools': 'Tools', 'v:resume': 'Resume builder', 'v:cover': 'Cover letter', 'v:prep': 'Resume checker',
-    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones', 'v:review': 'Weekly review' };
+    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones', 'v:review': 'Weekly review', 'v:experiences': 'Interview experiences', 'a:story': 'Shared an interview experience' };
   var usage = { data: null, error: '' };
   function loadUsage() {
     if (!me.isOwner) return;
@@ -5019,6 +5184,8 @@
   }
 
   var afterRender = {
+    experiences: loadIvx,
+    tracker: function () { loadIvxCompanies(false); },
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
       chat.compose = null; // the message box was just drawn again, empty
@@ -5239,6 +5406,9 @@
       document.getElementById('avprev').innerHTML = avatarHtml(e.target.value || '?', c ? c.value : 'tomato', 'lg');
     } else if (e.target.id === 'chatbox') {
       autosize(e.target);
+    } else if (e.target.id === 'ivxq') {
+      ivx.q = e.target.value;
+      var il = document.getElementById('ivxlist'); if (il) il.innerHTML = ivxListHtml();
     } else if (e.target.id === 'posttext') {
       ui.postDraft = e.target.value;
     } else if (e.target.id === 'reviewnote' && isDay(e.target.dataset.w)) {

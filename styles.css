@@ -613,7 +613,7 @@ ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .share-lead > summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 .share-lead > summary::-webkit-details-marker { display: none; }
 .share-lead > summary::before { content: "+"; font: 600 1.2rem/1 var(--serif); color: var(--accent); width: 14px; }
-.share-lead[open] > summary::before { content: "2"; }
+.share-lead[open] > summary::before { content: "−"; } /* a minus sign */
 .lead-form { margin-top: 16px; }
 .lead-form label { display: block; font-weight: 600; font-size: .86rem; color: var(--ink-2); }
 .lead-form label .muted { font-weight: 400; }
@@ -1129,6 +1129,44 @@ main.enter > *:nth-child(3) { animation-delay: .08s; }
   .feed-tabs { flex-wrap: wrap; overflow: visible; padding: 0; } /* all five tabs in view */
   .win-prompts { padding: 0 0 4px; } /* ideas scroll sideways, lined up with the box */
 }
+
+/* Interview experiences */
+.ivx-form label > select, .ivx-form label > textarea, .ivx-form label > input { display: block; margin-top: 6px; width: 100%; }
+.ivx-pick { border: 0; margin: 0; padding: 0; min-width: 0; }
+.ivx-pick legend { font-weight: 600; font-size: .86rem; color: var(--ink-2); margin-bottom: 8px; padding: 0; }
+.ivx-pick legend .muted { font-weight: 400; }
+.ivx-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-check { position: relative; display: inline-flex !important; font-weight: 500 !important; }
+.chip-check input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.chip-check span { border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 6px 12px; font-size: .84rem; color: var(--ink-2); cursor: pointer; transition: border-color .15s, background .15s; }
+.chip-check span:hover { border-color: var(--line-2); }
+.chip-check input:checked + span { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.chip-check input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ivx-tools { display: grid; gap: 10px; margin: 16px 0 14px; }
+.ivx-tools .chips { margin: 0; }
+.ivx-tools .chip { text-decoration: none; }
+.ivx h4 { font: 600 .78rem/1.3 var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+.ivx-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: var(--ink-2); margin: 0; }
+.ivx-more > summary { list-style: none; cursor: pointer; }
+.ivx-more > summary::-webkit-details-marker { display: none; }
+.ivx-more[open] > summary { display: none; }
+.ivx-facts { gap: 10px; margin: 2px 0 10px; }
+.ivx-out.offer { color: var(--good); }
+.ivx-out.rejected, .ivx-out.no-reply { color: var(--muted); }
+.ivx-hard { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--ink-2); }
+.ivx-hard > span { display: inline-flex; gap: 3px; }
+.ivx-hard i { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
+.ivx-hard i.on { background: var(--accent); }
+.ivx-rounds { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; counter-reset: r; }
+.ivx-rounds li { counter-increment: r; font-size: .8rem; padding: 3px 10px 3px 6px; border-radius: 999px; background: var(--sunk); color: var(--ink-2); }
+.ivx-rounds li::before { content: counter(r); display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: 5px; border-radius: 50%; background: var(--paper); font-size: .7rem; font-weight: 700; }
+.ivx-sum { margin-bottom: 14px; }
+.ivx-sum > p { margin: 4px 0 0; }
+.ivx-stats { margin: 14px 0 10px; }
+.ivx-stats small { font-size: .55em; color: var(--muted); font-family: var(--sans); }
+.ivx-link { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem; font-weight: 600; color: var(--accent); text-decoration: none; }
+.ivx-link:hover { text-decoration: underline; }
+.app .ivx-slot:not(:empty) { display: block; margin: 2px 0 6px; }
 
 /* Weekly review */
 .home-cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }

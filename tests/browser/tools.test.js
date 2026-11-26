@@ -46,7 +46,7 @@ const { device, startServer, stopServer, wait, tmp } = require('./devices.js');
     // tools page
     await A.go('tools'); await A.js(`document.getElementById('main').classList.remove('enter');`); await wait(200); await shot(A, 'tools-page.png');
     const tools = await A.js(`return [...document.querySelectorAll('.tool')].map(a => [a.querySelector('b').innerText, a.getAttribute('href'), a.querySelector('small') ? a.querySelector('small').innerText : '']);`);
-    check('twelve tools', tools.length === 12, tools);
+    check('thirteen tools', tools.length === 13, tools);
     check('shows what you have so far', tools.find((x) => x[0] === 'Resume builder')[2] === 'Started' && tools.find((x) => x[0] === 'Wellbeing')[2] === '', tools);
     for (const [name] of tools) {
       await A.go('tools');

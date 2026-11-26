@@ -143,6 +143,32 @@ const SCHEMA = [
     user_id INTEGER NOT NULL,
     PRIMARY KEY (lead_id, user_id)
   )`,
+  // Interview experiences: what a company's interview was like. company_key groups spellings ("Infosys Ltd." = "infosys").
+  `CREATE TABLE IF NOT EXISTS interviews (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    company TEXT NOT NULL,
+    company_key TEXT NOT NULL,
+    role TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT '',
+    rounds TEXT NOT NULL DEFAULT '[]',
+    difficulty INTEGER NOT NULL DEFAULT 3,
+    outcome TEXT NOT NULL DEFAULT 'waiting',
+    wait_days INTEGER,
+    mode TEXT NOT NULL DEFAULT '',
+    month TEXT NOT NULL DEFAULT '',
+    questions TEXT NOT NULL DEFAULT '',
+    tips TEXT NOT NULL DEFAULT '',
+    anonymous INTEGER NOT NULL DEFAULT 0,
+    created INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS interviews_company ON interviews(company_key, id)',
+  `CREATE TABLE IF NOT EXISTS interview_votes (
+    interview_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (interview_id, user_id)
+  )`,
   // Referral board: members who can refer people into a company (kind 'refer') or know people there (kind 'contact').
   `CREATE TABLE IF NOT EXISTS referral_offers (
     id INTEGER PRIMARY KEY,
@@ -482,6 +508,24 @@ const q = {
   hasLeadVote: stmt('SELECT 1 AS x FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
   addLeadVote: stmt('INSERT OR IGNORE INTO lead_votes (lead_id, user_id) VALUES (?, ?)'),
   delLeadVote: stmt('DELETE FROM lead_votes WHERE lead_id = ? AND user_id = ?'),
+  ivList: stmt(`SELECT i.*, u.name, u.username,
+      (SELECT COUNT(*) FROM interview_votes v WHERE v.interview_id = i.id) AS votes,
+      (SELECT COUNT(*) FROM interview_votes v WHERE v.interview_id = i.id AND v.user_id = ?) AS mine
+    FROM interviews i JOIN users u ON u.id = i.user_id
+    WHERE i.deleted = 0 AND u.banned = 0 AND (? = '' OR i.company_key = ?)
+      AND i.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
+    ORDER BY i.id DESC LIMIT 300`),
+  ivSpellings: stmt(`SELECT i.company_key AS k, i.company AS name, COUNT(*) AS n, MAX(i.id) AS last
+    FROM interviews i JOIN users u ON u.id = i.user_id WHERE i.deleted = 0 AND u.banned = 0 GROUP BY i.company_key, i.company`),
+  iv: stmt('SELECT * FROM interviews WHERE id = ?'),
+  ivSince: stmt('SELECT COUNT(*) AS n FROM interviews WHERE user_id = ? AND created > ?'),
+  addIv: stmt(`INSERT INTO interviews (user_id, company, company_key, role, level, rounds, difficulty, outcome, wait_days, mode, month, questions, tips, anonymous, created)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+  delIv: stmt("UPDATE interviews SET deleted = 1, questions = '', tips = '' WHERE id = ?"),
+  delIvVotes: stmt('DELETE FROM interview_votes WHERE interview_id = ?'),
+  hasIvVote: stmt('SELECT 1 AS x FROM interview_votes WHERE interview_id = ? AND user_id = ?'),
+  addIvVote: stmt('INSERT OR IGNORE INTO interview_votes (interview_id, user_id) VALUES (?, ?)'),
+  delIvVote: stmt('DELETE FROM interview_votes WHERE interview_id = ? AND user_id = ?'),
   refOffers: stmt(`SELECT o.id, o.user_id, o.company, o.kind, o.roles, o.note, o.open, o.updated, u.name, u.username,
       (SELECT COUNT(*) FROM referral_asks a WHERE a.offer_id = o.id AND a.created > ?) AS asks,
       (SELECT a.created FROM referral_asks a WHERE a.offer_id = o.id AND a.user_id = ?) AS my_ask
@@ -725,8 +769,8 @@ setInterval(() => {
 //    changes weekly. Markers for different things cannot be linked, and markers and secret are deleted after the week.
 //  - The owner's own use is not counted, nor anyone whose browser sends Do Not Track or Global Privacy Control.
 //  - Wellbeing is never counted. Counts of 1 to 4 people are only ever given as "under 5".
-const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones', 'review'];
-const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin'];
+const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones', 'review', 'experiences'];
+const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin', 'story'];
 const USAGE_METRICS = ['active', ...USAGE_VIEWS.map((x) => 'v:' + x), ...USAGE_DID.map((x) => 'a:' + x)];
 const USAGE_FEW = 5;
 const usageDay = () => dayKey(process.env.USAGE_TEST_CLOCK ? new Date(Number(fs.readFileSync(process.env.USAGE_TEST_CLOCK, 'utf8'))) : undefined);
@@ -1052,6 +1096,7 @@ const EXPORTS = [
   ['messages', "SELECT channel, text, created FROM messages WHERE user_id = ? AND deleted = 0 AND (channel LIKE 'room:%' OR channel LIKE 'qotd:%' OR channel LIKE 'dm:%')", 1],
   ['jobLeads', 'SELECT title, company, location, url, note, created FROM job_leads WHERE user_id = ? AND deleted = 0', 1],
   ['referralOffers', 'SELECT company, kind, roles, note, open, created FROM referral_offers WHERE user_id = ? AND deleted = 0', 1],
+  ['interviewExperiences', 'SELECT company, role, level, rounds, difficulty, outcome, wait_days, mode, month, questions, tips, anonymous, created FROM interviews WHERE user_id = ? AND deleted = 0', 1],
   ['referralRequests', 'SELECT o.company, a.created FROM referral_asks a JOIN referral_offers o ON o.id = a.offer_id WHERE a.user_id = ?', 1],
   ['jobAlerts', 'SELECT what, place, remote, field, created FROM job_alerts WHERE user_id = ?', 1],
   ['buddySettings', 'SELECT seeking, goal, updated FROM buddy_prefs WHERE user_id = ?', 1],
@@ -1087,6 +1132,8 @@ async function deleteAccount(u) {
   await exec('DELETE FROM replies WHERE user_id = ? OR post_id IN (SELECT id FROM posts WHERE user_id = ?)', [id, id]);
   await exec('DELETE FROM posts WHERE user_id = ?', [id]);
   await exec('DELETE FROM lead_votes WHERE user_id = ?', [id]);
+  await exec('DELETE FROM interview_votes WHERE user_id = ? OR interview_id IN (SELECT id FROM interviews WHERE user_id = ?)', [id, id]);
+  await exec('DELETE FROM interviews WHERE user_id = ?', [id]);
   await exec("UPDATE job_leads SET deleted = 1, title = '', company = '', location = '', url = '', note = '' WHERE user_id = ?", [id]);
   await exec('DELETE FROM referral_asks WHERE user_id = ? OR offer_id IN (SELECT id FROM referral_offers WHERE user_id = ?)', [id, id]);
   await exec("UPDATE referral_offers SET deleted = 1, company = '', roles = '', note = '' WHERE user_id = ?", [id]);
@@ -1327,6 +1374,7 @@ async function api(req, res, route) {
   if (await profileApi(req, res, route, user)) return;
   if (await jobsApi(req, res, route, user)) return;
   if (await referralApi(req, res, route, user)) return;
+  if (await interviewApi(req, res, route, user)) return;
   if (await buddyApi(req, res, route, user)) return;
   if (await pushApi(req, res, route, user)) return;
   if (await usageApi(req, res, route, user)) return;
@@ -1808,6 +1856,154 @@ async function referralApi(req, res, route, user) {
   return false;
 }
 
+// ---------- interview experiences ----------
+// Members say what a company's interview was like. Posted without a name, members see "A member";
+// the author is still stored, so moderators can act if it is reported, and so it goes when the account is deleted.
+const IV_LEVELS = ['', 'fresher', '1-3', '3-6', '6+'];
+const IV_ROUNDS = ['Online test', 'Phone screen', 'Group discussion', 'Technical', 'Case study', 'Assignment', 'Manager', 'HR'];
+const IV_OUTCOMES = ['offer', 'rejected', 'waiting', 'no-reply', 'withdrew'];
+const IV_MODES = ['', 'online', 'in-person', 'mixed'];
+const IV_PER_DAY = 5;
+// One spelling per company, so "Infosys Ltd." and "infosys" are found together. app.js has the same function.
+function companyKey(name) {
+  const k = String(name || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9À-￿]+/g, ' ').trim();
+  return k.replace(/(\s+(pvt|private|ltd|limited|inc|llp|llc|corp|corporation|plc))+$/, '').trim().slice(0, 60);
+}
+function para(v, max, label) { // several lines of text, tidied
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v !== 'string') throw new HttpError(400, label + ' should be text.');
+  const t = v.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (t.length > max) throw new HttpError(400, label + ' is too long (max ' + max + ' characters).');
+  return t;
+}
+function cleanInterview(b) {
+  const company = line(b.company, 60, 'Company'), key = companyKey(company);
+  if (!key) throw new HttpError(400, 'Which company was it?');
+  const role = line(b.role, 80, 'Role');
+  if (!role) throw new HttpError(400, 'Which role was it for?');
+  const outcome = IV_OUTCOMES.includes(b.outcome) ? b.outcome : 'waiting';
+  const d = Number(b.difficulty);
+  let wait = null;
+  if (b.waitDays !== undefined && b.waitDays !== null && b.waitDays !== '' && (outcome === 'offer' || outcome === 'rejected')) {
+    wait = Number(b.waitDays);
+    if (!Number.isInteger(wait) || wait < 0 || wait > 365) throw new HttpError(400, 'Days until you heard back: a whole number from 0 to 365.');
+  }
+  let month = '';
+  if (b.month) {
+    if (typeof b.month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month) || b.month < '2015-01' || b.month > dayKey().slice(0, 7)) {
+      throw new HttpError(400, 'Pick the month of the interview, between 2015 and now.');
+    }
+    month = b.month;
+  }
+  const iv = {
+    company, key, role, outcome, wait, month,
+    level: IV_LEVELS.includes(b.level) ? b.level : '',
+    rounds: IV_ROUNDS.filter((r) => Array.isArray(b.rounds) && b.rounds.includes(r)),
+    difficulty: Number.isInteger(d) && d >= 1 && d <= 5 ? d : 3,
+    mode: IV_MODES.includes(b.mode) ? b.mode : '',
+    questions: para(b.questions, 1500, 'Questions'),
+    tips: para(b.tips, 600, 'Tips'),
+    anonymous: b.anonymous === true
+  };
+  if (!iv.rounds.length && !iv.questions && !iv.tips) throw new HttpError(400, 'Add the rounds, a question they asked or a tip, so it helps the next person.');
+  return iv;
+}
+function ivView(r, user) {
+  const own = r.user_id === user.id, hide = !!r.anonymous && !own;
+  let rounds = [];
+  try { rounds = JSON.parse(r.rounds).filter((x) => IV_ROUNDS.includes(x)); } catch (e) { /* none */ }
+  return {
+    id: r.id, company: r.company, key: r.company_key, role: r.role, level: r.level, rounds, difficulty: r.difficulty, outcome: r.outcome,
+    waitDays: r.wait_days === null || r.wait_days === undefined ? null : Number(r.wait_days), mode: r.mode, month: r.month,
+    questions: r.questions, tips: r.tips, t: r.created, anonymous: !!r.anonymous, own,
+    name: hide ? '' : r.name, username: hide ? '' : r.username, // never who wrote an anonymous one
+    helpful: Number(r.votes) || 0, mine: !!Number(r.mine)
+  };
+}
+// How to write a company's name: the spelling with capitals that most people used ("Infosys Ltd." over "infosys").
+const betterName = (x, y) => (/[A-Z]/.test(y.name) - /[A-Z]/.test(x.name)) || (y.n - x.n) || (y.last - x.last);
+async function ivCompanies() {
+  const byKey = new Map();
+  for (const r of await q.ivSpellings.all()) {
+    const s = { name: r.name, n: Number(r.n), last: Number(r.last) }, c = byKey.get(r.k) || { key: r.k, n: 0, last: 0, spellings: [] };
+    c.n += s.n; c.last = Math.max(c.last, s.last); c.spellings.push(s);
+    byKey.set(r.k, c);
+  }
+  return [...byKey.values()].sort((a, b) => b.n - a.n || b.last - a.last).slice(0, 500)
+    .map((c) => ({ key: c.key, n: c.n, name: c.spellings.sort(betterName)[0].name }));
+}
+// What the experiences at one company add up to.
+function ivSummary(list) {
+  const n = list.length, waits = list.map((x) => x.waitDays).filter((x) => x !== null).sort((a, b) => a - b);
+  const outcomes = {}, rounds = {};
+  for (const x of list) { outcomes[x.outcome] = (outcomes[x.outcome] || 0) + 1; for (const r of x.rounds) rounds[r] = (rounds[r] || 0) + 1; }
+  return {
+    count: n, difficulty: n ? Math.round(list.reduce((s, x) => s + x.difficulty, 0) / n * 10) / 10 : 0,
+    outcomes, rounds: IV_ROUNDS.filter((r) => rounds[r]).map((r) => ({ name: r, n: rounds[r] })),
+    waitDays: waits.length ? waits[Math.floor((waits.length - 1) / 2)] : null, waitCount: waits.length
+  };
+}
+
+async function interviewApi(req, res, route, user) {
+  const method = req.method;
+  let m;
+  if (!route.startsWith('/interviews')) return false;
+
+  if (method === 'GET' && route === '/interviews/companies') {
+    send(res, 200, { companies: await ivCompanies() });
+    return true;
+  }
+  if (method === 'GET' && route === '/interviews') {
+    const key = companyKey(new URL(req.url, 'http://x').searchParams.get('company'));
+    const list = (await q.ivList.all(user.id, key, key, user.id)).map((r) => ivView(r, user));
+    if (key) list.sort((a, b) => b.helpful - a.helpful || b.t - a.t); // most helpful first within one company
+    const spellings = new Map();
+    for (const x of list) { const s = spellings.get(x.company) || { name: x.company, n: 0, last: 0 }; s.n++; s.last = Math.max(s.last, x.id); spellings.set(x.company, s); }
+    const name = key && list.length ? [...spellings.values()].sort(betterName)[0].name : '';
+    send(res, 200, { interviews: list, summary: key ? ivSummary(list) : null, company: name, key });
+    return true;
+  }
+  if (method === 'POST' && route === '/interviews') {
+    limit('write:' + user.id, 20, 60000);
+    const iv = cleanInterview(await readBody(req));
+    if ((await q.ivSince.get(user.id, Date.now() - 864e5)).n >= IV_PER_DAY) throw new HttpError(429, 'You have shared ' + IV_PER_DAY + ' experiences today. Thank you! Share more tomorrow.');
+    const info = await q.addIv.run(user.id, iv.company, iv.key, iv.role, iv.level, JSON.stringify(iv.rounds), iv.difficulty, iv.outcome, iv.wait, iv.mode, iv.month, iv.questions, iv.tips, iv.anonymous ? 1 : 0, Date.now());
+    did(req, user, 'story');
+    send(res, 201, { id: info.lastId, key: iv.key });
+    return true;
+  }
+  if ((m = /^\/interviews\/(\d{1,15})(\/helpful|\/report)?$/.exec(route))) {
+    const iv = await q.iv.get(Number(m[1]));
+    if (!iv || iv.deleted) throw new HttpError(404, 'That experience is gone.');
+    if (method === 'POST' && m[2] === '/helpful') {
+      limit('react:' + user.id, 120, 60000);
+      if (iv.user_id === user.id) throw new HttpError(400, 'That one is yours.');
+      if (await q.hasIvVote.get(iv.id, user.id)) await q.delIvVote.run(iv.id, user.id); else await q.addIvVote.run(iv.id, user.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'DELETE' && !m[2]) {
+      if (iv.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete experiences you shared.');
+      await q.delIv.run(iv.id); await q.delIvVotes.run(iv.id);
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (method === 'POST' && m[2] === '/report') {
+      limit('report:' + user.id, 20, 60 * 60000);
+      if (iv.user_id === user.id) throw new HttpError(400, 'You cannot report your own experience.');
+      const b = await readBody(req);
+      const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
+      const snapshot = [iv.role + ' at ' + iv.company + (iv.anonymous ? ' (posted without a name)' : ''), iv.questions, iv.tips].filter(Boolean).join('\n');
+      const info = await q.addMsg.run('iv:' + iv.id, iv.user_id, snapshot, Date.now());
+      await q.addReport.run(info.lastId, user.id, reason, Date.now());
+      await tellModerators(true);
+      send(res, 201, { ok: true });
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------- profiles ----------
 // Visible to signed-in members only. Everything is optional except the display name.
 
@@ -2180,7 +2376,7 @@ async function peerByName(name, me) {
   return u;
 }
 // 'profile:<id>' messages are snapshots of a reported profile: never listed anywhere, only shown to moderators.
-const isPublicChannel = (channel) => /^(room|qotd|profile|lead|ref):/.test(channel);
+const isPublicChannel = (channel) => /^(room|qotd|profile|lead|ref|iv):/.test(channel);
 // Who can see a stored message: anyone for rooms and question-of-the-day answers, only the two people for a DM.
 function canSee(channel, userId) {
   if (isPublicChannel(channel)) return true;
@@ -2204,6 +2400,7 @@ async function removeMessage(m) {
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
   else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
   else if (m.channel.startsWith('ref:')) await q.delRefOffer.run(Number(m.channel.slice(4)));
+  else if (m.channel.startsWith('iv:')) { await q.delIv.run(Number(m.channel.slice(3))); await q.delIvVotes.run(Number(m.channel.slice(3))); }
   else await broadcastDelete(m.channel, m.id);
 }
 
@@ -2412,7 +2609,8 @@ async function chatApi(req, res, route, user) {
           : r.channel.startsWith('qotd:') ? 'Question of the Day'
           : r.channel.startsWith('profile:') ? 'a profile'
           : r.channel.startsWith('lead:') ? 'a job lead'
-          : r.channel.startsWith('ref:') ? 'a referral offer' : 'a private message',
+          : r.channel.startsWith('ref:') ? 'a referral offer'
+          : r.channel.startsWith('iv:') ? 'an interview experience' : 'a private message',
         author: r.author, authorName: r.author_name, authorBanned: !!r.author_banned, reporter: r.reporter
       }));
       send(res, 200, { reports, banned: await q.bannedUsers.all() });

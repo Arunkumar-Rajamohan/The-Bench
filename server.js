@@ -17,6 +17,8 @@ const MAX_BODY = 256 * 1024;
 const MAX_DATA = 200 * 1024;
 const TAGS = ['Win', 'Rant', 'Question', 'Tip'];
 const REACTS = ['🙌', '💪', '😂'];
+const CHAT_REACTS = ['👍', '❤️', '😂', '🙌', '🙏', '🎉'];
+const EDIT_WINDOW = 24 * 3600e3; // own chat messages can be fixed for a day after sending
 const ROOMS = [
   { slug: 'lobby', desc: 'Hang out, say hi, talk about anything.' },
   { slug: 'job-leads', desc: 'Share openings you found. Real jobs only: never ones that ask you to pay.' },
@@ -293,7 +295,10 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0', // goes up by one with every save of data
   'ALTER TABLE messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0', // 1 = never shows "Seen" (referral requests)
-  'ALTER TABLE users ADD COLUMN last_day TEXT' // the last day they opened The Bench; used only to count, never shown to members
+  'ALTER TABLE users ADD COLUMN last_day TEXT', // the last day they opened The Bench; used only to count, never shown to members
+  'ALTER TABLE messages ADD COLUMN reply_to INTEGER NOT NULL DEFAULT 0', // the message this one answers, in the same chat
+  'ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0', // when the author last changed it; 0 = never
+  'ALTER TABLE reports ADD COLUMN text TEXT' // what a reported chat message said when it was reported; cleared once handled
 ];
 
 async function initDb() {
@@ -338,12 +343,25 @@ const q = {
   delReact: stmt('DELETE FROM reactions WHERE post_id = ? AND user_id = ? AND emoji = ?'),
 
   // chat
-  history: stmt(`SELECT m.id, m.text, m.created, u.name, u.username FROM messages m JOIN users u ON u.id = m.user_id
+  // A reply carries what it answers, only from the same chat, and never the words of someone banned or blocked.
+  history: stmt(`SELECT m.id, m.text, m.created, m.edited, m.reply_to, u.name, u.username,
+      r.text AS r_text, r.deleted AS r_deleted, ru.name AS r_name, ru.username AS r_username, ru.banned AS r_banned,
+      (r.user_id IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)) AS r_blocked
+    FROM messages m JOIN users u ON u.id = m.user_id
+    LEFT JOIN messages r ON r.id = m.reply_to AND r.channel = m.channel
+    LEFT JOIN users ru ON ru.id = r.user_id
     WHERE m.channel = ? AND m.deleted = 0 AND m.id < ? AND u.banned = 0
       AND m.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ?)
     ORDER BY m.id DESC LIMIT 50`),
+  chatReacts: stmt(`SELECT r.message_id, r.emoji, COUNT(*) AS n, SUM(r.user_id = ?) AS mine FROM msg_reacts r
+    WHERE r.message_id IN (SELECT id FROM messages WHERE channel = ? AND id >= ? AND id <= ?) GROUP BY r.message_id, r.emoji`),
+  msgReactCount: stmt('SELECT COUNT(*) AS n FROM msg_reacts WHERE message_id = ? AND emoji = ?'),
+  delMsgReacts: stmt('DELETE FROM msg_reacts WHERE message_id = ?'),
+  replyTo: stmt('SELECT m.id, m.channel, m.user_id, m.deleted, m.text, u.name, u.username, u.banned FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?'),
+  editMsg: stmt('UPDATE messages SET text = ?, edited = ? WHERE id = ? AND deleted = 0'),
   addMsg: stmt('INSERT INTO messages (channel, user_id, text, created) VALUES (?, ?, ?, ?)'),
-  addDmMsg: stmt('INSERT INTO messages (channel, user_id, text, created, quiet) VALUES (?, ?, ?, ?, ?)'),
+  addChatMsg: stmt('INSERT INTO messages (channel, user_id, text, created, reply_to) VALUES (?, ?, ?, ?, ?)'),
+  addDmMsg: stmt('INSERT INTO messages (channel, user_id, text, created, quiet, reply_to) VALUES (?, ?, ?, ?, ?, ?)'),
   receipts: stmt('SELECT is_on FROM receipts WHERE user_id = ?'),
   saveReceipts: stmt('INSERT INTO receipts (user_id, is_on) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET is_on = excluded.is_on'),
   dmRead: stmt('SELECT last_id FROM dm_reads WHERE user_id = ? AND key = ?'),
@@ -352,7 +370,7 @@ const q = {
   dropDmReads: stmt('DELETE FROM dm_reads WHERE user_id = ?'),
   newestSeen: stmt('SELECT MAX(id) AS id FROM messages WHERE channel = ? AND user_id = ? AND deleted = 0 AND quiet = 0 AND id > ? AND id <= ?'),
   newestMsg: stmt('SELECT MAX(id) AS id FROM messages'),
-  msg: stmt('SELECT id, channel, user_id, deleted FROM messages WHERE id = ?'),
+  msg: stmt('SELECT id, channel, user_id, deleted, created, text FROM messages WHERE id = ?'),
   // Keep the text of a message someone reported, so a moderator can still review it after the author deletes it.
   delMsg: stmt(`UPDATE messages SET deleted = 1,
     text = CASE WHEN EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0) THEN text ELSE '' END
@@ -374,7 +392,9 @@ const q = {
   delBlock: stmt('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?'),
   myBlocks: stmt('SELECT u.username, u.name FROM blocks b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ? ORDER BY b.created DESC'),
   addReport: stmt('INSERT OR IGNORE INTO reports (message_id, reporter_id, reason, created) VALUES (?, ?, ?, ?)'),
-  openReports: stmt(`SELECT r.id, r.reason, r.created, r.message_id, m.text, m.channel, m.deleted, m.created AS msg_created,
+  addMsgReport: stmt('INSERT OR IGNORE INTO reports (message_id, reporter_id, reason, created, text) VALUES (?, ?, ?, ?, ?)'),
+  // Moderators see what was reported, even if the author changed it afterwards.
+  openReports: stmt(`SELECT r.id, r.reason, r.created, r.message_id, COALESCE(r.text, m.text) AS text, m.edited, m.channel, m.deleted, m.created AS msg_created,
       au.username AS author, au.name AS author_name, au.banned AS author_banned, ru.username AS reporter
     FROM reports r JOIN messages m ON m.id = r.message_id JOIN users au ON au.id = m.user_id JOIN users ru ON ru.id = r.reporter_id
     WHERE r.resolved = 0 ORDER BY r.id LIMIT 100`),
@@ -396,8 +416,8 @@ const q = {
   unclaimSent: stmt('DELETE FROM push_sent WHERE user_id = ? AND key = ?'),
   openReportCount: stmt('SELECT COUNT(*) AS n FROM reports r JOIN messages m ON m.id = r.message_id WHERE r.resolved = 0'),
   report: stmt('SELECT * FROM reports WHERE id = ?'),
-  resolveReport: stmt('UPDATE reports SET resolved = 1 WHERE id = ?'),
-  resolveMsgReports: stmt('UPDATE reports SET resolved = 1 WHERE message_id = ?'),
+  resolveReport: stmt('UPDATE reports SET resolved = 1, text = NULL WHERE id = ?'),
+  resolveMsgReports: stmt('UPDATE reports SET resolved = 1, text = NULL WHERE message_id = ?'),
   // After the last open report on an already-deleted message is closed, drop the text that was kept for review.
   wipeIfDeleted: stmt(`UPDATE messages SET text = '' WHERE id = ? AND deleted = 1
     AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.message_id = messages.id AND r.resolved = 0)`),
@@ -1019,6 +1039,7 @@ const EXPORTS = [
   ['buddySettings', 'SELECT seeking, goal, updated FROM buddy_prefs WHERE user_id = ?', 1],
   ['buddyRequestsSent', 'SELECT note, status, created FROM buddy_requests WHERE from_id = ?', 1],
   ['readReceiptSetting', 'SELECT is_on FROM receipts WHERE user_id = ?', 1],
+  ['chatReactions', 'SELECT message_id, emoji FROM msg_reacts WHERE user_id = ?', 1],
   ['notificationSettings', 'SELECT data FROM push_prefs WHERE user_id = ?', 1],
   ['notificationDevices', 'SELECT created FROM push_subs WHERE user_id = ?', 1],
   ['checkins', 'SELECT day, plan, done, updated FROM checkins WHERE user_id = ?', 1],
@@ -1040,7 +1061,7 @@ async function deleteAccount(u) {
     await exec('DELETE FROM dm_reads WHERE key = ?', [d.key]);
   }
   await exec(BLANK_MSG + 'WHERE user_id = ?', [id]);
-  await exec('DELETE FROM msg_reacts WHERE user_id = ?', [id]);
+  await exec('DELETE FROM msg_reacts WHERE user_id = ? OR message_id IN (SELECT id FROM messages WHERE user_id = ?)', [id, id]);
   await exec('DELETE FROM dms WHERE a = ? OR b = ?', [id, id]);
   await exec('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?', [id, id]);
   await exec('DELETE FROM reports WHERE reporter_id = ? AND resolved = 1', [id]);
@@ -2057,7 +2078,72 @@ async function funApi(req, res, route, user) {
 // see a DM message only when one of those two people reports it.
 
 const dmKey = (x, y) => Math.min(x, y) + ':' + Math.max(x, y);
-const wire = (m) => ({ id: m.id, text: m.text, t: m.created, name: m.name, username: m.username });
+// A short, one-line copy of a message, shown above a reply to it.
+function snippet(t) {
+  const s = String(t || '').replace(/\s+/g, ' ').trim(), a = Array.from(s);
+  return a.length > 140 ? a.slice(0, 140).join('') + '…' : s;
+}
+function replyView(m) {
+  if (!m.reply_to) return undefined;
+  if (m.r_username == null || m.r_deleted) return { id: m.reply_to, gone: true };
+  if (m.r_banned || m.r_blocked) return { id: m.reply_to, hidden: true };
+  return { id: m.reply_to, name: m.r_name, username: m.r_username, text: snippet(m.r_text) };
+}
+function wire(m, reacts) {
+  const o = { id: m.id, text: m.text, t: m.created, name: m.name, username: m.username };
+  if (m.edited) o.edited = m.edited;
+  const reply = replyView(m);
+  if (reply) o.reply = reply;
+  const x = reacts && reacts.get(m.id);
+  if (x) { o.reacts = x.reacts; o.mine = x.mine; }
+  return o;
+}
+// One page of a chat, newest last. `blocker` hides people the viewer blocked (0 in private chats: both see everything).
+async function chatPage(channel, req, user, blocker) {
+  const rows = await q.history.all(blocker, channel, beforeParam(req), blocker);
+  const reacts = new Map();
+  if (rows.length) {
+    const ids = rows.map((r) => r.id);
+    for (const r of await q.chatReacts.all(user.id, channel, Math.min(...ids), Math.max(...ids))) {
+      const x = reacts.get(r.message_id) || { reacts: {}, mine: {} };
+      x.reacts[r.emoji] = Number(r.n);
+      if (Number(r.mine)) x.mine[r.emoji] = true;
+      reacts.set(r.message_id, x);
+    }
+  }
+  return { messages: rows.reverse().map((m) => wire(m, reacts)), more: rows.length === 50 };
+}
+// The message a new one replies to: it must still be there, in the same chat, from someone the sender can see.
+async function replyTarget(channel, id, user) {
+  if (id === undefined || id === null || id === 0) return null;
+  if (!Number.isSafeInteger(id) || id < 1) throw new HttpError(400, 'Which message are you replying to?');
+  const t = await q.replyTo.get(id);
+  // (private chats check blocks when the message is sent)
+  if (!t || t.deleted || t.channel !== channel || t.banned || (channel.startsWith('room:') && (await q.isBlocked.get(user.id, t.user_id)))) {
+    throw new HttpError(404, 'The message you replied to is no longer there.');
+  }
+  return { authorId: t.user_id, view: { id: t.id, name: t.name, username: t.username, text: snippet(t.text) } };
+}
+// Send a room event to everyone, except people who blocked `authorId`. People who blocked the author of the
+// message being answered get it without the quoted words.
+async function roomPush(ev, authorId, reply) {
+  const skip = new Set((await q.blockersOf.all(authorId)).map((r) => r.blocker_id));
+  const hide = reply && reply.authorId !== authorId ? (await q.blockersOf.all(reply.authorId)).map((r) => r.blocker_id).filter((id) => !skip.has(id)) : [];
+  for (const id of hide) skip.add(id);
+  pushAll(ev, skip);
+  if (hide.length) {
+    const quiet = Object.assign({}, ev, { msg: Object.assign({}, ev.msg, { reply: { id: reply.view.id, hidden: true } }) });
+    for (const id of hide) push(id, quiet);
+  }
+}
+// Tell both people in a private chat, each under the other person's name.
+async function dmPush(channel, ev) {
+  const [a, b] = channel.slice(3).split(':').map(Number);
+  const ua = await q.userById.get(a), ub = await q.userById.get(b);
+  if (!ua || !ub) return;
+  push(a, Object.assign({}, ev, { channel: 'dm:' + ub.username }));
+  push(b, Object.assign({}, ev, { channel: 'dm:' + ua.username }));
+}
 function beforeParam(req) {
   const v = Number(new URL(req.url, 'http://x').searchParams.get('before'));
   return Number.isInteger(v) && v > 0 ? v : Number.MAX_SAFE_INTEGER;
@@ -2088,6 +2174,7 @@ async function broadcastDelete(channel, id) {
 }
 async function removeMessage(m) {
   await q.delMsg.run(m.id);
+  await q.delMsgReacts.run(m.id);
   // Removing a reported profile snapshot clears that member's profile (their name and account stay).
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
   else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
@@ -2096,7 +2183,7 @@ async function removeMessage(m) {
 }
 
 // Send a private message (checks blocks and the new-conversations limit). Used by chat and by referral requests.
-async function sendDm(user, peer, body, quiet) {
+async function sendDm(user, peer, body, quiet, reply) {
   const key = dmKey(user.id, peer.id);
   if (await q.isBlocked.get(user.id, peer.id)) throw new HttpError(403, 'You blocked this person. Unblock them to send a message.');
   if (await q.isBlocked.get(peer.id, user.id)) throw new HttpError(403, 'You cannot message this person.');
@@ -2108,9 +2195,10 @@ async function sendDm(user, peer, body, quiet) {
     await q.addDm.run(key, Math.min(user.id, peer.id), Math.max(user.id, peer.id), user.id, Date.now());
   }
   const now = Date.now();
-  const info = await q.addDmMsg.run('dm:' + key, user.id, body, now, quiet ? 1 : 0);
+  const info = await q.addDmMsg.run('dm:' + key, user.id, body, now, quiet ? 1 : 0, reply ? reply.view.id : 0);
   await q.touchDm.run(info.lastId, key);
   const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
+  if (reply) msg.reply = reply.view;
   push(peer.id, { type: 'msg', channel: 'dm:' + user.username, msg, peer: { username: user.username, name: user.name } });
   if (once('dm:' + user.id + ':' + peer.id, 60000)) notify(peer.id, 'dm', { title: user.name, body: 'Sent you a private message.', url: '/#/dm/' + user.username, tag: 'dm-' + user.username, ttl: 86400, urgent: true });
   push(user.id, { type: 'msg', channel: 'dm:' + peer.username, msg, peer: { username: peer.username, name: peer.name } });
@@ -2150,19 +2238,19 @@ async function chatApi(req, res, route, user) {
     if (!ROOM_SLUGS.has(slug)) throw new HttpError(404, 'No such room.');
     const channel = 'room:' + slug;
     if (method === 'GET') {
-      const rows = await q.history.all(channel, beforeParam(req), user.id);
-      send(res, 200, { messages: rows.reverse().map(wire), more: rows.length === 50 });
+      send(res, 200, await chatPage(channel, req, user, user.id));
       return true;
     }
     if (method === 'POST') {
       limit('chat:' + user.id, 20, 60000);
       const b = await readBody(req);
       const body = text(b.text, MSG_MAX, 'Message');
+      const reply = await replyTarget(channel, b.replyTo, user);
       const now = Date.now();
-      const info = await q.addMsg.run(channel, user.id, body, now);
+      const info = await q.addChatMsg.run(channel, user.id, body, now, reply ? reply.view.id : 0);
       const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
-      const blockers = new Set((await q.blockersOf.all(user.id)).map((r) => r.blocker_id));
-      pushAll({ type: 'msg', channel, msg }, blockers);
+      if (reply) msg.reply = reply.view;
+      await roomPush({ type: 'msg', channel, msg }, user.id, reply);
       did(req, user, 'room');
       send(res, 201, { msg });
       return true;
@@ -2191,29 +2279,35 @@ async function chatApi(req, res, route, user) {
     const key = dmKey(user.id, peer.id);
     const channel = 'dm:' + key;
     if (method === 'GET') {
-      const rows = await q.history.all(channel, beforeParam(req), 0);
-      send(res, 200, {
-        messages: rows.reverse().map(wire), more: rows.length === 50,
+      send(res, 200, Object.assign(await chatPage(channel, req, user, 0), {
         peer: { username: peer.username, name: peer.name },
         blockedByMe: !!(await q.isBlocked.get(user.id, peer.id)),
         seen: await seenBy(user.id, peer.id)
-      });
+      }));
       return true;
     }
     if (method === 'POST') {
       limit('chat:' + user.id, 20, 60000);
       const b = await readBody(req);
       const body = text(b.text, MSG_MAX, 'Message');
-      const msg = await sendDm(user, peer, body);
+      const reply = await replyTarget(channel, b.replyTo, user);
+      const msg = await sendDm(user, peer, body, false, reply);
       did(req, user, 'dm');
       send(res, 201, { msg });
       return true;
     }
   }
 
-  if ((m = /^\/chat\/msg\/(\d{1,15})(\/report)?$/.exec(route))) {
+  if ((m = /^\/chat\/msg\/(\d{1,15})(\/report|\/react)?$/.exec(route))) {
     const msg = await q.msg.get(Number(m[1]));
     if (!msg || msg.deleted || !canSee(msg.channel, user.id)) throw new HttpError(404, 'That message is gone.');
+    const inChat = /^(room|dm):/.test(msg.channel);
+    // In a private chat, nobody can change anything once either person has blocked the other.
+    const dmBlocked = async () => {
+      if (!msg.channel.startsWith('dm:')) return false;
+      const other = msg.channel.slice(3).split(':').map(Number).find((x) => x !== user.id);
+      return !!((await q.isBlocked.get(user.id, other)) || (await q.isBlocked.get(other, user.id)));
+    };
 
     if (method === 'DELETE' && !m[2]) {
       if (msg.user_id !== user.id && !isAdmin(user)) throw new HttpError(403, 'You can only delete your own messages.');
@@ -2221,12 +2315,44 @@ async function chatApi(req, res, route, user) {
       send(res, 200, { ok: true });
       return true;
     }
-    if (method === 'POST' && m[2]) {
+    if (method === 'PATCH' && !m[2]) {
+      limit('edit:' + user.id, 30, 60000);
+      if (msg.user_id !== user.id) throw new HttpError(403, 'You can only edit your own messages.');
+      if (!inChat) throw new HttpError(400, 'This cannot be edited.');
+      if (Date.now() - msg.created > EDIT_WINDOW) throw new HttpError(400, 'Messages can be edited for 24 hours after sending.');
+      if (await dmBlocked()) throw new HttpError(403, 'You cannot change messages in this chat any more.');
+      const b = await readBody(req);
+      const body = text(b.text, MSG_MAX, 'Message');
+      if (body === msg.text) { send(res, 200, { msg: { id: msg.id, text: body } }); return true; }
+      const now = Date.now();
+      await q.editMsg.run(body, now, msg.id);
+      const ev = { type: 'edit', channel: msg.channel, id: msg.id, text: body, edited: now };
+      if (msg.channel.startsWith('dm:')) await dmPush(msg.channel, ev);
+      else pushAll(ev, new Set((await q.blockersOf.all(user.id)).map((r) => r.blocker_id)));
+      send(res, 200, { msg: { id: msg.id, text: body, edited: now } });
+      return true;
+    }
+    if (method === 'POST' && m[2] === '/react') {
+      limit('react:' + user.id, 120, 60000);
+      if (!inChat) throw new HttpError(400, 'Reactions are not available here.');
+      const b = await readBody(req);
+      if (!CHAT_REACTS.includes(b.r)) throw new HttpError(400, 'Unknown reaction.');
+      if (await dmBlocked()) throw new HttpError(403, 'You cannot react in this chat any more.');
+      const on = !(await q.hasMsgReact.get(msg.id, user.id, b.r));
+      if (on) await q.addMsgReact.run(msg.id, user.id, b.r); else await q.delMsgReact.run(msg.id, user.id, b.r);
+      const n = Number((await q.msgReactCount.get(msg.id, b.r)).n);
+      // Only the count goes out, never who reacted.
+      const ev = { type: 'react', channel: msg.channel, id: msg.id, emoji: b.r, n };
+      if (msg.channel.startsWith('dm:')) await dmPush(msg.channel, ev); else pushAll(ev);
+      send(res, 200, { id: msg.id, emoji: b.r, n, on });
+      return true;
+    }
+    if (method === 'POST' && m[2] === '/report') {
       limit('report:' + user.id, 20, 60 * 60000);
       if (msg.user_id === user.id) throw new HttpError(400, 'You cannot report your own message.');
       const b = await readBody(req);
       const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 300) : '';
-      await q.addReport.run(msg.id, user.id, reason, Date.now());
+      await q.addMsgReport.run(msg.id, user.id, reason, Date.now(), msg.text);
       await tellModerators(true);
       send(res, 201, { ok: true });
       return true;
@@ -2256,7 +2382,7 @@ async function chatApi(req, res, route, user) {
 
     if (method === 'GET' && route === '/admin/reports') {
       const reports = (await q.openReports.all()).map((r) => ({
-        id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted,
+        id: r.id, reason: r.reason, t: r.created, messageId: r.message_id, text: r.text, deleted: !!r.deleted, editedSince: r.edited > r.created,
         where: r.channel.startsWith('room:') ? '#' + r.channel.slice(5)
           : r.channel.startsWith('qotd:') ? 'Question of the Day'
           : r.channel.startsWith('profile:') ? 'a profile'

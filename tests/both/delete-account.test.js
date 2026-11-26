@@ -176,7 +176,8 @@ function member() {
     // the raw database
     let d = dump();
     const found = Object.entries(d).flatMap(([t, rows]) => rows.filter((x) => JSON.stringify(x).includes(MARK) || JSON.stringify(x).includes(aName)).map((x) => t + ':' + JSON.stringify(x)));
-    check('only the reported message keeps its text', found.length === 1 && found[0].startsWith('messages:') && found[0].includes('reported'), found);
+    // the message itself, and the report's own copy of what was reported (so an edit cannot hide it); both go when the report is closed
+    check('only the reported message keeps its text', found.length === 2 && found.some((x) => x.startsWith('messages:')) && found.some((x) => x.startsWith('reports:')) && found.every((x) => x.includes('reported')), found);
     check('B\'s side of the private chat is gone', !JSON.stringify(d.messages).includes('secret reply from B'));
     check('other chats untouched', JSON.stringify(d.messages).includes('B to C stays'));
     const idRows = Object.entries(d).filter(([t]) => !['users', 'messages', 'job_leads', 'referral_offers'].includes(t))

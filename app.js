@@ -91,6 +91,10 @@
   var STAGES = ['Wishlist', 'Applied', 'Interview', 'Offer', 'Rejected'];
   var TAGS = ['Win', 'Rant', 'Question', 'Tip'];
   var REACTS = ['🙌', '💪', '😂'];
+  // Chat reactions, with words for screen readers. The server accepts exactly these.
+  var CHAT_REACTS = ['👍', '❤️', '😂', '🙌', '🙏', '🎉'];
+  var REACT_NAMES = { '👍': 'Thumbs up', '❤️': 'Heart', '😂': 'Laughing', '🙌': 'Raised hands', '🙏': 'Thank you', '🎉': 'Celebrate' };
+  var EDIT_MS = 24 * 3600e3; // own chat messages can be fixed for a day
   var MOODS = ['😞', '😕', '😐', '🙂', '🤩'];
 
   // ---------- interview practice: question packs ----------
@@ -2168,6 +2172,36 @@
         .then(function () { onChatEvent({ type: 'del', channel: ch, id: Number(d.id) }); }).catch(fail);
       return false;
     },
+    mreact: function (d) {
+      closeMenus();
+      var ch = activeChannel();
+      api('POST', '/api/chat/msg/' + Number(d.id) + '/react', { r: d.r })
+        .then(function (j) { applyReact(ch, Number(j.id), j.emoji, Number(j.n) || 0, !!j.on); })
+        .catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); });
+      return false;
+    },
+    'reply-msg': function (d) {
+      closeMenus();
+      var ch = activeChannel(), m = findMsg(ch, Number(d.id));
+      if (m) startReply(ch, m);
+      return false;
+    },
+    'edit-msg': function (d) {
+      closeMenus();
+      var ch = activeChannel(), m = findMsg(ch, Number(d.id));
+      if (m) startEdit(ch, m);
+      return false;
+    },
+    'compose-cancel': function () { endCompose(); focusBox(); return false; },
+    jump: function (d) {
+      var el = document.querySelector('#msgs .msg[data-id="' + Number(d.id) + '"]');
+      if (!el) { toast(chat.more[activeChannel()] ? 'That message is further up. Tap “Load older messages” to find it.' : 'That message is no longer here.'); return false; }
+      var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      el.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+      el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+      setTimeout(function () { el.classList.remove('flash'); }, 1700);
+      return false;
+    },
     mod: function (d) {
       if (d.a === 'ban' && !window.confirm('Delete this message and ban @' + d.u + '?\n\nThey are signed out and cannot log in. Their posts and messages are hidden. You can unban them later.')) return false;
       api('POST', '/api/admin/reports/' + Number(d.id), { action: d.a }).then(function () {
@@ -2731,16 +2765,37 @@
       return false;
     },
     chat: function (f, form) {
-      var ch = activeChannel(), body = String(f.get('text') || '').trim();
+      var ch = activeChannel(), body = String(f.get('text') || '').trim(), c = composeFor(ch);
       if (!ch || !body || chat.sending) return false;
       var box = form.querySelector('textarea'), btn = form.querySelector('button');
+      var done = function () { chat.sending = false; btn.disabled = false; if (document.body.contains(box)) box.focus(); };
+      if (c && c.mode === 'edit') {
+        var was = findMsg(ch, c.id);
+        if (was && was.text === body) { endCompose(); return false; } // nothing changed
+        chat.sending = true; btn.disabled = true;
+        api('PATCH', '/api/chat/msg/' + Number(c.id), { text: body }).then(function (j) {
+          applyEdit(ch, c.id, j.msg.text, j.msg.edited);
+          if (chat.compose === c) endCompose();
+        }).catch(function (e) {
+          if (e.status === 401) return fail(e);
+          toast(e.message);
+          if (e.status === 404 && chat.compose === c) { chat.compose = null; refreshCompose(); } // gone: what they typed stays, to send as new
+        }).then(done);
+        return false;
+      }
+      var payload = { text: body };
+      if (c && c.mode === 'reply') payload.replyTo = c.id;
       chat.sending = true; btn.disabled = true;
-      api('POST', channelUrl(ch), { text: body }).then(function (j) {
+      api('POST', channelUrl(ch), payload).then(function (j) {
         if (box.value.trim() === body) { box.value = ''; autosize(box); }
+        if (chat.compose === c && c) { chat.compose = null; refreshCompose(); }
         onChatEvent({ type: 'msg', channel: ch, msg: j.msg, peer: chat.peers[ch] });
         if (!isDm(ch) && !S.steps.hi) { S.steps.hi = true; save(); }
-      }).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); })
-        .then(function () { chat.sending = false; btn.disabled = false; if (document.body.contains(box)) box.focus(); });
+      }).catch(function (e) {
+        if (e.status === 401) return fail(e);
+        toast(e.message);
+        if (e.status === 404 && payload.replyTo && chat.compose === c) { chat.compose = null; refreshCompose(); }
+      }).then(done);
       return false;
     },
     auth: function (f, form) {
@@ -2839,7 +2894,7 @@
   var BASE_TITLE = document.title;
   var chat = freshChat();
   function freshChat() {
-    return { summary: null, receipts: null, read: {}, readSent: {}, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false };
+    return { summary: null, receipts: null, read: {}, readSent: {}, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false, compose: null };
   }
 
   function isChatView() { return !!me && !ui.newCode && currentView() === 'chat'; }
@@ -2923,9 +2978,86 @@
     return '<h3>Rooms</h3><nav class="chs" aria-label="Rooms">' + rooms + '</nav><h3 class="between">Direct messages <a class="h3-link" href="#/people">Find people</a></h3><nav class="chs" aria-label="Direct messages">' + dms + '</nav>';
   }
 
-  function composerHtml(label) {
-    return '<form class="composer" data-form="chat"><textarea id="chatbox" name="text" rows="1" maxlength="1000" placeholder="' + esc(label) + '" aria-label="' + esc(label) + '" required></textarea>' +
-      '<button class="btn primary">Send</button></form>';
+  function composerHtml(label, ch) {
+    var bar = composeBar(ch), c = composeFor(ch);
+    return '<div class="compose-bar" id="composebar"' + (bar ? '' : ' hidden') + '>' + bar + '</div>' +
+      '<form class="composer" data-form="chat"><textarea id="chatbox" name="text" rows="1" maxlength="1000" placeholder="' + esc(label) + '" aria-label="' + esc(label) + '" required></textarea>' +
+      '<button class="btn primary" id="chatsend">' + (c && c.mode === 'edit' ? 'Save' : 'Send') + '</button></form>';
+  }
+
+  // ----- replying and editing -----
+  // chat.compose is { ch, mode: 'reply', id, name, text } or { ch, mode: 'edit', id, draft }: draft is what was in the box before.
+  function composeFor(ch) { var c = chat.compose; return c && c.ch === ch ? c : null; }
+  function composeBar(ch) {
+    var c = composeFor(ch);
+    if (!c) return '';
+    var what = c.mode === 'edit' ? '<b>Editing your message</b>'
+      : '<span>Replying to <b>' + esc(c.name) + '</b></span><span class="cb-text">' + esc(c.text) + '</span>';
+    return '<div class="cb-what">' + what + '</div><button type="button" class="btn tiny ghost" data-act="compose-cancel" aria-label="' + (c.mode === 'edit' ? 'Stop editing' : 'Cancel reply') + '">' + ico('x') + '</button>';
+  }
+  function refreshCompose() {
+    var ch = activeChannel(), bar = document.getElementById('composebar'), btn = document.getElementById('chatsend'), c = composeFor(ch);
+    if (bar) { var h = composeBar(ch); bar.innerHTML = h; bar.hidden = !h; }
+    if (btn) btn.textContent = c && c.mode === 'edit' ? 'Save' : 'Send';
+  }
+  function focusBox(atEnd) {
+    var b = document.getElementById('chatbox');
+    if (!b) return;
+    b.focus();
+    if (atEnd) b.setSelectionRange(b.value.length, b.value.length);
+  }
+  function findMsg(ch, id) { return (chat.msgs[ch] || []).filter(function (m) { return m.id === id; })[0]; }
+  function dmLocked(ch) { var p = chat.peers[ch]; return isDm(ch) && !!p && !!p.blockedByMe; }
+  // Leave reply or edit mode. Leaving an edit puts back what was being typed before it.
+  function endCompose() {
+    var c = chat.compose;
+    if (!c) return;
+    chat.compose = null;
+    var box = document.getElementById('chatbox');
+    if (c.mode === 'edit' && box && c.ch === activeChannel()) { box.value = c.draft || ''; autosize(box); }
+    refreshCompose();
+  }
+  function startReply(ch, m) {
+    endCompose();
+    chat.compose = { ch: ch, mode: 'reply', id: m.id, name: m.username === me.username ? 'yourself' : m.name, text: snippet(m.text) };
+    refreshCompose(); focusBox();
+  }
+  function startEdit(ch, m) {
+    var box = document.getElementById('chatbox');
+    if (!box) return;
+    endCompose();
+    chat.compose = { ch: ch, mode: 'edit', id: m.id, draft: box.value };
+    box.value = m.text; autosize(box);
+    refreshCompose(); focusBox(true);
+  }
+  function lastOwn(ch) {
+    var list = chat.msgs[ch] || [];
+    for (var i = list.length - 1; i >= 0; i--) if (list[i].username === me.username) return Date.now() - list[i].t < EDIT_MS ? list[i] : null;
+    return null;
+  }
+  // A short one-line copy of a message, shown above a reply to it (the server makes the same one).
+  function snippet(t) {
+    var s = String(t || '').replace(/\s+/g, ' ').trim(), a = Array.from(s);
+    return a.length > 140 ? a.slice(0, 140).join('') + '…' : s;
+  }
+  // Web addresses become links that open in a new tab. Only http(s):// and www. addresses, shown exactly as typed.
+  function linkify(s) {
+    s = String(s || '');
+    var re = /(?:https?:\/\/|www\.)[^\s<>"]+/gi, out = '', last = 0, m;
+    while ((m = re.exec(s))) {
+      var url = m[0];
+      if (m.index > 0 && /[\w@.\/:-]/.test(s.charAt(m.index - 1))) continue; // inside a longer word, like an email address
+      while (/[.,!?;:'")\]}*_]$/.test(url)) {
+        if (url.slice(-1) === ')' && url.split('(').length >= url.split(')').length) break; // (balanced) brackets belong to it
+        url = url.slice(0, -1);
+      }
+      if (!/^(?:https?:\/\/|www\.)[^\s.\/:?#]/i.test(url)) continue;
+      var href = /^www\./i.test(url) ? 'https://' + url : url;
+      out += esc(s.slice(last, m.index)) + '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow ugc">' + esc(url) + '</a>';
+      last = m.index + url.length;
+      re.lastIndex = last;
+    }
+    return out + esc(s.slice(last));
   }
 
   function paneHtml(ch) {
@@ -2939,15 +3071,17 @@
       var name = peer ? peer.name : (dmByUser(u) || {}).name || '@' + u;
       head = '<div class="grow"><h2><a class="plain-link" href="#/u/' + esc(u) + '">' + esc(name) + '</a></h2><p class="muted small">@' + esc(u) + ' · private chat</p></div>' +
         (peer ? '<button class="btn tiny ghost" data-act="' + (peer.blockedByMe ? 'unblock' : 'block') + '" data-u="' + esc(u) + '">' + (peer.blockedByMe ? 'Unblock' : 'Block') + '</button>' : '');
-      notice = '<p class="scam">' + ico('shield') + '<span>Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span></p>' + receiptNote(ch);
+      // Phones get the short version, so there is still room to read the chat.
+      notice = '<p class="scam">' + ico('shield') + '<span class="wide-only">Real employers never ask you to pay for a job, training or "registration". Never share OTPs, bank details or ID documents in chat. Report anyone who asks.</span>' +
+        '<span class="phone-only">Never pay for a job or share OTPs. Report anyone who asks.</span></p>' + receiptNote(ch);
       composer = peer && peer.blockedByMe
         ? '<p class="composer-note muted small">You blocked this person. Unblock them to send messages.</p>'
-        : composerHtml('Message ' + name);
+        : composerHtml('Message ' + name, ch);
     } else {
       var slug = ch.slice(5), room = roomBySlug(slug) || (chat.summary ? null : { slug: slug, desc: '' });
       if (!room) return '<header class="pane-head">' + back + '<div><h2>No such room</h2></div></header><div class="pane-empty"><p>That room does not exist.</p><a href="#/chat/lobby">Go to #lobby</a></div>';
       head = '<div class="grow"><h2># ' + esc(room.slug) + '</h2><p class="muted small">' + esc(room.desc) + '</p></div>';
-      composer = composerHtml('Message #' + room.slug);
+      composer = composerHtml('Message #' + room.slug, ch);
     }
     return '<header class="pane-head">' + back + head + '</header>' + notice +
       '<div class="msgs" id="msgs" role="log" aria-label="Messages">' + msgsHtml(ch) + '</div>' + composer;
@@ -2962,8 +3096,16 @@
   }
 
   function msgHtml(m, ch) {
-    var own = m.username === me.username, room = !isDm(ch), u = esc(m.username), id = Number(m.id);
+    var own = m.username === me.username, room = !isDm(ch), u = esc(m.username), id = Number(m.id), locked = dmLocked(ch);
     var opts = [];
+    if (!locked) {
+      opts.push('<div class="menu-reacts" role="group" aria-label="React">' + CHAT_REACTS.map(function (r) {
+        var on = !!(m.mine && m.mine[r]);
+        return '<button type="button" data-act="mreact" data-id="' + id + '" data-r="' + r + '" title="' + REACT_NAMES[r] + '" aria-label="' + REACT_NAMES[r] + '" aria-pressed="' + on + '"' + (on ? ' class="on"' : '') + '>' + r + '</button>';
+      }).join('') + '</div>');
+      opts.push('<button type="button" data-act="reply-msg" data-id="' + id + '">Reply</button>');
+      if (own && Date.now() - m.t < EDIT_MS) opts.push('<button type="button" data-act="edit-msg" data-id="' + id + '">Edit</button>');
+    }
     if (!own) opts.push('<a href="#/u/' + u + '">View profile</a>');
     if (!own && room) opts.push('<a href="#/dm/' + u + '">Message privately</a>');
     if (!own) opts.push('<button type="button" data-act="report" data-id="' + id + '">Report</button>');
@@ -2972,8 +3114,58 @@
     var who = own ? '<b class="who">' + esc(m.name) + '</b>' : '<a class="who" href="#/u/' + u + '">' + esc(m.name) + '</a>';
     return '<div class="msg' + (own ? ' own' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
       '<time class="muted small">' + clock(m.t) + '</time>' +
+      (m.edited ? '<span class="edited muted small" title="Edited ' + esc(clock(m.edited)) + '">(edited)</span>' : '') +
       (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
-      '</div><p class="msg-text">' + esc(m.text) + '</p></div>';
+      '</div>' + quoteHtml(m.reply) + '<p class="msg-text">' + linkify(m.text) + '</p>' + reactsHtml(m, locked) + '</div>';
+  }
+  // What a reply answers. Tapping it jumps to that message.
+  function quoteHtml(r) {
+    if (!isObj(r)) return '';
+    if (r.gone || r.hidden) return '<p class="msg-quote gone">' + (r.gone ? 'Replying to a message that was deleted' : 'Replying to a message that is hidden') + '</p>';
+    return '<button type="button" class="msg-quote" data-act="jump" data-id="' + Number(r.id) + '"><b>' + esc(r.name) + '</b><span>' + esc(r.text) + '</span></button>';
+  }
+  function reactsHtml(m, locked) {
+    var n = isObj(m.reacts) ? m.reacts : {}, id = Number(m.id);
+    var chips = CHAT_REACTS.filter(function (r) { return n[r] > 0; }).map(function (r) {
+      var on = !!(m.mine && m.mine[r]);
+      return '<button type="button" class="react sm' + (on ? ' on' : '') + '" data-act="mreact" data-id="' + id + '" data-r="' + r + '" aria-pressed="' + on + '"' +
+        ' aria-label="' + REACT_NAMES[r] + ': ' + Number(n[r]) + (on ? ', including you' : '') + '"' + (locked ? ' disabled' : '') + '>' + r + ' ' + Number(n[r]) + '</button>';
+    });
+    return chips.length ? '<div class="msg-reacts">' + chips.join('') + '</div>' : '';
+  }
+  // Draw one message again in place (after an edit or a reaction), keeping its menu open and focus where it was.
+  function redrawMsg(m, ch) {
+    if (!isChatView() || activeChannel() !== ch) return;
+    var sel = '#msgs .msg[data-id="' + Number(m.id) + '"]', el = document.querySelector(sel);
+    if (!el) return;
+    var open = !!el.querySelector('details.msg-menu[open]'), box = msgsEl(), stick = box && nearBottom(box);
+    var f = el.contains(document.activeElement) ? document.activeElement : null, fAct = f && f.dataset ? f.dataset.act : '', fR = f && f.dataset ? f.dataset.r : '';
+    el.outerHTML = msgHtml(m, ch);
+    var nel = document.querySelector(sel);
+    if (open && nel) { var d = nel.querySelector('details.msg-menu'); if (d) d.open = true; }
+    if (fAct && nel) {
+      var back = [].filter.call(nel.querySelectorAll('[data-act="' + fAct + '"]'), function (x) { return (x.dataset.r || '') === (fR || ''); }).pop();
+      if (back) back.focus();
+    }
+    if (stick) scrollMsgs();
+  }
+  function applyEdit(ch, id, text, edited) {
+    (chat.msgs[ch] || []).forEach(function (m) {
+      if (m.id === id) { m.text = text; if (edited) m.edited = edited; redrawMsg(m, ch); }
+      else if (isObj(m.reply) && m.reply.id === id && !m.reply.gone && !m.reply.hidden) { m.reply.text = snippet(text); redrawMsg(m, ch); }
+    });
+    var d = isDm(ch) ? dmByUser(ch.slice(3)) : null;
+    if (d && d.lastId === id) { d.lastText = text; refreshChatList(); }
+    var c = composeFor(ch);
+    if (c && c.mode === 'reply' && c.id === id) { c.text = snippet(text); refreshCompose(); }
+  }
+  function applyReact(ch, id, emoji, n, on) {
+    var m = findMsg(ch, id);
+    if (!m || CHAT_REACTS.indexOf(emoji) < 0) return;
+    m.reacts = Object.assign({}, m.reacts); m.mine = Object.assign({}, m.mine);
+    if (n > 0) m.reacts[emoji] = n; else { delete m.reacts[emoji]; delete m.mine[emoji]; }
+    if (on === true) m.mine[emoji] = true; else if (on === false) delete m.mine[emoji];
+    redrawMsg(m, ch);
   }
 
   // ----- DOM updates that keep the half-typed message in the box -----
@@ -3132,10 +3324,22 @@
     } else if (ev.type === 'seen') {
       chat.read[ch] = Number(ev.id) || 0;
       paintSeen(ch);
+    } else if (ev.type === 'edit') {
+      applyEdit(ch, Number(ev.id), String(ev.text || ''), Number(ev.edited) || 0);
+    } else if (ev.type === 'react') {
+      applyReact(ch, Number(ev.id), ev.emoji, Number(ev.n) || 0);
     } else if (ev.type === 'del') {
       var id = Number(ev.id);
-      if (chat.msgs[ch]) chat.msgs[ch] = chat.msgs[ch].filter(function (x) { return x.id !== id; });
+      if (chat.msgs[ch]) {
+        chat.msgs[ch] = chat.msgs[ch].filter(function (x) { return x.id !== id; });
+        chat.msgs[ch].forEach(function (x) { if (isObj(x.reply) && x.reply.id === id && !x.reply.gone) { x.reply = { id: id, gone: true }; redrawMsg(x, ch); } });
+      }
       if (open) { var el = document.querySelector('#msgs .msg[data-id="' + id + '"]'); if (el) el.remove(); paintSeen(ch); }
+      var c = composeFor(ch);
+      if (c && c.id === id) {
+        chat.compose = null; refreshCompose(); // anything typed stays in the box
+        toast(c.mode === 'edit' ? 'That message was deleted, so it cannot be edited.' : 'The message you were replying to was deleted.');
+      }
     }
   }
 
@@ -3246,6 +3450,7 @@
         (r.authorBanned ? ' · banned' : '') + '</span></span><span class="muted small">in ' + esc(r.where) + '</span></div>' +
         '<p class="quote">' + (r.text ? esc(r.text) : '<i class="muted">(text removed)</i>') + '</p>' +
         (r.deleted ? '<p class="muted small">The author has already deleted this message.</p>' : '') +
+        (r.editedSince && !r.deleted ? '<p class="muted small">The author edited it after it was reported. Above is what was reported.</p>' : '') +
         '<p class="small">Reported by @' + esc(r.reporter) + ', ' + ago(r.t) + (r.reason ? ': “' + esc(r.reason) + '”' : '') + '</p>' +
         '<div class="row"><button class="btn tiny ghost" data-act="mod" data-id="' + id + '" data-a="dismiss">Dismiss</button>' +
         '<button class="btn tiny" data-act="mod" data-id="' + id + '" data-a="delete">' + (r.where === 'a profile' ? 'Clear profile' : r.where === 'a job lead' ? 'Delete lead' : 'Delete message') + '</button>' +
@@ -4511,6 +4716,7 @@
   var afterRender = {
     chat: function () {
       if (!chat.summary) loadSummary().catch(fail);
+      chat.compose = null; // the message box was just drawn again, empty
       var ch = activeChannel();
       if (!ch) return;
       scrollMsgs();
@@ -4625,9 +4831,17 @@
     var fn = forms[f.dataset.form];
     if (fn && fn(new FormData(f), f) !== false) { save(); render(); }
   });
-  // Enter sends a chat message; Shift+Enter makes a new line.
+  // Enter sends a chat message; Shift+Enter makes a new line. Esc stops replying or editing; Up in an empty box edits your last message.
   document.addEventListener('keydown', function (e) {
-    if (e.target.id !== 'chatbox' || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    if (e.target.id !== 'chatbox' || e.isComposing) return;
+    var ch = activeChannel();
+    if (e.key === 'Escape' && composeFor(ch)) { e.preventDefault(); endCompose(); return; }
+    if (e.key === 'ArrowUp' && !e.target.value && !composeFor(ch) && !dmLocked(ch)) {
+      var last = lastOwn(ch);
+      if (last) { e.preventDefault(); startEdit(ch, last); }
+      return;
+    }
+    if (e.key !== 'Enter' || e.shiftKey) return;
     e.preventDefault();
     var f = e.target.form;
     if (f.requestSubmit) f.requestSubmit(); else f.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -4636,6 +4850,16 @@
   document.addEventListener('click', function (e) {
     closeMenus(e.target.closest ? e.target.closest('details.msg-menu') : null);
   });
+  // A message menu near the bottom of the chat opens upwards, when there is room for it there.
+  document.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (!d.classList || !d.classList.contains('msg-menu') || !d.open) return;
+    var menu = d.querySelector('.menu'), list = d.closest('.msgs');
+    if (!menu || !list) return;
+    menu.classList.remove('up');
+    var s = d.getBoundingClientRect(), l = list.getBoundingClientRect(), h = menu.offsetHeight;
+    if (s.bottom + h + 8 > l.bottom && s.top - l.top >= h + 8) menu.classList.add('up');
+  }, true);
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible' || !isChatView()) return;
     var ch = activeChannel();

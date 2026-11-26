@@ -139,7 +139,7 @@ function member() {
     check('needs login', (await member()('GET', '/api/push')).status === 401 && (await member()('POST', '/api/push/on', a1.sub)).status === 401);
     let r = await A('GET', '/api/push');
     const siteKey = r.json.key;
-    check('key and choices', Buffer.from(siteKey, 'base64url').length === 65 && r.json.devices === 0 && JSON.stringify(r.json.prefs) === JSON.stringify({ dm: true, buddy: true, due: true, interview: true, weekly: false }), r.json);
+    check('key and choices', Buffer.from(siteKey, 'base64url').length === 65 && r.json.devices === 0 && JSON.stringify(r.json.prefs) === JSON.stringify({ dm: true, mention: true, buddy: true, due: true, interview: true, weekly: false }), r.json);
     check('moderators also get the reports choice', 'mod' in (await M('GET', '/api/push')).json.prefs);
     check('the private key is never sent', !JSON.stringify(r.json).includes(JSON.parse(rows("SELECT value FROM settings WHERE key = 'push_key'")[0].value).jwk.d));
     for (const [n, body] of [['odd address', { endpoint: 'https://evil.com/x', keys: a1.sub.keys }], ['own network', { endpoint: 'http://127.0.0.1:' + PORT + '/api/logout', keys: a1.sub.keys }], ['no keys', { endpoint: a1.sub.endpoint }], ['key not on the curve', { endpoint: a1.sub.endpoint, keys: { p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]).toString('base64url'), auth: a1.sub.keys.auth } }], ['short secret', { endpoint: a1.sub.endpoint, keys: { p256dh: a1.sub.keys.p256dh, auth: 'abcd' } }]]) {
@@ -167,7 +167,7 @@ function member() {
     // ---- choices ----
     clear();
     r = await A('PUT', '/api/push/prefs', { dm: false, buddy: true, due: true, interview: true, mod: true, evil: 1 });
-    check('choices saved and cleaned', JSON.stringify(r.json.prefs) === JSON.stringify({ dm: false, buddy: true, due: true, interview: true, weekly: false }), r.json);
+    check('choices saved and cleaned', JSON.stringify(r.json.prefs) === JSON.stringify({ dm: false, mention: true, buddy: true, due: true, interview: true, weekly: false }), r.json);
     r = await A('PUT', '/api/push/prefs', { dm: false, weekly: 'yes' }); check('the weekly review reminder is off until really turned on', r.json.prefs.weekly === false && (await A('PUT', '/api/push/prefs', { dm: false, weekly: true })).json.prefs.weekly === true);
     const C = member(), cName = 'nc_' + rnd(); await C('POST', '/api/signup', { username: cName, name: 'Chitra', password: crypto.randomUUID() });
     await C('POST', '/api/chat/dm/' + aName, { text: 'x' }); await wait(400); check('switched-off kind is not sent', inbox.length === 0, inbox);

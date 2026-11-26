@@ -2697,6 +2697,7 @@
       return false;
     },
     'compose-cancel': function () { endCompose(); focusBox(); return false; },
+    'mention-pick': function (d) { pickMention(Number(d.i)); return false; },
     'ivx-helpful': function (d) {
       api('POST', '/api/interviews/' + Number(d.id) + '/helpful', {}).then(loadIvx).catch(function (e) { if (e.status === 401) fail(e); else toast(e.message); });
       return false;
@@ -3382,7 +3383,7 @@
       if (c && c.mode === 'reply') payload.replyTo = c.id;
       chat.sending = true; btn.disabled = true;
       api('POST', channelUrl(ch), payload).then(function (j) {
-        if (box.value.trim() === body) { box.value = ''; autosize(box); }
+        if (box.value.trim() === body) { box.value = ''; autosize(box); closeMention(); }
         if (chat.compose === c && c) { chat.compose = null; refreshCompose(); }
         onChatEvent({ type: 'msg', channel: ch, msg: j.msg, peer: chat.peers[ch] });
         if (!isDm(ch) && !S.steps.hi) { S.steps.hi = true; save(); }
@@ -3545,7 +3546,7 @@
   var BASE_TITLE = document.title;
   var chat = freshChat();
   function freshChat() {
-    return { summary: null, receipts: null, read: {}, readSent: {}, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false, compose: null };
+    return { summary: null, receipts: null, read: {}, readSent: {}, msgs: {}, more: {}, peers: {}, errors: {}, seen: {}, seedSeen: false, es: null, retryTimer: null, down: false, sending: false, compose: null, mentions: {} };
   }
 
   function isChatView() { return !!me && !ui.newCode && currentView() === 'chat'; }
@@ -3603,7 +3604,8 @@
     markSeen(ch, Math.max(list.length ? list[list.length - 1].id : 0, lastIdOf(ch)));
   }
   function updateBadge() {
-    var n = chat.summary ? chat.summary.dms.filter(function (d) { return isUnread('dm:' + d.username); }).length : 0;
+    var n = chat.summary ? chat.summary.dms.filter(function (d) { return isUnread('dm:' + d.username); }).length +
+      chat.summary.rooms.filter(function (r) { return chat.mentions['room:' + r.slug] > 0; }).length : 0;
     var el = document.getElementById('chatbadge');
     if (el) { el.textContent = n ? String(n) : ''; el.hidden = !n; }
     document.title = (n ? '(' + n + ') ' : '') + BASE_TITLE;
@@ -3617,7 +3619,7 @@
       var ch = 'room:' + r.slug, un = ch !== active && isUnread(ch);
       return '<a class="ch' + (ch === active ? ' on' : '') + (un ? ' unread' : '') + '" href="#/chat/' + esc(r.slug) + '"' + (ch === active ? ' aria-current="page"' : '') + '>' +
         '<span class="ch-icon" aria-hidden="true">#</span><span class="ch-text"><b>' + esc(r.slug) + '</b></span>' +
-        (un ? '<i class="dot" aria-label="new messages"></i>' : '') + '</a>';
+        (ch !== active && chat.mentions[ch] > 0 ? '<i class="at" title="You were mentioned" aria-label="you were mentioned">@</i>' : un ? '<i class="dot" aria-label="new messages"></i>' : '') + '</a>';
     }).join('');
     var dms = s.dms.map(function (d) {
       var ch = 'dm:' + d.username, un = ch !== active && isUnread(ch);
@@ -3631,9 +3633,90 @@
 
   function composerHtml(label, ch) {
     var bar = composeBar(ch), c = composeFor(ch);
+    mention.open = false; mention.items = []; // a new box starts with no suggestions showing
     return '<div class="compose-bar" id="composebar"' + (bar ? '' : ' hidden') + '>' + bar + '</div>' +
-      '<form class="composer" data-form="chat"><textarea id="chatbox" name="text" rows="1" maxlength="1000" placeholder="' + esc(label) + '" aria-label="' + esc(label) + '" required></textarea>' +
+      '<form class="composer" data-form="chat"><div class="mention-pop" id="mentionpop" role="listbox" aria-label="People to mention" hidden></div>' +
+      '<textarea id="chatbox" name="text" rows="1" maxlength="1000" placeholder="' + esc(label) + '" aria-label="' + esc(label) + '"' + (isDm(ch) ? '' : ' aria-autocomplete="list" aria-controls="mentionpop" aria-expanded="false"') + ' required></textarea>' +
       '<button class="btn primary" id="chatsend">' + (c && c.mode === 'edit' ? 'Save' : 'Send') + '</button></form>';
+  }
+
+  // ----- @mentions -----
+  // Typing @ in a room suggests people (who spoke there lately, then everyone); picking one inserts @username.
+  var mention = { open: false, items: [], index: 0, start: 0 };
+  var MENTION_RE = /(^|[^\w@./])@([a-z0-9_]{3,20})(?![\w])/gi;
+  function mentionsMe(t) { MENTION_RE.lastIndex = 0; var m; while ((m = MENTION_RE.exec(String(t || '')))) if (m[2].toLowerCase() === me.username) return true; return false; }
+  // Escapes plain text and turns @username into a link to that profile.
+  function mentionify(t) {
+    var out = '', last = 0, m;
+    t = String(t || ''); MENTION_RE.lastIndex = 0;
+    while ((m = MENTION_RE.exec(t))) {
+      var at = m.index + m[1].length, u = m[2].toLowerCase();
+      out += esc(t.slice(last, at)) + '<a class="mention' + (u === me.username ? ' me' : '') + '" href="#/u/' + esc(u) + '">@' + esc(m[2]) + '</a>';
+      last = at + 1 + m[2].length;
+    }
+    return out + esc(t.slice(last));
+  }
+  function ensurePeople() {
+    if (prof.people || mention.loading) return;
+    mention.loading = true;
+    api('GET', '/api/people').then(function (j) { prof.people = Array.isArray(j.people) ? j.people : []; var b = document.getElementById('chatbox'); if (b && mention.open) updateMention(b); })
+      .catch(function () { /* suggestions come from the room only */ }).then(function () { mention.loading = false; });
+  }
+  function closeMention() {
+    mention.open = false; mention.items = [];
+    var p = document.getElementById('mentionpop'); if (p) { p.hidden = true; p.innerHTML = ''; }
+    var b = document.getElementById('chatbox'); if (b) b.setAttribute('aria-expanded', 'false');
+  }
+  function updateMention(box) {
+    var ch = activeChannel();
+    if (!ch || isDm(ch) || box.selectionStart !== box.selectionEnd) return closeMention();
+    var before = box.value.slice(0, box.selectionStart), m = /(^|[^\w@./])@([a-z0-9_]{0,20})$/i.exec(before);
+    if (!m) return closeMention();
+    ensurePeople();
+    var part = m[2].toLowerCase(), seen = {}, list = [];
+    var add = function (u, name) {
+      if (!u || seen[u] || u === me.username) return;
+      seen[u] = true;
+      var n = String(name || '').toLowerCase();
+      if (u.indexOf(part) === 0 || n.indexOf(part) === 0 || (part && n.indexOf(' ' + part) > -1)) list.push({ u: u, name: name });
+    };
+    (chat.msgs[ch] || []).slice().reverse().forEach(function (x) { add(x.username, x.name); });
+    (prof.people || []).forEach(function (p) { add(p.username, p.name); });
+    mention.items = list.slice(0, 6); mention.index = 0; mention.start = before.length - m[2].length - 1;
+    if (!mention.items.length) return closeMention();
+    mention.open = true; drawMention();
+  }
+  function drawMention() {
+    var p = document.getElementById('mentionpop'), b = document.getElementById('chatbox');
+    if (!p) return;
+    p.innerHTML = mention.items.map(function (x, i) {
+      var on = i === mention.index;
+      return '<button type="button" role="option" id="mention-' + i + '" aria-selected="' + on + '"' + (on ? ' class="on"' : '') + ' data-act="mention-pick" data-i="' + i + '">' +
+        '<span class="avatar" aria-hidden="true">' + esc(initial(x.name)) + '</span><b>' + esc(x.name) + '</b><span class="muted small">@' + esc(x.u) + '</span></button>';
+    }).join('');
+    p.hidden = false;
+    if (b) { b.setAttribute('aria-expanded', 'true'); b.setAttribute('aria-activedescendant', 'mention-' + mention.index); }
+  }
+  function pickMention(i) {
+    var x = mention.items[i], b = document.getElementById('chatbox');
+    if (!x || !b) return closeMention();
+    var end = b.selectionStart, text = '@' + x.u + ' ';
+    b.value = b.value.slice(0, mention.start) + text + b.value.slice(end);
+    var at = mention.start + text.length;
+    closeMention(); autosize(b); b.focus(); b.setSelectionRange(at, at);
+  }
+  // Arrow keys move, Enter or Tab picks, Esc closes. Returns true when the key was used here.
+  function mentionKey(e) {
+    var n = mention.items.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); mention.index = (mention.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n; drawMention(); return true; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mention.index); return true; }
+    if (e.key === 'Escape') { e.preventDefault(); closeMention(); return true; }
+    return false;
+  }
+  function seenMentions(ch) {
+    if (!ch || isDm(ch) || !chat.mentions[ch] || !isChatView() || activeChannel() !== ch || document.visibilityState !== 'visible') return;
+    delete chat.mentions[ch]; refreshChatList(); updateBadge();
+    api('POST', '/api/chat/mentions/seen', { channel: ch }).catch(function () { /* counted again at the next summary */ });
   }
 
   // ----- replying and editing -----
@@ -3704,11 +3787,11 @@
       }
       if (!/^(?:https?:\/\/|www\.)[^\s.\/:?#]/i.test(url)) continue;
       var href = /^www\./i.test(url) ? 'https://' + url : url;
-      out += esc(s.slice(last, m.index)) + '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow ugc">' + esc(url) + '</a>';
+      out += mentionify(s.slice(last, m.index)) + '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow ugc">' + esc(url) + '</a>';
       last = m.index + url.length;
       re.lastIndex = last;
     }
-    return out + esc(s.slice(last));
+    return out + mentionify(s.slice(last));
   }
 
   function paneHtml(ch) {
@@ -3763,7 +3846,7 @@
     if (!own && room) opts.push('<button type="button" data-act="block" data-u="' + u + '">Block @' + u + '</button>');
     if (own || me.isAdmin) opts.push('<button type="button" data-act="del-msg" data-id="' + id + '">Delete' + (own ? '' : ' (moderator)') + '</button>');
     var who = own ? '<b class="who">' + esc(m.name) + '</b>' : '<a class="who" href="#/u/' + u + '">' + esc(m.name) + '</a>';
-    return '<div class="msg' + (own ? ' own' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
+    return '<div class="msg' + (own ? ' own' : '') + (!own && room && mentionsMe(m.text) ? ' mentioned' : '') + '" data-id="' + id + '"><div class="msg-head">' + who +
       '<time class="muted small">' + clock(m.t) + '</time>' +
       (m.edited ? '<span class="edited muted small" title="Edited ' + esc(clock(m.edited)) + '">(edited)</span>' : '') +
       (opts.length ? '<details class="msg-menu"><summary aria-label="Message options">' + ico('more') + '</summary><div class="menu">' + opts.join('') + '</div></details>' : '') +
@@ -3837,6 +3920,7 @@
     paintSeen(ch);
     scrollMsgs();
     tellRead(ch);
+    seenMentions(ch);
   }
 
   // ----- read receipts -----
@@ -3912,6 +3996,7 @@
     return api('GET', '/api/chat/summary').then(function (s) {
       chat.summary = { rooms: Array.isArray(s.rooms) ? s.rooms : [], dms: Array.isArray(s.dms) ? s.dms : [] };
       chat.receipts = isObj(s.receipts) ? s.receipts : null;
+      chat.mentions = isObj(s.mentions) ? s.mentions : {};
       showReceiptCard();
       if (chat.seedSeen) { // first visit on this device: count what is already there as read
         chat.seedSeen = false;
@@ -3940,7 +4025,7 @@
 
   function openChannel(ch) {
     var ready = chat.msgs[ch] && !chat.errors[ch];
-    if (ready) { markLatest(ch); refreshChatList(); updateBadge(); paintSeen(ch); tellRead(ch); }
+    if (ready) { markLatest(ch); refreshChatList(); updateBadge(); paintSeen(ch); tellRead(ch); seenMentions(ch); }
     if (ready && chat.es) return; // the live stream keeps an open channel's cache current
     loadChannel(ch).then(function () {
       renderPane(ch);
@@ -3975,12 +4060,16 @@
     } else if (ev.type === 'seen') {
       chat.read[ch] = Number(ev.id) || 0;
       paintSeen(ch);
+    } else if (ev.type === 'mention') {
+      if (open && document.visibilityState === 'visible') { chat.mentions[ch] = 1; seenMentions(ch); }
+      else { chat.mentions[ch] = (chat.mentions[ch] || 0) + 1; refreshChatList(); updateBadge(); }
     } else if (ev.type === 'edit') {
       applyEdit(ch, Number(ev.id), String(ev.text || ''), Number(ev.edited) || 0);
     } else if (ev.type === 'react') {
       applyReact(ch, Number(ev.id), ev.emoji, Number(ev.n) || 0);
     } else if (ev.type === 'del') {
       var id = Number(ev.id);
+      if (chat.mentions[ch]) loadSummary().catch(function () { /* recounted next time */ }); // it may have been the one that mentioned you
       if (chat.msgs[ch]) {
         chat.msgs[ch] = chat.msgs[ch].filter(function (x) { return x.id !== id; });
         chat.msgs[ch].forEach(function (x) { if (isObj(x.reply) && x.reply.id === id && !x.reply.gone) { x.reply = { id: id, gone: true }; redrawMsg(x, ch); } });
@@ -4645,7 +4734,7 @@
   }
 
   // ---------- phone notifications ----------
-  var PUSH_LABEL = [['dm', 'Private messages'], ['buddy', 'Buddy check-ins, cheers and requests'], ['due', 'Follow-ups due in your tracker'], ['interview', 'Interviews: the day before, and about an hour before'], ['weekly', 'Weekly review, on Sunday evening'], ['mod', 'New reports (moderators)']];
+  var PUSH_LABEL = [['dm', 'Private messages'], ['mention', 'When someone @mentions you in a room'], ['buddy', 'Buddy check-ins, cheers and requests'], ['due', 'Follow-ups due in your tracker'], ['interview', 'Interviews: the day before, and about an hour before'], ['weekly', 'Weekly review, on Sunday evening'], ['mod', 'New reports (moderators)']];
   var pushState = { info: null, sub: null, busy: false, loaded: false };
   function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
   function pushFlag(set) { // which member turned notifications on in this browser
@@ -5488,6 +5577,7 @@
   // Enter sends a chat message; Shift+Enter makes a new line. Esc stops replying or editing; Up in an empty box edits your last message.
   document.addEventListener('keydown', function (e) {
     if (e.target.id !== 'chatbox' || e.isComposing) return;
+    if (mention.open && mentionKey(e)) return;
     var ch = activeChannel();
     if (e.key === 'Escape' && composeFor(ch)) { e.preventDefault(); endCompose(); return; }
     if (e.key === 'ArrowUp' && !e.target.value && !composeFor(ch) && !dmLocked(ch)) {
@@ -5517,7 +5607,7 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible' || !isChatView()) return;
     var ch = activeChannel();
-    if (ch) { markLatest(ch); refreshChatList(); updateBadge(); tellRead(ch); }
+    if (ch) { markLatest(ch); refreshChatList(); updateBadge(); tellRead(ch); seenMentions(ch); }
   });
   document.addEventListener('change', function (e) {
     if (e.target.id === 'receiptbox') { setReceipts(e.target.checked); return; }
@@ -5592,6 +5682,7 @@
       document.getElementById('avprev').innerHTML = avatarHtml(e.target.value || '?', c ? c.value : 'tomato', 'lg');
     } else if (e.target.id === 'chatbox') {
       autosize(e.target);
+      updateMention(e.target);
     } else if (e.target.id === 'ivxq') {
       ivx.q = e.target.value;
       var il = document.getElementById('ivxlist'); if (il) il.innerHTML = ivxListHtml();

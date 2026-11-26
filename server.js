@@ -104,6 +104,17 @@ const SCHEMA = [
     created INTEGER NOT NULL,
     PRIMARY KEY (blocker_id, blocked_id)
   )`,
+  // @mentions in rooms: who was mentioned in which message, and whether they have looked at that room since.
+  `CREATE TABLE IF NOT EXISTS mentions (
+    user_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    from_id INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, message_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS mentions_user ON mentions(user_id, seen)',
   // Fun tab. Question-of-the-day answers live in `messages` (channel 'qotd:<day>'), so reports, deletes and bans cover them.
   `CREATE TABLE IF NOT EXISTS msg_reacts (
     message_id INTEGER NOT NULL,
@@ -412,6 +423,13 @@ const q = {
   delMsgReacts: stmt('DELETE FROM msg_reacts WHERE message_id = ?'),
   replyTo: stmt('SELECT m.id, m.channel, m.user_id, m.deleted, m.text, u.name, u.username, u.banned FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?'),
   editMsg: stmt('UPDATE messages SET text = ?, edited = ? WHERE id = ? AND deleted = 0'),
+  addMention: stmt('INSERT OR IGNORE INTO mentions (user_id, message_id, channel, from_id, created) VALUES (?, ?, ?, ?, ?)'),
+  dropMention: stmt('DELETE FROM mentions WHERE message_id = ? AND user_id = ?'),
+  dropMentions: stmt('DELETE FROM mentions WHERE message_id = ?'),
+  mentionsOf: stmt('SELECT user_id FROM mentions WHERE message_id = ?'),
+  unseenMentions: stmt(`SELECT m.channel, COUNT(*) AS n FROM mentions m JOIN messages x ON x.id = m.message_id
+    WHERE m.user_id = ? AND m.seen = 0 AND x.deleted = 0 GROUP BY m.channel`),
+  seeMentions: stmt('UPDATE mentions SET seen = 1 WHERE user_id = ? AND channel = ? AND seen = 0'),
   addMsg: stmt('INSERT INTO messages (channel, user_id, text, created) VALUES (?, ?, ?, ?)'),
   addChatMsg: stmt('INSERT INTO messages (channel, user_id, text, created, reply_to) VALUES (?, ?, ?, ?, ?)'),
   addDmMsg: stmt('INSERT INTO messages (channel, user_id, text, created, quiet, reply_to) VALUES (?, ?, ?, ?, ?, ?)'),
@@ -953,7 +971,7 @@ async function setReceipts(user, on) {
 
 // ---------- phone notifications ----------
 // What is sent never includes message text, job titles or company names: it may appear on a lock screen.
-const PUSH_KINDS = ['dm', 'buddy', 'due', 'interview', 'weekly', 'mod'];
+const PUSH_KINDS = ['dm', 'mention', 'buddy', 'due', 'interview', 'weekly', 'mod'];
 const PUSH_OPT_IN = new Set(['weekly']); // off until the member turns it on; the rest start on
 const PUSH_DEVICES = 6;
 const BUDDY_PUSH = {
@@ -1169,6 +1187,7 @@ async function deleteAccount(u) {
   }
   await exec(BLANK_MSG + 'WHERE user_id = ?', [id]);
   await exec('DELETE FROM msg_reacts WHERE user_id = ? OR message_id IN (SELECT id FROM messages WHERE user_id = ?)', [id, id]);
+  await exec('DELETE FROM mentions WHERE user_id = ? OR from_id = ?', [id, id]);
   await exec('DELETE FROM dms WHERE a = ? OR b = ?', [id, id]);
   await exec('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?', [id, id]);
   await exec('DELETE FROM reports WHERE reporter_id = ? AND resolved = 1', [id]);
@@ -2499,6 +2518,28 @@ async function roomPush(ev, authorId, reply) {
     for (const id of hide) push(id, quiet);
   }
 }
+// @username in a room message. At most five people per message, never yourself, never across a block.
+const MENTION_RE = /(^|[^\w@./])@([a-z0-9_]{3,20})(?![\w])/gi;
+const MAX_MENTIONS = 5;
+function mentionedNames(text) {
+  const out = new Set();
+  for (const m of String(text || '').matchAll(MENTION_RE)) out.add(m[2].toLowerCase());
+  return [...out].slice(0, MAX_MENTIONS);
+}
+// Record and announce the mentions in a room message. `skip`: names already mentioned before an edit.
+async function mentionPeople(user, channel, msgId, text, skip) {
+  const room = channel.slice(5);
+  for (const name of mentionedNames(text)) {
+    if (name === user.username || (skip && skip.has(name))) continue;
+    const u = await q.userByName.get(name);
+    if (!u || u.banned) continue;
+    if ((await q.isBlocked.get(u.id, user.id)) || (await q.isBlocked.get(user.id, u.id))) continue;
+    if (!(await q.addMention.run(u.id, msgId, channel, user.id, Date.now())).changes) continue;
+    push(u.id, { type: 'mention', channel, id: msgId });
+    // Who and where, never what: notifications can show on a lock screen.
+    if (once('mention:' + user.id + ':' + u.id, 60000)) notify(u.id, 'mention', { title: user.name, body: 'Mentioned you in #' + room + '.', url: '/#/chat/' + room, tag: 'mention-' + room, ttl: 86400 });
+  }
+}
 // Tell both people in a private chat, each under the other person's name.
 async function dmPush(channel, ev) {
   const [a, b] = channel.slice(3).split(':').map(Number);
@@ -2538,6 +2579,7 @@ async function broadcastDelete(channel, id) {
 async function removeMessage(m) {
   await q.delMsg.run(m.id);
   await q.delMsgReacts.run(m.id);
+  await q.dropMentions.run(m.id);
   // Removing a reported profile snapshot clears that member's profile (their name and account stay).
   if (m.channel.startsWith('profile:')) await q.clearProfile.run(m.user_id);
   else if (m.channel.startsWith('lead:')) await q.delLead.run(Number(m.channel.slice(5)));
@@ -2594,7 +2636,9 @@ async function chatApi(req, res, route, user) {
     const dms = (await q.myDms.all(user.id, user.id, user.id)).map((d) => ({
       username: d.username, name: d.name, lastId: d.last_id, lastText: d.last_text || '', lastFromMe: d.last_from === user.id
     }));
-    send(res, 200, { rooms: ROOMS.map((r) => ({ slug: r.slug, desc: r.desc, lastId: last['room:' + r.slug] || 0 })), dms, receipts: await receiptsOf(user.id) });
+    const mentions = {};
+    for (const r of await q.unseenMentions.all(user.id)) mentions[r.channel] = Number(r.n);
+    send(res, 200, { rooms: ROOMS.map((r) => ({ slug: r.slug, desc: r.desc, lastId: last['room:' + r.slug] || 0 })), dms, receipts: await receiptsOf(user.id), mentions });
     return true;
   }
 
@@ -2616,12 +2660,23 @@ async function chatApi(req, res, route, user) {
       const msg = { id: info.lastId, text: body, t: now, name: user.name, username: user.username };
       if (reply) msg.reply = reply.view;
       await roomPush({ type: 'msg', channel, msg }, user.id, reply);
+      await mentionPeople(user, channel, msg.id, body);
       did(req, user, 'room');
       send(res, 201, { msg });
       return true;
     }
   }
 
+  // Opening a room clears the @mentions waiting there.
+  if (method === 'POST' && route === '/chat/mentions/seen') {
+    limit('mseen:' + user.id, 120, 60000);
+    const b = await readBody(req);
+    const ch = typeof b.channel === 'string' ? b.channel : '';
+    if (!/^room:/.test(ch) || !ROOM_SLUGS.has(ch.slice(5))) throw new HttpError(400, 'Which room?');
+    await q.seeMentions.run(user.id, ch);
+    send(res, 200, { ok: true });
+    return true;
+  }
   if (method === 'PUT' && route === '/chat/receipts') {
     limit('receipts:' + user.id, 20, 10 * 60000);
     const b = await readBody(req);
@@ -2691,6 +2746,11 @@ async function chatApi(req, res, route, user) {
       if (body === msg.text) { send(res, 200, { msg: { id: msg.id, text: body } }); return true; }
       const now = Date.now();
       await q.editMsg.run(body, now, msg.id);
+      if (msg.channel.startsWith('room:')) { // mentions follow the new words: new names are told, removed ones forgotten
+        const before = new Set(mentionedNames(msg.text)), after = new Set(mentionedNames(body));
+        for (const r of await q.mentionsOf.all(msg.id)) { const u = await q.userById.get(r.user_id); if (u && !after.has(u.username)) await q.dropMention.run(msg.id, u.id); }
+        await mentionPeople(user, msg.channel, msg.id, body, before);
+      }
       const ev = { type: 'edit', channel: msg.channel, id: msg.id, text: body, edited: now };
       if (msg.channel.startsWith('dm:')) await dmPush(msg.channel, ev);
       else pushAll(ev, new Set((await q.blockersOf.all(user.id)).map((r) => r.blocker_id)));

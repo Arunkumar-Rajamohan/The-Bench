@@ -57,6 +57,7 @@
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
     tools: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
     logout: '<path d="M14.5 4H18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3.5"/><path d="M10 16.5 5.5 12 10 7.5"/><path d="M5.5 12H16"/>',
+    calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>'
   };
   function ico(name) {
@@ -322,6 +323,7 @@
       moodlog: {}, // mood check-in extras by day: { tags, note }
       steps: {}, // first steps: { hi, hide }
       badges: {}, // milestones earned: id -> when (a number, so two devices never "conflict" over it)
+      weeks: {}, // weekly review, by the week's Monday: { goals: [{ id, text, kind, n, done }], note }
       kept: [] // text that was changed on two devices at once: the version that was not used
     };
   }
@@ -341,6 +343,7 @@
     b.moodlog = cleanMoodlog(raw.moodlog);
     b.kept = cleanKept(raw.kept);
     b.badges = cleanBadges(raw.badges);
+    b.weeks = cleanWeeks(raw.weeks);
     if (isObj(raw.steps)) { if (raw.steps.hi) b.steps.hi = true; if (raw.steps.hide) b.steps.hide = true; }
     // Parts this version of the app does not know (an older tab next to a newer one) must survive a save.
     Object.keys(raw).forEach(function (k) { if (!(k in b)) b[k] = raw[k]; });
@@ -358,7 +361,8 @@
   var ui = {
     booting: true, authMode: (function () { try { return localStorage.getItem('bench:member') ? 'login' : 'signup'; } catch (e) { return 'login'; } })(), authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
     timerId: null, timerStart: 0, report: null,
-    postDraft: '', postTag: '', postTagTab: '' // the feed's half-written post, kept while the page redraws
+    postDraft: '', postTag: '', postTagTab: '', // the feed's half-written post, kept while the page redraws
+    reviewWeek: '' // which week the weekly review shows (its Monday); empty = this week
   };
 
   // ---------- saving private data ----------
@@ -600,7 +604,7 @@
   function dropStashes(user) { eachStash(function (k, v) { if (v.user === user) localStorage.removeItem(k); }); }
 
   // --- show changes that arrived from another device ---
-  var SHOWS_DATA = { home: 1, tools: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1, milestones: 1 };
+  var SHOWS_DATA = { home: 1, tools: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1, milestones: 1, review: 1 };
   function redraw() {
     sync.redraw = false;
     if (!me || ui.booting || ui.newCode) return;
@@ -612,7 +616,7 @@
     if (composing || ui.timerId) { sync.redraw = true; return; } // mid-word in an Indian-language keyboard, or an answer being timed
     // Half-typed forms are not part of the saved data, so carry them across; so too the cursor and scroll position.
     var keyOf = function (f) { var form = f.closest('form'); return f.id || (form && f.name ? form.dataset.form + '|' + (form.dataset.id || '') + '|' + f.name + (f.type === 'radio' ? f.value : '') : ''); };
-    var bound = function (f) { return f.dataset.cv || f.dataset.cl || f.dataset.sal || f.id === 'resume' || f.id === 'moodnote' || f.id === 'ivnote'; };
+    var bound = function (f) { return f.dataset.cv || f.dataset.cl || f.dataset.sal || f.id === 'resume' || f.id === 'moodnote' || f.id === 'ivnote' || f.id === 'reviewnote'; };
     var fields = function () { return Array.prototype.slice.call(main.querySelectorAll('input, textarea, select')); };
     var kept = {}, at = document.activeElement, focus = at && main.contains(at) && /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName) ? keyOf(at) : '', sel = null, y = window.scrollY;
     if (focus) { try { sel = [at.selectionStart, at.selectionEnd]; } catch (e) { /* not a text box */ } }
@@ -687,7 +691,7 @@
 
   // ---------- views ----------
   // Pages that live inside Tools: they light up Tools in the menu and get a link back to it.
-  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1, milestones: 1 };
+  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1, milestones: 1, review: 1 };
   function head(title, sub) {
     var v = currentView(), back = me && IN_TOOLS[v] && v !== 'tools' ? '<a class="crumb" href="#/tools">← Tools</a>' : '';
     return '<header class="head">' + back + '<h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
@@ -1355,6 +1359,7 @@
         ['heart', 'Wellbeing', 'A mood check-in, a breathing exercise and helplines.', '#/mood', '', moodOn(today()) !== null ? 'Checked in today' : '']
       ]],
       ['Your progress', [
+        ['calendar', 'Weekly review', 'Look back at your week and set up to three goals for the next.', '#/review', '', (function () { var m = thisMonday(), g = weekOf(m).goals; return g.length ? g.filter(function (x) { return goalDone(m, x); }).length + ' of ' + g.length + ' goals done' : ''; })()],
         ['trophy', 'Milestones', 'Private badges for real progress, like your first interview or a 7-day streak.', '#/milestones', '', badgeCount() + ' of ' + MILESTONES.length + ' earned'],
         ['feed', 'Wins wall', 'Share good news, however small, and cheer on others.', '#/feed/wins', '', '']
       ]]
@@ -1413,6 +1418,10 @@
     ['streak-3', 2, 'flame', '3-day streak', 'Tick a routine task three days in a row.', function () { return [bestStreak(), 3]; }],
     ['streak-7', 2, 'flame', 'A full week', 'Tick a routine task seven days in a row.', function () { return [bestStreak(), 7]; }],
     ['streak-30', 2, 'flame', '30-day streak', 'Tick a routine task 30 days in a row.', function () { return [bestStreak(), 30]; }],
+    ['week-plan', 2, 'calendar', 'Planned your week', 'Set a goal in your weekly review.', function () { return [Object.keys(S.weeks).some(function (k) { return S.weeks[k].goals.length > 0; }) ? 1 : 0, 1]; }],
+    ['week-goals', 2, 'check', 'Goals met', 'Finish every goal you set for a week (at least two).', function () {
+      return [Object.keys(S.weeks).some(function (k) { var g = S.weeks[k].goals; return g.length >= 2 && g.every(function (x) { return goalDone(k, x); }); }) ? 1 : 0, 1];
+    }],
     ['resume', 3, 'feed', 'Resume started', 'Add your details to the resume builder.', function () { return [resumeStarted() ? 1 : 0, 1]; }],
     ['cover', 3, 'mail', 'First cover letter', 'Fill in a company and a role in the cover letter helper.', function () { return [S.cl && String(S.cl.company || '').trim() && String(S.cl.role || '').trim() ? 1 : 0, 1]; }],
     ['practice-10', 3, 'prep', 'Warmed up', 'Practise 10 interview questions.', function () { return [S.practice.length, 10]; }],
@@ -1492,6 +1501,111 @@
   var WIN_PROMPTS = ['Got an interview call from ', 'Finished a course: ', 'Applied to 5 jobs this week', 'Got a referral at ', 'Got an offer!', 'Got through a hard day'];
   function feedTab() { var p = location.hash.replace(/^#\/?/, '').split('/'); return FEED_TAG[p[1]] ? p[1] : ''; }
   function winsThisWeek() { var since = Date.now() - 7 * 864e5; return posts.filter(function (p) { return p.tag === 'Win' && p.t > since; }).length; }
+
+  // ---------- weekly review ----------
+  // Weeks run Monday to Sunday. Everything here is worked out from the member's own data and stays private.
+  var MAX_GOALS = 3;
+  var GOAL_KINDS = { apply: ['applied', 'tracker'], practice: ['practice', 'interview practice'], routine: ['routineDays', 'routine'] }; // goals that count themselves
+  var GOAL_IDEAS = [['apply', 10, 'Apply to 10 jobs'], ['apply', 5, 'Apply to 5 jobs'], ['practice', 5, 'Practise 5 interview questions'], ['routine', 5, 'Tick my routine on 5 days'],
+    ['', 0, 'Finish one free course'], ['', 0, 'Reach out to 3 people I know'], ['', 0, 'Update my resume']];
+  function mondayOf(k) { return addDays(k, -((dayDate(k).getDay() + 6) % 7)); }
+  function thisMonday() { return mondayOf(today()); }
+  function weekOf(m) { return S.weeks[m] || { goals: [], note: '' }; }
+  function weekFor(m) { if (!S.weeks[m]) S.weeks[m] = { goals: [], note: '' }; return S.weeks[m]; }
+  function cleanWeeks(raw) {
+    var out = {};
+    if (!isObj(raw)) return out;
+    Object.keys(raw).filter(isDay).sort().slice(-104).forEach(function (k) {
+      var w = raw[k];
+      if (!isObj(w)) return;
+      var goals = (Array.isArray(w.goals) ? w.goals : []).filter(function (g) { return isObj(g) && typeof g.id === 'string' && typeof g.text === 'string' && g.text.trim(); }).slice(0, 6).map(function (g) {
+        var kind = GOAL_KINDS[g.kind] ? g.kind : '', n = Math.round(Number(g.n));
+        var o = { id: g.id.slice(0, 40), text: g.text.slice(0, 100), kind: kind, n: kind && n >= 1 && n <= 50 ? n : 0, done: !!g.done };
+        if (!o.n) o.kind = '';
+        return o;
+      });
+      out[k] = { goals: goals, note: typeof w.note === 'string' ? w.note.slice(0, 1000) : '' };
+    });
+    return out;
+  }
+  function weekStats(m) {
+    var end = addDays(m, 6), inWeek = function (k) { return isDay(k) && k >= m && k <= end; };
+    var at = function (t) { return typeof t === 'number' && t > 0 && inWeek(dkey(new Date(t))); };
+    var days = [];
+    for (var i = 0; i < 7; i++) { var k = addDays(m, i), l = S.routine.log[k]; days.push({ k: k, n: Array.isArray(l) ? l.length : 0 }); }
+    var s = {
+      applied: S.apps.filter(function (a) { return isDay(a.applied) ? inWeek(a.applied) : !!a.stage && a.stage !== 'Wishlist' && at(a.t); }).length,
+      interviews: S.apps.filter(function (a) { return inWeek(a.interview); }).length,
+      practice: S.practice.filter(function (p) { return at(p.t); }).length,
+      badges: MILESTONES.filter(function (x) { return at(S.badges[x[0]]); }),
+      days: days
+    };
+    s.routineDays = days.filter(function (d) { return d.n > 0; }).length;
+    return s;
+  }
+  function goalProgress(m, g) { var k = GOAL_KINDS[g.kind]; return k && g.n ? [Math.min(weekStats(m)[k[0]], g.n), g.n] : null; }
+  function goalDone(m, g) { var p = goalProgress(m, g); return p ? p[0] >= p[1] : !!g.done; }
+  function reviewWeek() { var w = ui.reviewWeek, cur = thisMonday(); return isDay(w) && w === mondayOf(w) && w <= addDays(cur, 7) ? w : cur; }
+  function shortDay(k) { return dayDate(k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+  function weekName(m) {
+    var cur = thisMonday();
+    return m === cur ? 'This week' : m === addDays(cur, 7) ? 'Next week' : m === addDays(cur, -7) ? 'Last week' : 'Week of ' + shortDay(m);
+  }
+  function goalRow(m, g) {
+    var p = goalProgress(m, g), done = goalDone(m, g), id = esc(g.id), w = esc(m);
+    var box = p ? '<span class="goal-box auto" title="Counts itself">' + (done ? ico('check') : '') + '</span>'
+      : '<button type="button" class="goal-box" data-act="goal-toggle" data-w="' + w + '" data-id="' + id + '" aria-pressed="' + done + '" aria-label="' + (done ? 'Done: ' : 'Mark done: ') + esc(g.text) + '">' + (done ? ico('check') : '') + '</button>';
+    return '<li class="goal' + (done ? ' done' : '') + '">' + box + '<span class="grow"><span class="goal-text">' + esc(g.text) + (done ? '<span class="sr-only"> (done)</span>' : '') + '</span>' +
+      (p ? '<span class="muted small goal-auto">' + p[0] + ' of ' + p[1] + ' · counts itself from your ' + GOAL_KINDS[g.kind][1] + '</span>' +
+        '<span class="tbar" role="img" aria-label="' + p[0] + ' of ' + p[1] + '"><i style="width:' + Math.round(p[0] / p[1] * 100) + '%"></i></span>' : '') + '</span>' +
+      '<button type="button" class="link small" data-act="goal-del" data-w="' + w + '" data-id="' + id + '" aria-label="Remove goal: ' + esc(g.text) + '">remove</button></li>';
+  }
+  function reviewHtml(m) {
+    var cur = thisMonday(), next = addDays(cur, 7), w = weekOf(m), s = weekStats(m), last = weekStats(addDays(m, -7)), past = m < cur, future = m > cur;
+    var name = weekName(m), t = today();
+    var nav = '<div class="week-nav"><button type="button" class="btn tiny ghost" data-act="review-week" data-w="' + addDays(m, -7) + '" aria-label="Earlier week">← Earlier</button>' +
+      '<div class="week-label"><b>' + name + '</b><span class="muted small">' + shortDay(m) + ' – ' + shortDay(addDays(m, 6)) + '</span></div>' +
+      (m < next ? '<button type="button" class="btn tiny ghost" data-act="review-week" data-w="' + addDays(m, 7) + '" aria-label="' + (m === cur ? 'Plan next week' : 'Later week') + '">' + (m === cur ? 'Next week →' : 'Later →') + '</button>' : '<span class="week-gap"></span>') + '</div>';
+    var stat = function (n, label, was) { return '<div class="stat"><b>' + n + '</b><span>' + label + '</span>' + (was === null ? '' : '<small class="muted">Week before: ' + was + '</small>') + '</div>'; };
+    var many = function (n, one, more) { return n === 1 ? one : more; };
+    var stats = future ? '' : '<div class="stats week-stats">' + stat(s.applied, many(s.applied, 'application', 'applications'), last.applied) +
+      stat(s.interviews, many(s.interviews, 'interview', 'interviews'), last.interviews) +
+      stat(s.routineDays + '/7', 'routine days', last.routineDays + '/7') + stat(s.practice, many(s.practice, 'question practised', 'questions practised'), last.practice) + '</div>';
+    var days = future ? '' : '<section class="card stack"><h2>Your routine, day by day</h2><ol class="week-days">' + s.days.map(function (d) {
+      var label = dayDate(d.k).toLocaleDateString(undefined, { weekday: 'short' }), later = d.k > t;
+      return '<li class="' + (d.n ? 'on' : later ? 'later' : 'off') + (d.k === t ? ' today' : '') + '"><span>' + esc(label) + '</span><i aria-hidden="true">' + (d.n ? ico('check') : '') + '</i>' +
+        '<span class="sr-only">' + (d.n ? d.n + (d.n === 1 ? ' task' : ' tasks') + ' done' : later ? 'still to come' : 'nothing ticked') + '</span></li>';
+    }).join('') + '</ol>' +
+      (s.badges.length ? '<p class="small week-badges">' + ico('trophy') + '<span>Milestones this week: ' + s.badges.map(function (x) { return '<b>' + esc(x[3]) + '</b>'; }).join(', ') + '</span></p>' : '') + '</section>';
+    var doneN = w.goals.filter(function (g) { return goalDone(m, g); }).length;
+    var ideas = GOAL_IDEAS.map(function (x, i) { return [x, i]; }).filter(function (p) { return !w.goals.some(function (g) { return g.text === p[0][2]; }); });
+    var adding = !past && w.goals.length < MAX_GOALS;
+    var goals = '<section class="card stack" id="goalcard"><div class="row between"><h2>Goals for ' + name.toLowerCase().replace(/^week of/, 'the week of') + '</h2>' +
+      (w.goals.length ? '<span class="muted small">' + doneN + ' of ' + w.goals.length + ' done</span>' : '') + '</div>' +
+      (w.goals.length ? '<ul class="goals">' + w.goals.map(function (g) { return goalRow(m, g); }).join('') + '</ul>'
+        : '<p class="muted small">' + (past ? 'No goals were set for this week.' : 'Pick up to three. Small and doable beats big and stressful.') + '</p>') +
+      (adding ? '<form class="row goal-add" data-form="goal" data-w="' + esc(m) + '"><input class="grow" type="text" name="text" maxlength="100" placeholder="Add your own goal" aria-label="Your own goal" required><button class="btn">Add</button></form>' +
+        (ideas.length ? '<div class="chips goal-ideas" aria-label="Ideas">' + ideas.map(function (p) { return '<button type="button" class="chip" data-act="goal-idea" data-w="' + esc(m) + '" data-i="' + p[1] + '">+ ' + esc(p[0][2]) + '</button>'; }).join('') + '</div>' : '')
+        : !past ? '<p class="muted small">Three is plenty. Tick them off as you go.</p>' : '') + '</section>';
+    var note = future ? '' : '<section class="card stack"><h2>Notes to yourself</h2><label class="muted small" for="reviewnote">What went well? What was hard? What will you try next week?</label>' +
+      '<textarea id="reviewnote" data-w="' + esc(m) + '" rows="4" maxlength="1000">' + esc(w.note) + '</textarea></section>';
+    var sunday = m === cur && dayDate(t).getDay() === 0;
+    return nav + (sunday ? '<p class="banner">' + ico('calendar') + '<span><b>It is Sunday.</b> Look back at your week, then <button type="button" class="link" data-act="review-week" data-w="' + next + '">plan next week</button>.</span></p>' : '') +
+      stats + '<div class="grid2 review-grid">' + goals + (future ? '<section class="card stack"><h2>Planning ahead</h2><p class="small">Goals that count themselves, like applications and practice, fill in as you go next week. Tick the others off yourself.</p></section>' : days) + '</div>' + note;
+  }
+  function reviewHomeHtml() {
+    var m = thisMonday(), w = weekOf(m), done = w.goals.filter(function (g) { return goalDone(m, g); }).length, sunday = dayDate(today()).getDay() === 0;
+    var line = w.goals.length ? done + ' of ' + w.goals.length + ' goals done this week' : 'Set up to three goals for this week';
+    if (sunday) line = 'It is Sunday: look back and plan next week' + (w.goals.length ? ' · ' + done + ' of ' + w.goals.length + ' done' : '');
+    return '<a class="card mile-home" href="#/review"><span class="mile-badge got" aria-hidden="true">' + ico('calendar') + '</span><span class="grow"><b>Weekly review</b>' +
+      '<span class="muted small">' + esc(line) + '</span></span><span class="mile-go" aria-hidden="true">→</span></a>';
+  }
+  function addGoal(m, g) {
+    var w = weekFor(m);
+    if (w.goals.length >= MAX_GOALS) { toast('Three goals is the most. Remove one first.'); return false; }
+    w.goals.push({ id: uid(), text: g.text, kind: g.kind || '', n: g.n || 0, done: false });
+    return true;
+  }
   function stepsHtml() {
     if (!stepsShown()) return '';
     var list = steps(), done = list.filter(function (s) { return s[0]; }).length;
@@ -1533,7 +1647,7 @@
         pushBanner() +
         homeBuddyHtml() +
         alertBanner() +
-        milestoneHomeHtml() +
+        '<div class="home-cards">' + reviewHomeHtml() + milestoneHomeHtml() + '</div>' +
         (stepsShown() ? '' : '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>') +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
@@ -1695,6 +1809,10 @@
         '<button class="btn primary">Post as ' + esc(me.name) + '</button></div></form>' +
         (shown.map(function (p) { return postHtml(p, false); }).join('') ||
           '<p class="card muted">' + (wins ? 'No wins yet. Be the first: even a small one counts.' : want ? 'Nothing here yet.' : 'It is quiet in here. Post the first win, rant, question or tip.') + '</p>') + '</div>';
+    },
+
+    review: function () {
+      return head('Weekly review', 'Look back at your week and plan the next. Only you can see this.') + '<div id="reviewbody">' + reviewHtml(reviewWeek()) + '</div>';
     },
 
     milestones: function () {
@@ -2326,6 +2444,18 @@
       return false;
     },
     'compose-cancel': function () { endCompose(); focusBox(); return false; },
+    'review-week': function (d) { if (isDay(d.w)) ui.reviewWeek = d.w; render(); window.scrollTo(0, 0); return false; },
+    'goal-idea': function (d) {
+      var x = GOAL_IDEAS[Number(d.i)];
+      if (!x || !isDay(d.w) || !addGoal(d.w, { text: x[2], kind: x[0], n: x[1] })) return false;
+    },
+    'goal-toggle': function (d) { var w = S.weeks[d.w], g = w && find(w.goals, d.id); if (!g) return false; g.done = !g.done; },
+    'goal-del': function (d) {
+      var w = S.weeks[d.w];
+      if (!w) return false;
+      w.goals = w.goals.filter(function (g) { return g.id !== d.id; });
+      if (!w.goals.length && !w.note) delete S.weeks[d.w];
+    },
     'win-prompt': function (d) {
       var w = WIN_PROMPTS[Number(d.i)], box = document.getElementById('posttext'), sel = document.getElementById('posttag');
       if (!w || !box) return false;
@@ -3008,6 +3138,10 @@
     reply: function (f) {
       var text = String(f.get('text')).trim(); if (!text) return false;
       return feedCall(api('POST', '/api/posts/' + Number(f.get('id')) + '/replies', { text: text }));
+    },
+    goal: function (f, form) {
+      var text = String(f.get('text') || '').trim(), m = form.dataset.w;
+      if (!text || !isDay(m) || !addGoal(m, { text: text.slice(0, 100) })) return false;
     },
     appedit: function (f, form) {
       var a = find(S.apps, form.dataset.id); if (!a) return false;
@@ -4149,7 +4283,7 @@
   }
 
   // ---------- phone notifications ----------
-  var PUSH_LABEL = [['dm', 'Private messages'], ['buddy', 'Buddy check-ins, cheers and requests'], ['due', 'Follow-ups due in your tracker'], ['interview', 'Interviews: the day before, and about an hour before'], ['mod', 'New reports (moderators)']];
+  var PUSH_LABEL = [['dm', 'Private messages'], ['buddy', 'Buddy check-ins, cheers and requests'], ['due', 'Follow-ups due in your tracker'], ['interview', 'Interviews: the day before, and about an hour before'], ['weekly', 'Weekly review, on Sunday evening'], ['mod', 'New reports (moderators)']];
   var pushState = { info: null, sub: null, busy: false, loaded: false };
   function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
   function pushFlag(set) { // which member turned notifications on in this browser
@@ -4286,7 +4420,7 @@
   }
   var USAGE_NAMES = { 'a:post': 'Posted in the feed', 'a:room': 'Wrote in a chat room', 'a:dm': 'Sent a private message', 'a:referral': 'Offered or asked for a referral', 'a:checkin': 'Did a daily check-in',
     'v:feed': 'Feed', 'v:chat': 'Chat', 'v:fun': 'Fun', 'v:jobs': 'Jobs', 'v:tracker': 'Tracker', 'v:routine': 'Routine', 'v:tools': 'Tools', 'v:resume': 'Resume builder', 'v:cover': 'Cover letter', 'v:prep': 'Resume checker',
-    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones' };
+    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones', 'v:review': 'Weekly review' };
   var usage = { data: null, error: '' };
   function loadUsage() {
     if (!me.isOwner) return;
@@ -5091,9 +5225,15 @@
       autosize(e.target);
     } else if (e.target.id === 'posttext') {
       ui.postDraft = e.target.value;
+    } else if (e.target.id === 'reviewnote' && isDay(e.target.dataset.w)) {
+      var wk = e.target.dataset.w, wn = weekFor(wk);
+      wn.note = e.target.value.slice(0, 1000);
+      if (!wn.note && !wn.goals.length) delete S.weeks[wk];
+      save();
     }
   });
   window.addEventListener('hashchange', function () {
+    if (currentView() !== 'review') ui.reviewWeek = ''; // coming back starts at this week
     stopTimer(); render(); window.scrollTo(0, 0);
     var v = currentView();
     if (me && (v === 'feed' || v === 'home')) loadPosts().then(render).catch(fail);

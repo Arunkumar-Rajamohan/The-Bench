@@ -718,7 +718,7 @@ setInterval(() => {
 //    changes weekly. Markers for different things cannot be linked, and markers and secret are deleted after the week.
 //  - The owner's own use is not counted, nor anyone whose browser sends Do Not Track or Global Privacy Control.
 //  - Wellbeing is never counted. Counts of 1 to 4 people are only ever given as "under 5".
-const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones'];
+const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones', 'review'];
 const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin'];
 const USAGE_METRICS = ['active', ...USAGE_VIEWS.map((x) => 'v:' + x), ...USAGE_DID.map((x) => 'a:' + x)];
 const USAGE_FEW = 5;
@@ -860,7 +860,8 @@ async function setReceipts(user, on) {
 
 // ---------- phone notifications ----------
 // What is sent never includes message text, job titles or company names: it may appear on a lock screen.
-const PUSH_KINDS = ['dm', 'buddy', 'due', 'interview', 'mod'];
+const PUSH_KINDS = ['dm', 'buddy', 'due', 'interview', 'weekly', 'mod'];
+const PUSH_OPT_IN = new Set(['weekly']); // off until the member turns it on; the rest start on
 const PUSH_DEVICES = 6;
 const BUDDY_PUSH = {
   request: 'would like to be your accountability buddy.', accepted: 'said yes. You are buddies now.', checkin: 'checked in for today.',
@@ -888,8 +889,17 @@ function once(key, ms) { // true the first time, then false until ms have passed
 async function claim(userId, key) { return (await q.claimSent.run(userId, key, Date.now())).changes > 0; }
 function cleanPrefs(raw, admin) {
   const out = {};
-  for (const k of PUSH_KINDS) if (k !== 'mod' || admin) out[k] = !(raw && raw[k] === false);
+  for (const k of PUSH_KINDS) if (k !== 'mod' || admin) out[k] = PUSH_OPT_IN.has(k) ? !!(raw && raw[k] === true) : !(raw && raw[k] === false);
   return out;
+}
+// Sunday evening, India time: a nudge to look back at the week. It says nothing about what is in it.
+async function weeklyNudge(userId) {
+  const now = webpush.ist(pushNow());
+  if (new Date(now.day + 'T00:00:00Z').getUTCDay() !== 0 || now.time < '18:00' || now.time >= '21:00') return;
+  const key = 'wk:' + now.day;
+  if (!(await claim(userId, key))) return;
+  const how = await notify(userId, 'weekly', { title: 'The Bench', body: 'Your week in review is ready. Take two minutes to look back and plan next week.', url: '/#/review', tag: 'weekly', ttl: 3 * 3600 });
+  if (!how.sent && how.failed) await q.unclaimSent.run(userId, key); // try again next time
 }
 async function prefsForPush(userId) {
   const row = await q.pushPrefs.get(userId);
@@ -940,6 +950,7 @@ async function pushTick() {
     for (const id of trackerDates.keys()) if (!people.some((p) => p.id === id)) trackerDates.delete(id);
     for (const p of people) {
       const prefs = await prefsForPush(p.id);
+      if (prefs.weekly) await weeklyNudge(p.id);
       if (!prefs.due && !prefs.interview) continue;
       let known = trackerDates.get(p.id);
       if (!known || known.rev !== p.data_rev) {

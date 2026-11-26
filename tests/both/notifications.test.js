@@ -139,7 +139,7 @@ function member() {
     check('needs login', (await member()('GET', '/api/push')).status === 401 && (await member()('POST', '/api/push/on', a1.sub)).status === 401);
     let r = await A('GET', '/api/push');
     const siteKey = r.json.key;
-    check('key and choices', Buffer.from(siteKey, 'base64url').length === 65 && r.json.devices === 0 && JSON.stringify(r.json.prefs) === JSON.stringify({ dm: true, buddy: true, due: true, interview: true }), r.json);
+    check('key and choices', Buffer.from(siteKey, 'base64url').length === 65 && r.json.devices === 0 && JSON.stringify(r.json.prefs) === JSON.stringify({ dm: true, buddy: true, due: true, interview: true, weekly: false }), r.json);
     check('moderators also get the reports choice', 'mod' in (await M('GET', '/api/push')).json.prefs);
     check('the private key is never sent', !JSON.stringify(r.json).includes(JSON.parse(rows("SELECT value FROM settings WHERE key = 'push_key'")[0].value).jwk.d));
     for (const [n, body] of [['odd address', { endpoint: 'https://evil.com/x', keys: a1.sub.keys }], ['own network', { endpoint: 'http://127.0.0.1:' + PORT + '/api/logout', keys: a1.sub.keys }], ['no keys', { endpoint: a1.sub.endpoint }], ['key not on the curve', { endpoint: a1.sub.endpoint, keys: { p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]).toString('base64url'), auth: a1.sub.keys.auth } }], ['short secret', { endpoint: a1.sub.endpoint, keys: { p256dh: a1.sub.keys.p256dh, auth: 'abcd' } }]]) {
@@ -167,7 +167,8 @@ function member() {
     // ---- choices ----
     clear();
     r = await A('PUT', '/api/push/prefs', { dm: false, buddy: true, due: true, interview: true, mod: true, evil: 1 });
-    check('choices saved and cleaned', JSON.stringify(r.json.prefs) === JSON.stringify({ dm: false, buddy: true, due: true, interview: true }), r.json);
+    check('choices saved and cleaned', JSON.stringify(r.json.prefs) === JSON.stringify({ dm: false, buddy: true, due: true, interview: true, weekly: false }), r.json);
+    r = await A('PUT', '/api/push/prefs', { dm: false, weekly: 'yes' }); check('the weekly review reminder is off until really turned on', r.json.prefs.weekly === false && (await A('PUT', '/api/push/prefs', { dm: false, weekly: true })).json.prefs.weekly === true);
     const C = member(), cName = 'nc_' + rnd(); await C('POST', '/api/signup', { username: cName, name: 'Chitra', password: crypto.randomUUID() });
     await C('POST', '/api/chat/dm/' + aName, { text: 'x' }); await wait(400); check('switched-off kind is not sent', inbox.length === 0, inbox);
     await A('PUT', '/api/push/prefs', { dm: true });
@@ -245,6 +246,15 @@ function member() {
     check('tried again when the service was down', tries >= 1 && inbox.filter((x) => x.status === 201).length === 1 && inbox.filter((x) => x.status === 201)[0].msg.body === '1 follow-up is due', inbox.map((x) => [x.status, x.msg && x.msg.body]));
     clear(); await T('PUT', '/api/push/prefs', { due: false, interview: false }); await T('PUT', '/api/me/data', { apps: [app('z1', { followUp: '2030-03-12' }), app('z2', { stage: 'Interview', interview: '2030-03-12', itime: '09:30' })] }); await wait(800); check('reminders off', inbox.length === 0, inbox.map((x) => x.msg));
     await T('PUT', '/api/push/prefs', { due: true, interview: false }); await wait(800); check('only follow-ups on', got(t1).length === 1 && got(t1)[0].body === '1 follow-up is due', got(t1));
+    // weekly review: Sunday evening only, once, and only for people who turned it on
+    clear(); at('2030-03-16', '18:30'); await wait(700); check('weekly: not without being turned on', inbox.length === 0, inbox.map((x) => x.msg));
+    await T('PUT', '/api/push/prefs', { due: true, interview: false, weekly: true });
+    await wait(700); check('weekly: not on a Saturday', got(t1).length === 0, got(t1));
+    at('2030-03-17', '17:40'); await wait(700); check('weekly: not before Sunday evening', got(t1).length === 0, got(t1));
+    at('2030-03-17', '18:05'); await wait(900); check('weekly: Sunday evening', got(t1).length === 1 && got(t1)[0].body === 'Your week in review is ready. Take two minutes to look back and plan next week.' && got(t1)[0].url === '/#/review' && got(t1)[0].tag === 'weekly', got(t1));
+    at('2030-03-17', '20:30'); await wait(700); check('weekly: once a week', got(t1).length === 1, got(t1));
+    clear(); at('2030-03-17', '21:10'); await T('PUT', '/api/push/prefs', { due: true, interview: false, weekly: true }); await wait(700); check('weekly: not late at night', inbox.length === 0);
+    at('2030-03-24', '19:00'); await wait(900); check('weekly: and again the next Sunday', got(t1).length === 1, got(t1));
     clear(); await T('POST', '/api/logout'); await wait(100); await T('POST', '/api/me/data', {}); at('2030-03-13', '09:00'); await wait(800); check('no reminders after logging out', inbox.length === 0, inbox.map((x) => x.msg));
     check('every notification could be read, and none held private text', everything.length > 25 && !everything.some((x) => /UNREADABLE|SECRETTEXT|TITLETEXT|COMPANYTEXT|NOTETEXT|GOALTEXT|PLANTEXT|REASONTEXT/.test(x)), everything.filter((x) => /TEXT|UNREAD/.test(x)));
 

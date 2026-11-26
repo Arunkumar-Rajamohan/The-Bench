@@ -20,7 +20,7 @@ const { device, startServer, stopServer, wait, tmp } = require('./devices.js');
     await size(A, 1200, 900); await size(B, 1200, 900);
     await A.load('home'); await post(A, '/api/signup', { username: a, name: 'Asha', password: pw });
     await A.load('home');
-    check('home shows milestones, none yet', /Milestones\s*0 of 19 earned · Next:/.test(await main(A)), (await main(A)).slice(0, 600));
+    check('home shows milestones, none yet', /Milestones\s*0 of 21 earned · Next:/.test(await main(A)), (await main(A)).slice(0, 600));
     check('nothing is celebrated for a new member', (await toast(A)) === '' && (await badges(A)).length === 0);
 
     // earning one through the real tracker
@@ -47,7 +47,7 @@ const { device, startServer, stopServer, wait, tmp } = require('./devices.js');
     // the page
     await A.go('milestones'); await wait(300);
     let m = await A.js(`return { tiles: document.querySelectorAll('.mile').length, got: document.querySelectorAll('.mile.got').length, share: document.querySelectorAll('.mile.got [data-act="mile-share"]').length, text: document.getElementById('milebody').innerText };`);
-    check('the page lists every milestone, earned ones first in colour', m.tiles === 19 && m.got === 10 && m.share === 10, m);
+    check('the page lists every milestone, earned ones first in colour', m.tiles === 21 && m.got === 10 && m.share === 10, m);
     check('locked ones show how far along you are', /25 applications[\s\S]*18 of 25/.test(m.text) && /A full week[\s\S]*Earned/.test(m.text) && /30-day streak[\s\S]*8 of 30/.test(m.text), m.text.slice(0, 900));
     check('opened from Tools, which lights up Tools', await A.js(`return !!document.querySelector('.crumb[href="#/tools"]');`));
     await shot(A, 'milestones.png');
@@ -106,7 +106,7 @@ const { device, startServer, stopServer, wait, tmp } = require('./devices.js');
 
     // Tools, and the next person on the device
     await B.go('tools'); await wait(300);
-    check('Tools has Milestones and the wins wall', /Milestones[\s\S]*0 of 19 earned/.test(await main(B)) && /Wins wall/.test(await main(B)));
+    check('Tools has Milestones and the wins wall', /Milestones[\s\S]*0 of 21 earned/.test(await main(B)) && /Wins wall/.test(await main(B)));
     await B.go('milestones'); await wait(300);
     check('each person sees only their own', (await B.js(`return document.querySelectorAll('.mile.got').length;`)) === 0);
 

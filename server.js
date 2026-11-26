@@ -718,7 +718,7 @@ setInterval(() => {
 //    changes weekly. Markers for different things cannot be linked, and markers and secret are deleted after the week.
 //  - The owner's own use is not counted, nor anyone whose browser sends Do Not Track or Global Privacy Control.
 //  - Wellbeing is never counted. Counts of 1 to 4 people are only ever given as "under 5".
-const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people'];
+const USAGE_VIEWS = ['feed', 'chat', 'fun', 'jobs', 'tracker', 'routine', 'tools', 'resume', 'cover', 'prep', 'interview', 'salary', 'learn', 'buddy', 'people', 'milestones'];
 const USAGE_DID = ['post', 'room', 'dm', 'referral', 'checkin'];
 const USAGE_METRICS = ['active', ...USAGE_VIEWS.map((x) => 'v:' + x), ...USAGE_DID.map((x) => 'a:' + x)];
 const USAGE_FEW = 5;

@@ -321,6 +321,7 @@
       salary: null, // salary and offer helper inputs, made the first time it opens
       moodlog: {}, // mood check-in extras by day: { tags, note }
       steps: {}, // first steps: { hi, hide }
+      badges: {}, // milestones earned: id -> when (a number, so two devices never "conflict" over it)
       kept: [] // text that was changed on two devices at once: the version that was not used
     };
   }
@@ -339,6 +340,7 @@
     b.salary = cleanSalary(raw.salary);
     b.moodlog = cleanMoodlog(raw.moodlog);
     b.kept = cleanKept(raw.kept);
+    b.badges = cleanBadges(raw.badges);
     if (isObj(raw.steps)) { if (raw.steps.hi) b.steps.hi = true; if (raw.steps.hide) b.steps.hide = true; }
     // Parts this version of the app does not know (an older tab next to a newer one) must survive a save.
     Object.keys(raw).forEach(function (k) { if (!(k in b)) b[k] = raw[k]; });
@@ -355,7 +357,8 @@
   var posts = [];      // shared feed, from the server
   var ui = {
     booting: true, authMode: (function () { try { return localStorage.getItem('bench:member') ? 'login' : 'signup'; } catch (e) { return 'login'; } })(), authError: '', authUser: '', authName: '', newCode: '', acctMsg: null,
-    timerId: null, timerStart: 0, report: null
+    timerId: null, timerStart: 0, report: null,
+    postDraft: '', postTag: '', postTagTab: '' // the feed's half-written post, kept while the page redraws
   };
 
   // ---------- saving private data ----------
@@ -451,6 +454,7 @@
 
   function dirty() { return !!me && !same(S, sync.base); }
   function save() {
+    checkBadges(); // every change to private data passes through here
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () { saveTimer = null; push(); }, 400);
     if (!sync.stashTimer) sync.stashTimer = setTimeout(stash, 150);
@@ -596,7 +600,7 @@
   function dropStashes(user) { eachStash(function (k, v) { if (v.user === user) localStorage.removeItem(k); }); }
 
   // --- show changes that arrived from another device ---
-  var SHOWS_DATA = { home: 1, tools: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1 };
+  var SHOWS_DATA = { home: 1, tools: 1, tracker: 1, prep: 1, routine: 1, resume: 1, cover: 1, salary: 1, mood: 1, interview: 1, learn: 1, milestones: 1 };
   function redraw() {
     sync.redraw = false;
     if (!me || ui.booting || ui.newCode) return;
@@ -649,7 +653,7 @@
     sync.rev = null; sync.base = blank(); sync.again = false; sync.want = 0; sync.tries = 0; sync.blocked = false; sync.redraw = false; sync.recovered = {}; sync.tab = uid();
     showUnsaved('');
     stopTimer();
-    me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null;
+    me = null; S = blank(); posts = []; ui.report = null; ui.newCode = ''; ui.acctMsg = null; ui.postDraft = ''; ui.postTag = '';
     stopStream(); chat = freshChat(); updateBadge();
     alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
     buddy.state = null; buddy.suggestions = null; buddy.editing = false;
@@ -683,7 +687,7 @@
 
   // ---------- views ----------
   // Pages that live inside Tools: they light up Tools in the menu and get a link back to it.
-  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1 };
+  var IN_TOOLS = { tools: 1, prep: 1, interview: 1, resume: 1, cover: 1, salary: 1, learn: 1, mood: 1, milestones: 1 };
   function head(title, sub) {
     var v = currentView(), back = me && IN_TOOLS[v] && v !== 'tools' ? '<a class="crumb" href="#/tools">← Tools</a>' : '';
     return '<header class="head">' + back + '<h1>' + title + '</h1><p class="sub">' + sub + '</p></header>';
@@ -815,7 +819,7 @@
       '<input class="grow" type="text" name="text" placeholder="Say something nice…" maxlength="300" aria-label="Reply" required>' +
       '<button class="btn ghost">Reply</button></form>';
     var who = '<a class="who" href="#/u/' + esc(p.username) + '">' + esc(p.name) + '</a>';
-    return '<article class="card post"><div class="row between"><div class="row">' + who +
+    return '<article class="card post' + (tag === 'Win' ? ' win' : '') + '"><div class="row between"><div class="row">' + who +
       '<span class="muted small">@' + esc(p.username) + '</span>' +
       '<span class="pill ' + tag + '">' + tag + '</span><span class="muted small">' + ago(p.t) + '</span></div>' +
       ((p.own || me.isAdmin) && !compact ? '<button class="link" data-act="del-post" data-id="' + id + '">delete</button>' : '') + '</div>' +
@@ -1349,6 +1353,10 @@
       ['Learn and look after yourself', [
         ['book', 'Free courses', 'Hand-picked courses that are free to learn.', '#/learn', '', learnt],
         ['heart', 'Wellbeing', 'A mood check-in, a breathing exercise and helplines.', '#/mood', '', moodOn(today()) !== null ? 'Checked in today' : '']
+      ]],
+      ['Your progress', [
+        ['trophy', 'Milestones', 'Private badges for real progress, like your first interview or a 7-day streak.', '#/milestones', '', badgeCount() + ' of ' + MILESTONES.length + ' earned'],
+        ['feed', 'Wins wall', 'Share good news, however small, and cheer on others.', '#/feed/wins', '', '']
       ]]
     ];
   }
@@ -1375,6 +1383,115 @@
     ];
   }
   function stepsShown() { return !S.steps.hide && me.since > Date.now() - STEP_DAYS * 864e5; }
+
+  // ---------- milestones ----------
+  // Private badges for real progress, worked out from the member's own data. Once earned they stay, even if the
+  // data changes later (S.badges: id -> when). Nobody else sees them unless the member shares one as a win.
+  function appliedCount() { return S.apps.filter(function (a) { return a.stage && a.stage !== 'Wishlist'; }).length; }
+  function interviewCount() { return S.apps.filter(function (a) { return a.stage === 'Interview' || a.stage === 'Offer' || !!a.interview; }).length; }
+  function coursesDone() { return Object.keys(S.learn).filter(function (k) { return S.learn[k] === 'done'; }).length; }
+  function bestStreak() {
+    var best = 0, run = 0, prev = '';
+    Object.keys(S.routine.log).filter(function (k) { return isDay(k) && hit(k); }).sort().forEach(function (k) {
+      run = prev && addDays(prev, 1) === k ? run + 1 : 1;
+      if (run > best) best = run;
+      prev = k;
+    });
+    return best;
+  }
+  var MILESTONE_GROUPS = ['Applying', 'Interviews and offers', 'Habits', 'Getting ready', 'Community'];
+  var MILESTONES = [
+    // [id, group, icon, name, how to earn it, progress: () -> [have, need]]
+    ['first-job', 0, 'tracker', 'On the board', 'Track your first job.', function () { return [S.apps.length, 1]; }],
+    ['apps-10', 0, 'jobs', '10 applications', 'Apply to 10 jobs and track them (any stage after Wishlist).', function () { return [appliedCount(), 10]; }],
+    ['apps-25', 0, 'jobs', '25 applications', 'Apply to 25 jobs and track them.', function () { return [appliedCount(), 25]; }],
+    ['apps-50', 0, 'jobs', '50 applications', 'Apply to 50 jobs and track them.', function () { return [appliedCount(), 50]; }],
+    ['interview-1', 1, 'prep', 'First interview', 'Get an interview and add it to your tracker.', function () { return [interviewCount(), 1]; }],
+    ['interview-5', 1, 'prep', '5 interviews', 'Reach the interview stage five times.', function () { return [interviewCount(), 5]; }],
+    ['kept-going', 1, 'heart', 'Kept going', 'Log five rejections and keep at it. That takes grit.', function () { return [countStage('Rejected'), 5]; }],
+    ['offer', 1, 'trophy', 'Got an offer', 'Move a job to Offer in your tracker.', function () { return [countStage('Offer'), 1]; }],
+    ['streak-3', 2, 'flame', '3-day streak', 'Tick a routine task three days in a row.', function () { return [bestStreak(), 3]; }],
+    ['streak-7', 2, 'flame', 'A full week', 'Tick a routine task seven days in a row.', function () { return [bestStreak(), 7]; }],
+    ['streak-30', 2, 'flame', '30-day streak', 'Tick a routine task 30 days in a row.', function () { return [bestStreak(), 30]; }],
+    ['resume', 3, 'feed', 'Resume started', 'Add your details to the resume builder.', function () { return [resumeStarted() ? 1 : 0, 1]; }],
+    ['cover', 3, 'mail', 'First cover letter', 'Fill in a company and a role in the cover letter helper.', function () { return [S.cl && String(S.cl.company || '').trim() && String(S.cl.role || '').trim() ? 1 : 0, 1]; }],
+    ['practice-10', 3, 'prep', 'Warmed up', 'Practise 10 interview questions.', function () { return [S.practice.length, 10]; }],
+    ['practice-50', 3, 'prep', 'Interview ready', 'Practise 50 interview questions.', function () { return [S.practice.length, 50]; }],
+    ['course-1', 3, 'book', 'Course finished', 'Finish a free course and mark it done.', function () { return [coursesDone(), 1]; }],
+    ['course-3', 3, 'book', 'Keen learner', 'Finish three free courses.', function () { return [coursesDone(), 3]; }],
+    ['said-hi', 4, 'chat', 'Said hello', 'Say hi in a chat room or post on the feed.', function () { return [S.steps.hi || posts.some(function (p) { return p.own; }) ? 1 : 0, 1]; }],
+    ['shared-win', 4, 'trophy', 'Shared a win', 'Post a win on the feed, however small.', function () { return [S.badges['shared-win'] ? 1 : 0, 1]; }]
+  ];
+  function cleanBadges(raw) {
+    var out = {};
+    if (isObj(raw)) Object.keys(raw).forEach(function (k) { var v = Number(raw[k]); if (/^[a-z0-9-]{1,40}$/.test(k) && isFinite(v) && v > 0) out[k] = v; });
+    return out;
+  }
+  function badgeCount() { return MILESTONES.filter(function (m) { return S.badges[m[0]]; }).length; }
+  // Give any milestone that has just been reached. Returns true when something new was given.
+  function checkBadges() {
+    if (!me) return false;
+    var fresh = MILESTONES.filter(function (m) { if (S.badges[m[0]]) return false; var p = m[5](); return p[0] >= p[1]; });
+    if (!fresh.length) return false;
+    var now = Date.now();
+    fresh.forEach(function (m) { S.badges[m[0]] = now; });
+    celebrate(fresh);
+    return true;
+  }
+  function award(id) {
+    if (!me || S.badges[id]) return;
+    S.badges[id] = Date.now();
+    celebrate(MILESTONES.filter(function (m) { return m[0] === id; }));
+    save();
+  }
+  function celebrate(list) {
+    var msg = list.length === 1 ? 'New milestone: ' + list[0][3] + '. Nicely done!' : 'You earned ' + list.length + ' new milestones. See them in Tools.';
+    setTimeout(function () { if (!me) return; confetti(); toast(msg); refreshMilestones(); }, ui.booting ? 2600 : 250);
+  }
+  // The badge closest to being earned, to show what comes next.
+  function nextMilestone() {
+    var best = null, bestR = -1;
+    MILESTONES.forEach(function (m) {
+      if (S.badges[m[0]]) return;
+      var p = m[5](), r = Math.min(p[0], p[1]) / p[1];
+      if (r > bestR) { best = m; bestR = r; }
+    });
+    return best;
+  }
+  function milestoneHomeHtml() {
+    var got = badgeCount(), next = nextMilestone(), p = next ? next[5]() : null;
+    return '<a class="card mile-home" href="#/milestones"><span class="mile-badge got" aria-hidden="true">' + ico('trophy') + '</span><span class="grow"><b>Milestones</b>' +
+      '<span class="muted small">' + got + ' of ' + MILESTONES.length + ' earned' + (next ? ' · Next: ' + esc(next[3]) + (p[1] > 1 ? ' (' + Math.min(p[0], p[1]) + ' of ' + p[1] + ')' : '') : ' · Every one. Amazing.') + '</span></span>' +
+      '<span class="mile-go" aria-hidden="true">→</span></a>';
+  }
+  function mileTile(m) {
+    var when = S.badges[m[0]], p = m[5](), have = Math.min(p[0], p[1]);
+    return '<article class="card mile' + (when ? ' got' : '') + '"><span class="mile-badge' + (when ? ' got' : '') + '" aria-hidden="true">' + ico(m[2]) + '</span>' +
+      '<div class="grow mile-body"><h3>' + esc(m[3]) + '<span class="sr-only">' + (when ? ' (earned)' : ' (not yet)') + '</span></h3><p class="small muted">' + esc(m[4]) + '</p>' +
+      (when
+        ? '<p class="small mile-when">' + ico('check') + 'Earned ' + esc(new Date(when).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })) + '</p>' +
+          '<button type="button" class="btn tiny ghost" data-act="mile-share" data-id="' + m[0] + '">Share as a win</button>'
+        : p[1] > 1 ? '<div class="tbar" role="img" aria-label="' + have + ' of ' + p[1] + '"><i style="width:' + Math.round(have / p[1] * 100) + '%"></i></div><p class="small muted">' + have + ' of ' + p[1] + '</p>' : '') +
+      '</div></article>';
+  }
+  function milestonesHtml() {
+    return '<div class="stats"><div class="stat hot"><b>' + badgeCount() + '/' + MILESTONES.length + '</b><span>' + ico('trophy') + 'earned</span></div>' +
+      '<div class="stat"><b>' + appliedCount() + '</b><span>applications</span></div>' +
+      '<div class="stat"><b>' + interviewCount() + '</b><span>interviews</span></div>' +
+      '<div class="stat"><b>' + bestStreak() + '</b><span>best streak (days)</span></div></div>' +
+      MILESTONE_GROUPS.map(function (g, gi) {
+        return '<section class="mile-group"><h2>' + g + '</h2><div class="mile-grid">' +
+          MILESTONES.filter(function (m) { return m[1] === gi; }).map(mileTile).join('') + '</div></section>';
+      }).join('');
+  }
+  function refreshMilestones() { var el = document.getElementById('milebody'); if (el && currentView() === 'milestones') el.innerHTML = milestonesHtml(); }
+
+  // ---------- wins wall ----------
+  var FEED_TABS = [['', 'All'], ['wins', 'Wins'], ['questions', 'Questions'], ['tips', 'Tips'], ['rants', 'Rants']];
+  var FEED_TAG = { wins: 'Win', questions: 'Question', tips: 'Tip', rants: 'Rant' };
+  var WIN_PROMPTS = ['Got an interview call from ', 'Finished a course: ', 'Applied to 5 jobs this week', 'Got a referral at ', 'Got an offer!', 'Got through a hard day'];
+  function feedTab() { var p = location.hash.replace(/^#\/?/, '').split('/'); return FEED_TAG[p[1]] ? p[1] : ''; }
+  function winsThisWeek() { var since = Date.now() - 7 * 864e5; return posts.filter(function (p) { return p.tag === 'Win' && p.t > since; }).length; }
   function stepsHtml() {
     if (!stepsShown()) return '';
     var list = steps(), done = list.filter(function (s) { return s[0]; }).length;
@@ -1416,6 +1533,7 @@
         pushBanner() +
         homeBuddyHtml() +
         alertBanner() +
+        milestoneHomeHtml() +
         (stepsShown() ? '' : '<p class="banner">' + ico('fun') + '<span>Today\'s puzzle and question of the day are up. <a href="#/fun">Play now</a></span></p>') +
         '<div class="grid2"><section class="card"><div class="row between"><h2>Today\'s routine</h2><a class="btn tiny ghost" href="#/routine">Open</a></div>' + taskList() + '</section>' +
         '<section class="stack"><div class="row between"><h2>Fresh from the feed</h2><a class="btn tiny ghost" href="#/feed">See all</a></div>' + latest + '</section></div>' +
@@ -1559,14 +1677,28 @@
     },
 
     feed: function () {
+      var tab = feedTab(), want = FEED_TAG[tab] || '', wins = tab === 'wins';
+      var tag = ui.postTag && ui.postTagTab === tab ? ui.postTag : (want || 'Win'), shown = posts.filter(function (p) { return !want || p.tag === want; });
+      var n = winsThisWeek();
       return head('The Feed', 'Wins, rants, questions and tips. No LinkedIn voice allowed.') +
-        '<div class="stack narrow"><form class="card stack" data-form="post">' +
-        '<textarea name="text" maxlength="600" placeholder="What happened today?" aria-label="Write a post" required></textarea>' +
-        '<div class="row between"><select class="auto" name="tag" aria-label="Post type">' +
-        TAGS.map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select>' +
+        '<div class="stack narrow"><nav class="chips feed-tabs" aria-label="Show">' + FEED_TABS.map(function (t) {
+          var on = t[0] === tab;
+          return '<a class="chip' + (on ? ' on' : '') + '" href="#/feed' + (t[0] ? '/' + t[0] : '') + '"' + (on ? ' aria-current="page"' : '') + '>' + t[1] + '</a>';
+        }).join('') + '</nav>' +
+        (wins ? '<section class="card wins-head"><div class="row between"><h2>' + ico('trophy') + ' Wins wall</h2><span class="muted small">' + n + (n === 1 ? ' win' : ' wins') + ' shared this week</span></div>' +
+          '<p class="small">Big or small, every step counts. Got a call back? Finished a course? Made it through a hard day? Share it here, and cheer on others.</p></section>' : '') +
+        '<form class="card stack" data-form="post">' +
+        '<textarea id="posttext" name="text" maxlength="600" placeholder="' + (wins ? 'What went well? Even a small step counts.' : 'What happened today?') + '" aria-label="Write a post" required>' + esc(ui.postDraft || '') + '</textarea>' +
+        (wins ? '<div class="chips win-prompts" aria-label="Ideas">' + WIN_PROMPTS.map(function (w, i) { return '<button type="button" class="chip" data-act="win-prompt" data-i="' + i + '">' + esc(w.trim()) + '</button>'; }).join('') + '</div>' : '') +
+        '<div class="row between"><select class="auto" id="posttag" name="tag" aria-label="Post type">' +
+        TAGS.map(function (t) { return '<option' + (t === tag ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' +
         '<button class="btn primary">Post as ' + esc(me.name) + '</button></div></form>' +
-        (posts.map(function (p) { return postHtml(p, false); }).join('') ||
-          '<p class="card muted">It is quiet in here. Post the first win, rant, question or tip.</p>') + '</div>';
+        (shown.map(function (p) { return postHtml(p, false); }).join('') ||
+          '<p class="card muted">' + (wins ? 'No wins yet. Be the first: even a small one counts.' : want ? 'Nothing here yet.' : 'It is quiet in here. Post the first win, rant, question or tip.') + '</p>') + '</div>';
+    },
+
+    milestones: function () {
+      return head('Milestones', 'Badges for real progress. Only you can see them, unless you share one as a win.') + '<div id="milebody">' + milestonesHtml() + '</div>';
     },
 
     jobs: function () {
@@ -2027,7 +2159,8 @@
     loadSeen(); startStream(); loadSummary().catch(function () { /* the chat page retries */ });
     loadAlerts();
     loadBuddy();
-    return loadPosts().catch(fail);
+    // Progress made before milestones existed (or on an older version of the app) counts too.
+    return loadPosts().catch(fail).then(function () { if (checkBadges()) save(); });
   }
   function oldLocal() {
     try {
@@ -2193,6 +2326,24 @@
       return false;
     },
     'compose-cancel': function () { endCompose(); focusBox(); return false; },
+    'win-prompt': function (d) {
+      var w = WIN_PROMPTS[Number(d.i)], box = document.getElementById('posttext'), sel = document.getElementById('posttag');
+      if (!w || !box) return false;
+      var cur = box.value.trim(), untouched = WIN_PROMPTS.some(function (x) { return x.trim() === cur; });
+      box.value = !cur || untouched ? w : box.value.replace(/\s*$/, ' ') + w; // swap one idea for another; never lose their own words
+      ui.postDraft = box.value;
+      if (sel) { sel.value = 'Win'; ui.postTag = 'Win'; ui.postTagTab = feedTab(); }
+      box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+      return false;
+    },
+    'mile-share': function (d) {
+      var m = MILESTONES.filter(function (x) { return x[0] === d.id; })[0];
+      if (!m || !S.badges[m[0]]) return false;
+      ui.postDraft = 'Small win: I just reached “' + m[3] + '” in my job search. 💪';
+      ui.postTag = 'Win'; ui.postTagTab = 'wins';
+      location.hash = '#/feed/wins';
+      return false;
+    },
     jump: function (d) {
       var el = document.querySelector('#msgs .msg[data-id="' + Number(d.id) + '"]');
       if (!el) { toast(chat.more[activeChannel()] ? 'That message is further up. Tap “Load older messages” to find it.' : 'That message is no longer here.'); return false; }
@@ -2847,8 +2998,12 @@
       return false;
     },
     post: function (f) {
-      var text = String(f.get('text')).trim(); if (!text) return false;
-      return feedCall(api('POST', '/api/posts', { text: text, tag: f.get('tag') }));
+      var text = String(f.get('text')).trim(), tag = String(f.get('tag') || ''); if (!text) return false;
+      return feedCall(api('POST', '/api/posts', { text: text, tag: tag }).then(function (j) {
+        ui.postDraft = ''; ui.postTag = '';
+        if (tag === 'Win') { if (S.badges['shared-win']) { confetti(); toast('Win posted. Well done!'); } else award('shared-win'); }
+        return j;
+      }));
     },
     reply: function (f) {
       var text = String(f.get('text')).trim(); if (!text) return false;
@@ -4131,7 +4286,7 @@
   }
   var USAGE_NAMES = { 'a:post': 'Posted in the feed', 'a:room': 'Wrote in a chat room', 'a:dm': 'Sent a private message', 'a:referral': 'Offered or asked for a referral', 'a:checkin': 'Did a daily check-in',
     'v:feed': 'Feed', 'v:chat': 'Chat', 'v:fun': 'Fun', 'v:jobs': 'Jobs', 'v:tracker': 'Tracker', 'v:routine': 'Routine', 'v:tools': 'Tools', 'v:resume': 'Resume builder', 'v:cover': 'Cover letter', 'v:prep': 'Resume checker',
-    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People' };
+    'v:interview': 'Interview practice', 'v:salary': 'Salary helper', 'v:learn': 'Free courses', 'v:buddy': 'Buddy', 'v:people': 'People', 'v:milestones': 'Milestones' };
   var usage = { data: null, error: '' };
   function loadUsage() {
     if (!me.isOwner) return;
@@ -4875,6 +5030,7 @@
       return;
     }
     if (e.target.id === 'learnfree') { learn.freeOnly = e.target.checked; refreshLearn(false); return; }
+    if (e.target.id === 'posttag') { ui.postTag = e.target.value; ui.postTagTab = feedTab(); return; }
     if (e.target.id === 'cl-pick' && e.target.value && S.cl) {
       var app = find(S.apps, e.target.value);
       if (app) {
@@ -4933,6 +5089,8 @@
       document.getElementById('avprev').innerHTML = avatarHtml(e.target.value || '?', c ? c.value : 'tomato', 'lg');
     } else if (e.target.id === 'chatbox') {
       autosize(e.target);
+    } else if (e.target.id === 'posttext') {
+      ui.postDraft = e.target.value;
     }
   });
   window.addEventListener('hashchange', function () {

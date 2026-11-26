@@ -14,7 +14,8 @@ const PROD = process.env.NODE_ENV === 'production';
 const HOST = process.env.HOST || (PROD ? '0.0.0.0' : '127.0.0.1');
 const SESSION_DAYS = 30;
 const MAX_BODY = 256 * 1024;
-const MAX_DATA = 200 * 1024;
+const MAX_DATA = 500 * 1024; // characters of private data (tracker, resume, practice...): a busy year fits well within it
+const DATA_TOO_BIG = 'your saved data is too big. Remove something long, like an old job post.';
 const TAGS = ['Win', 'Rant', 'Question', 'Tip'];
 const REACTS = ['🙌', '💪', '😂'];
 const CHAT_REACTS = ['👍', '❤️', '😂', '🙌', '🙏', '🎉'];
@@ -321,7 +322,8 @@ const q = {
   userById: stmt('SELECT * FROM users WHERE id = ?'),
   addUser: stmt('INSERT INTO users (username, name, pass, salt, recovery, created) VALUES (?, ?, ?, ?, ?, ?)'),
   addSession: stmt('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)'),
-  session: stmt('SELECT u.id, u.username, u.name, u.data, u.data_rev, u.created, u.recovery IS NOT NULL AS has_recovery FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ? AND u.banned = 0'),
+  session: stmt('SELECT u.id, u.username, u.name, u.data, u.data_rev, u.created, u.recovery IS NOT NULL AS has_recovery, s.expires AS session_expires FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ? AND u.banned = 0'),
+  renewSession: stmt('UPDATE sessions SET expires = ? WHERE token_hash = ?'),
   dropSession: stmt('DELETE FROM sessions WHERE token_hash = ?'),
   dropUserSessions: stmt('DELETE FROM sessions WHERE user_id = ?'),
   setRecovery: stmt('UPDATE users SET recovery = ? WHERE id = ?'),
@@ -551,19 +553,24 @@ function send(res, status, body, headers) {
   res.end(json);
 }
 
-function readBody(req) {
+// A body that is too big is read to the end and thrown away, so the "too big" answer reaches the browser:
+// cutting the connection instead looks like the server is down, and the app would keep retrying.
+function readBody(req, max, tooBig) {
+  max = max || MAX_BODY;
   return new Promise((resolve, reject) => {
     if (!/^application\/json/i.test(req.headers['content-type'] || '')) {
       return reject(new HttpError(415, 'Send JSON.'));
     }
-    let size = 0;
+    let size = 0, over = false;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) { reject(new HttpError(413, 'That is too big.')); req.destroy(); return; }
+      if (over) { if (size > max * 4) req.destroy(); return; } // a flood, not a mistake: stop reading
+      if (size > max) { over = true; chunks.length = 0; return; }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (over) return reject(new HttpError(413, tooBig || 'That is too big.'));
       try {
         const v = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
         if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('not an object');
@@ -1178,6 +1185,12 @@ async function api(req, res, route) {
   // Everything below needs a signed-in user.
   const user = await currentUser(req);
   if (!user) throw new HttpError(401, 'Please log in.');
+  // Members who keep coming back stay signed in: the 30 days start again (at most once a day), on the server and in the browser.
+  if (Number(user.session_expires) - Date.now() < (SESSION_DAYS - 1) * 864e5) {
+    const t = tokenOf(req);
+    await q.renewSession.run(Date.now() + SESSION_DAYS * 864e5, sha(t));
+    res.setHeader('Set-Cookie', cookie(t, SESSION_DAYS * 86400));
+  }
 
   if (method === 'GET' && route === '/me') {
     return send(res, 200, { user: Object.assign(publicUser(user), await profileFlags(user.id)), data: parseData(user.data), rev: user.data_rev });
@@ -1236,9 +1249,9 @@ async function api(req, res, route) {
   // If-Match carries the version the save was based on. If someone saved since (another device or tab), nothing is
   // written: the newer copy goes back (409) so the app can merge and try again.
   if (method === 'PUT' && route === '/me/data') {
-    const b = await readBody(req);
+    const b = await readBody(req, MAX_DATA * 2, DATA_TOO_BIG); // bytes: text in Indian scripts takes up to 3 bytes a letter
     const json = JSON.stringify(b);
-    if (json.length > MAX_DATA) throw new HttpError(413, 'your saved data is too big. Remove something long, like an old job post.');
+    if (json.length > MAX_DATA) throw new HttpError(413, DATA_TOO_BIG);
     const m = /^"?(\d{1,15})"?$/.exec(String(req.headers['if-match'] || ''));
     const done = m ? await q.saveDataAt.run(json, user.id, Number(m[1])) : await q.saveData.run(json, user.id);
     const now = await q.dataOf.get(user.id);
@@ -1529,7 +1542,7 @@ function cleanFilters(src) {
     what: String(get('what') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60),
     where: String(get('where') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60),
     remote: get('remote') === '1' || get('remote') === true || get('remote') === 1,
-    field: field === 'nontech' || FIELD_LABEL[field] ? field : ''
+    field: field === 'nontech' || Object.hasOwn(FIELD_LABEL, field) ? field : '' // never "constructor" and the like
   };
 }
 
@@ -1539,7 +1552,8 @@ function searchJobs(f) {
   const matches = jobsStore.jobs.filter((j) => {
     if (f.remote && !j.remote) return false;
     const loc = j.location.toLowerCase();
-    if (f.where && !loc.includes(f.where) && !(CITY_ALIASES[f.where] && loc.includes(CITY_ALIASES[f.where]))) return false;
+    const alias = Object.hasOwn(CITY_ALIASES, f.where) ? CITY_ALIASES[f.where] : '';
+    if (f.where && !loc.includes(f.where) && !(alias && loc.includes(alias))) return false;
     const hay = (j.title + ' ' + j.company + ' ' + j.team).toLowerCase();
     return words.every((w) => hay.includes(w));
   });

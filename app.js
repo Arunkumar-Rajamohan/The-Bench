@@ -11,6 +11,7 @@
     });
   }
   function uid() { return Math.random().toString(36).slice(2, 10); }
+  function own(o, k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k); }
   function dkey(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
@@ -662,6 +663,9 @@
     alerts.list = null; alerts.totalNew = 0; alerts.notified = null; updateJobsBadge();
     buddy.state = null; buddy.suggestions = null; buddy.editing = false;
     refs.list = null; refs.asking = null; jobs.leads = null;
+    // The next person on this device must not see the last one's puzzle guesses, answers or "you" markers, even for a moment.
+    fun.data = null; fun.yesterday = null; fun.order = null; fun.qDay = 'today';
+    prof.people = null; jobs.activeAlert = null; jobs.newSince = 0; iv.seen = {}; iv.cur = null;
     setReports(0);
     usage.data = null; usage.error = '';
   }
@@ -1499,7 +1503,7 @@
   var FEED_TABS = [['', 'All'], ['wins', 'Wins'], ['questions', 'Questions'], ['tips', 'Tips'], ['rants', 'Rants']];
   var FEED_TAG = { wins: 'Win', questions: 'Question', tips: 'Tip', rants: 'Rant' };
   var WIN_PROMPTS = ['Got an interview call from ', 'Finished a course: ', 'Applied to 5 jobs this week', 'Got a referral at ', 'Got an offer!', 'Got through a hard day'];
-  function feedTab() { var p = location.hash.replace(/^#\/?/, '').split('/'); return FEED_TAG[p[1]] ? p[1] : ''; }
+  function feedTab() { var p = location.hash.replace(/^#\/?/, '').split('/'); return own(FEED_TAG, p[1]) ? p[1] : ''; }
   function winsThisWeek() { var since = Date.now() - 7 * 864e5; return posts.filter(function (p) { return p.tag === 'Win' && p.t > since; }).length; }
 
   // ---------- weekly review ----------
@@ -1519,7 +1523,7 @@
       var w = raw[k];
       if (!isObj(w)) return;
       var goals = (Array.isArray(w.goals) ? w.goals : []).filter(function (g) { return isObj(g) && typeof g.id === 'string' && typeof g.text === 'string' && g.text.trim(); }).slice(0, 6).map(function (g) {
-        var kind = GOAL_KINDS[g.kind] ? g.kind : '', n = Math.round(Number(g.n));
+        var kind = own(GOAL_KINDS, g.kind) ? g.kind : '', n = Math.round(Number(g.n));
         var o = { id: g.id.slice(0, 40), text: g.text.slice(0, 100), kind: kind, n: kind && n >= 1 && n <= 50 ? n : 0, done: !!g.done };
         if (!o.n) o.kind = '';
         return o;
@@ -1543,7 +1547,7 @@
     s.routineDays = days.filter(function (d) { return d.n > 0; }).length;
     return s;
   }
-  function goalProgress(m, g) { var k = GOAL_KINDS[g.kind]; return k && g.n ? [Math.min(weekStats(m)[k[0]], g.n), g.n] : null; }
+  function goalProgress(m, g) { var k = own(GOAL_KINDS, g.kind) ? GOAL_KINDS[g.kind] : null; return k && g.n ? [Math.min(weekStats(m)[k[0]], g.n), g.n] : null; }
   function goalDone(m, g) { var p = goalProgress(m, g); return p ? p[0] >= p[1] : !!g.done; }
   function reviewWeek() { var w = ui.reviewWeek, cur = thisMonday(); return isDay(w) && w === mondayOf(w) && w <= addDays(cur, 7) ? w : cur; }
   function shortDay(k) { return dayDate(k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
@@ -2889,7 +2893,11 @@
       return false;
     },
     'del-app': function (d) {
-      S.apps = S.apps.filter(function (a) { return a.id !== d.id; });
+      var a = find(S.apps, d.id);
+      if (!a) return false;
+      // One tap on a phone is easy to do by accident, and the dates and notes go with it.
+      if (!window.confirm('Remove "' + a.title + '" at ' + a.company + ' from your tracker?\n\nIts dates and notes go too.')) return false;
+      S.apps = S.apps.filter(function (x) { return x.id !== d.id; });
     },
     'next-q': function () { nextQ(); render(); return false; },
     'iv-pack': function (d) { iv.pack = d.p; iv.cur = null; pickQ(); render(); return false; },
@@ -3127,17 +3135,25 @@
         .then(render);
       return false;
     },
-    post: function (f) {
-      var text = String(f.get('text')).trim(), tag = String(f.get('tag') || ''); if (!text) return false;
-      return feedCall(api('POST', '/api/posts', { text: text, tag: tag }).then(function (j) {
+    post: function (f, form) {
+      var text = String(f.get('text')).trim(), tag = String(f.get('tag') || '');
+      if (!text || ui.posting) return false; // a second tap on a slow connection must not post twice
+      var btn = form.querySelector('button.primary');
+      ui.posting = true; if (btn) btn.disabled = true;
+      api('POST', '/api/posts', { text: text, tag: tag }).then(function () {
         ui.postDraft = ''; ui.postTag = '';
         if (tag === 'Win') { if (S.badges['shared-win']) { confetti(); toast('Win posted. Well done!'); } else award('shared-win'); }
-        return j;
-      }));
+      }).then(loadPosts).then(render, function (e) { fail(e); if (btn) btn.disabled = false; })
+        .then(function () { ui.posting = false; });
+      return false;
     },
-    reply: function (f) {
-      var text = String(f.get('text')).trim(); if (!text) return false;
-      return feedCall(api('POST', '/api/posts/' + Number(f.get('id')) + '/replies', { text: text }));
+    reply: function (f, form) {
+      var text = String(f.get('text')).trim(), btn = form.querySelector('button');
+      if (!text || (btn && btn.disabled)) return false;
+      if (btn) btn.disabled = true;
+      api('POST', '/api/posts/' + Number(f.get('id')) + '/replies', { text: text })
+        .then(loadPosts).then(render, function (e) { fail(e); if (btn) btn.disabled = false; });
+      return false;
     },
     goal: function (f, form) {
       var text = String(f.get('text') || '').trim(), m = form.dataset.w;
@@ -5075,7 +5091,7 @@
     var v = location.hash.replace(/^#\/?/, '').split('/')[0];
     if (v === 'dm') return 'chat';
     if (v === 'u') return 'profile';
-    return views[v] ? v : 'home';
+    return own(views, v) ? v : 'home'; // "#/__proto__" and the like are not pages
   }
   function render() {
     document.body.classList.toggle('anon', !me);

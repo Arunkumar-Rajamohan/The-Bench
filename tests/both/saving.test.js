@@ -117,7 +117,7 @@ function member() {
     check('12 saves at once: exactly one wins', race.filter((x) => x.status === 200).length === 1 && race.filter((x) => x.status === 409).length === 11, race.map((x) => x.status));
     const won = race.findIndex((x) => x.status === 200);
     r = await raw('GET', '/api/me/data'); check('and it is the one stored', r.json.data.race === won && r.json.rev === 4, r);
-    r = await raw('PUT', '/api/me/data', { big: 'x'.repeat(210 * 1024) }, 4); check('too big refused', r.status === 413, r.status);
+    r = await raw('PUT', '/api/me/data', { big: 'x'.repeat(510 * 1024) }, 4); check('too big refused', r.status === 413, r.status);
     check('needs login', (await raw('GET', '/api/me/data', null, undefined, '')).status === 401 && (await raw('PUT', '/api/me/data', { a: 1 }, 4, '')).status === 401);
     const B = member(); await B('POST', '/api/login', { username: u, password: pw }); await B.stream(); await wait(300);
     const D = member(); await D('POST', '/api/signup', { username: 'rx_' + rnd(), name: 'X', password: crypto.randomUUID() }); await D.stream(); await wait(300);

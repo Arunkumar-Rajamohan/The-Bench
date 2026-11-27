@@ -81,7 +81,7 @@
         if (!r.ok) { var e = new Error(j.error || 'Something went wrong.'); e.status = r.status; e.body = j; throw e; }
         return j;
       });
-    }, function () { throw new Error('Cannot reach the server. Is it running?'); });
+    }, function () { throw new Error('Cannot reach The Bench. Check your internet connection and try again.'); });
   }
 
   // ---------- fixed content ----------
@@ -5511,6 +5511,14 @@
     el.textContent = SPLASH_LINES[i];
     el.classList.add('swap');
   }, 1800);
+  // A plain message in place of the rotating jokes, e.g. while the server wakes up.
+  function splashSay(text) {
+    var el = document.getElementById('splash-msg');
+    if (!el || el.textContent === text) return;
+    clearInterval(splashTimer);
+    el.classList.remove('swap'); void el.offsetWidth;
+    el.textContent = text; el.classList.add('swap', 'wake');
+  }
   function hideSplash() {
     var el = document.getElementById('splash');
     if (!el || el.classList.contains('done')) return;
@@ -5717,8 +5725,20 @@
 
   document.querySelectorAll('[data-icon]').forEach(function (el) { el.innerHTML = ico(el.getAttribute('data-icon')); });
   render();
-  api('GET', '/api/me')
+  // Render's free plan lets the server sleep when nobody has visited for a while; waking takes up to a minute.
+  // Say so instead of looking stuck, and keep trying rather than showing a signed-in member the log-in page.
+  var WAKING = 'Waking up The Bench… it has been resting. This can take up to a minute.';
+  var wakeNotes = [setTimeout(function () { splashSay(WAKING); }, 4000),
+    setTimeout(function () { splashSay('Nearly there… thanks for waiting.'); }, 30000)];
+  function bootMe(tries) {
+    return api('GET', '/api/me').catch(function (e) {
+      if (e.status === 401 || tries >= 7) throw e; // signed out, or still nothing after about a minute and a half
+      splashSay(WAKING);
+      return new Promise(function (r) { setTimeout(r, [2, 3, 5, 8, 10, 15, 20][tries] * 1000); }).then(function () { return bootMe(tries + 1); });
+    });
+  }
+  bootMe(0)
     .then(function (j) { return enter(j, false); })
     .catch(function (e) { if (e.status !== 401) ui.authError = e.message; })
-    .then(function () { ui.booting = false; render(); hideSplash(); });
+    .then(function () { wakeNotes.forEach(clearTimeout); ui.booting = false; render(); hideSplash(); });
 })();

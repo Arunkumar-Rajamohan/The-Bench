@@ -1026,6 +1026,7 @@ dialog.sheet form { margin-top: 16px; }
 .splash-word em { font-style: italic; font-weight: 500; color: var(--accent); }
 .splash-msg { min-height: 1.5em; font: italic clamp(1.02rem, 1.4vw, 1.15rem)/1.5 var(--serif); color: var(--muted); opacity: 0; animation: splash-rise .55s ease-out .9s forwards; }
 .splash-msg.swap { animation: splash-swap .45s ease both; }
+.splash-msg.wake { max-width: 30ch; margin-left: auto; margin-right: auto; text-align: center; } /* a longer message while the server wakes */
 @keyframes splash-pop { from { opacity: 0; transform: scale(.6) rotate(-8deg); } }
 @keyframes splash-draw { to { stroke-dashoffset: 0; } }
 @keyframes splash-dot { to { transform: scale(1); } }

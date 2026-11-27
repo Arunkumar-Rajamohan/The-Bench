@@ -1,9 +1,11 @@
 /* The Bench — service worker. Makes the app installable and lets the shell open without a connection.
-   Pages and code: network first (so updates arrive straight away), cached copy when offline.
+   Pages and code: network first (so updates arrive straight away), but if the server is slow to answer (Render's free
+   plan sleeps when nobody has visited for a while, and waking takes up to a minute) the saved copy is used after a few
+   seconds instead, and the fresh copy is saved for next time when it arrives. Offline: the saved copy.
    Fonts and icons: cache first (they never change). API calls and the live stream are never cached. */
 'use strict';
 
-const CACHE = 'bench-shell-v23';
+const CACHE = 'bench-shell-v24';
 const SHELL = [
   '/', '/styles.css', '/app.js', '/favicon.svg', '/manifest.webmanifest',
   '/fonts/inter.woff2', '/fonts/fraunces.woff2', '/fonts/fraunces-italic.woff2',
@@ -42,15 +44,33 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Everything else: try the network, keep a fresh copy, fall back to the cache when offline.
-  e.respondWith(
-    fetch(req).then((res) => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req.mode === 'navigate' ? '/' : req, copy)); }
-      return res;
-    }).catch(() => caches.match(req.mode === 'navigate' ? '/' : req).then((hit) =>
-      hit || (req.mode === 'navigate' ? new Response(OFFLINE_PAGE, { headers: { 'Content-Type': 'text/html; charset=utf-8' } }) : Response.error())))
-  );
+  // Everything else: the network, unless it is slow (then the saved copy) or down (then the saved copy, or a note).
+  const key = req.mode === 'navigate' ? '/' : req;
+  let stored = Promise.resolve();
+  const net = fetch(req).then((res) => {
+    if (res.ok) {
+      const copy = res.clone();
+      stored = caches.open(CACHE).then((c) => c.put(key, copy)); // fresh for next time, even if the saved copy was used now
+      slowUntil = 0;
+    }
+    return res;
+  }, () => null);
+  e.waitUntil(net.then(() => stored).catch(() => {})); // keeps the worker alive until that copy is saved
+  e.respondWith(new Promise((resolve) => {
+    let answered = false;
+    const answer = (res) => { if (!answered && res) { answered = true; resolve(res); } };
+    const saved = () => caches.match(key);
+    // Slow server: after a few seconds use the saved copy, and do not wait again for the rest of this page's files.
+    const wait = Date.now() < slowUntil ? 0 : SLOW_MS;
+    setTimeout(() => { if (!answered) saved().then((hit) => { if (hit && !answered) { slowUntil = Date.now() + 90000; answer(hit); } }); }, wait);
+    net.then((res) => {
+      if (res) return answer(res);
+      saved().then((hit) => answer(hit || (req.mode === 'navigate' ? new Response(OFFLINE_PAGE, { headers: { 'Content-Type': 'text/html; charset=utf-8' } }) : Response.error())));
+    });
+  }));
 });
+const SLOW_MS = 3500;
+let slowUntil = 0; // while the server is waking up, page files come from the saved copy straight away
 
 // ---------- notifications ----------
 self.addEventListener('push', (e) => {

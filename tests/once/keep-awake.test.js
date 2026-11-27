@@ -43,6 +43,10 @@ async function run(extraEnv, ms) {
   check('identifies itself', r.hits.every((x) => x.ua === 'TheBench-KeepAwake/1.0'));
   check('all-day mode says so in the log', r.log.includes('every 0.01 minutes, all day'), r.log.slice(0, 300));
 
+  r = await run(fast, 2000); // nothing set: the default waking hours, 5 am to 3 am India time
+  check('by default it keeps awake from 5 am to 3 am India time', (h >= 5 || h < 3) ? r.hits.length >= 2 : r.hits.length === 0, { h, hits: r.hits.length });
+  check('and says so when it starts', /between 5:00 and 3:00 India time/.test(r.log), r.log.slice(0, 300));
+
   r = await run(Object.assign({}, fast, { KEEP_AWAKE_HOURS: h + '-' + (h + 1) }), 2000);
   check('pings inside the waking-hours window', r.hits.length >= 2, { h, hits: r.hits.length });
 
@@ -53,7 +57,7 @@ async function run(extraEnv, ms) {
   check('a window across midnight still covers now', r.hits.length >= 2, { h, window: ((h + 23) % 24) + '-' + ((h + 1) % 24), hits: r.hits.length });
 
   r = await run({ RENDER_EXTERNAL_URL: url }, 1500);
-  check('default: every 10 minutes, 7am to midnight India time', r.log.includes('every 10 minutes between 7:00 and 24:00 India time') && r.hits.length === 0, r.log.slice(0, 200));
+  check('default: every 10 minutes, 5 am to 3 am India time', r.log.includes('every 10 minutes between 5:00 and 3:00 India time') && r.hits.length === 0, r.log.slice(0, 200));
 
   r = await run(Object.assign({}, fast, { KEEP_AWAKE_HOURS: 'all', KEEP_AWAKE: 'off' }), 2000);
   check('KEEP_AWAKE=off stops it', r.hits.length === 0 && !r.log.includes('Keep-awake on'), r.hits.length);

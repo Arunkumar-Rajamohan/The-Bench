@@ -5,6 +5,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { promisify } = require('node:util');
 
 const scrypt = promisify(crypto.scrypt);
@@ -647,14 +648,27 @@ class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+// Which compression the browser accepts: brotli (smallest), then gzip, else none.
+function encodingFor(req) {
+  const a = String((req && req.headers['accept-encoding']) || '');
+  return /\bbr\b/.test(a) ? 'br' : /\bgzip\b/.test(a) ? 'gzip' : '';
+}
 function send(res, status, body, headers) {
-  const json = JSON.stringify(body);
-  res.writeHead(status, Object.assign({
+  let out = Buffer.from(JSON.stringify(body));
+  const h = Object.assign({
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff'
-  }, headers));
-  res.end(json);
+    'X-Content-Type-Options': 'nosniff',
+    'Vary': 'Accept-Encoding'
+  }, headers);
+  // Bigger answers (the feed, people, your saved data) travel compressed: much quicker on mobile data.
+  const enc = out.length > 1400 ? encodingFor(res.req) : '';
+  if (enc === 'br') out = zlib.brotliCompressSync(out, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } });
+  else if (enc === 'gzip') out = zlib.gzipSync(out, { level: 6 });
+  if (enc) h['Content-Encoding'] = enc;
+  h['Content-Length'] = out.length;
+  res.writeHead(status, h);
+  res.end(out);
 }
 
 // A body that is too big is read to the end and thrown away, so the "too big" answer reaches the browser:
@@ -3111,28 +3125,64 @@ const STATIC = {
   '/fonts/fraunces-italic.woff2': ['fonts/fraunces-italic.woff2', 'font/woff2', FOREVER]
 };
 
+// Each file is read once, compressed once (brotli and gzip) and given a fingerprint (ETag), then kept in memory.
+// A browser that already has the latest copy is told "not modified" and downloads nothing. If the file changes on disk
+// (while developing), it is read again.
+const staticFiles = new Map();
+const TEXTY = /^(text\/|application\/(manifest\+)?json|image\/svg)/;
+function staticFile(file, type) {
+  const full = path.join(__dirname, file);
+  const mtime = fs.statSync(full).mtimeMs;
+  let f = staticFiles.get(file);
+  if (f && f.mtime === mtime) return f;
+  const raw = fs.readFileSync(full);
+  f = { mtime, raw, etag: '"' + crypto.createHash('sha1').update(raw).digest('base64url').slice(0, 20) + '"' };
+  if (TEXTY.test(type)) {
+    f.gzip = zlib.gzipSync(raw, { level: 9 }); // quick; brotli (smaller, but slower to make) follows in the background
+    zlib.brotliCompress(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, (err, buf) => { if (!err) f.br = buf; });
+  }
+  staticFiles.set(file, f);
+  return f;
+}
 function serveStatic(req, res, pathname) {
   const entry = STATIC[pathname];
   if (!entry || (req.method !== 'GET' && req.method !== 'HEAD')) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end('Not found');
   }
-  fs.readFile(path.join(__dirname, entry[0]), (err, buf) => {
-    if (err) { res.writeHead(500); return res.end('Server error'); }
-    res.writeHead(200, {
-      'Content-Type': entry[1],
-      'Cache-Control': entry[2] || 'no-cache',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
-      'Referrer-Policy': 'same-origin',
-      'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    });
-    res.end(req.method === 'HEAD' ? undefined : buf);
-  });
+  let f;
+  try { f = staticFile(entry[0], entry[1]); } catch (e) { res.writeHead(500); return res.end('Server error'); }
+  const headers = {
+    'Content-Type': entry[1],
+    'Cache-Control': entry[2] || 'no-cache', // no-cache = check with us each time; with the ETag that check is tiny
+    'ETag': f.etag,
+    'Vary': 'Accept-Encoding',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin',
+    'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+  };
+  if (String(req.headers['if-none-match'] || '').split(/\s*,\s*/).includes(f.etag)) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  const accept = String(req.headers['accept-encoding'] || '');
+  const enc = f.br && /\bbr\b/.test(accept) ? 'br' : f.gzip && /\bgzip\b/.test(accept) ? 'gzip' : '';
+  const body = enc ? f[enc] : f.raw;
+  if (enc) headers['Content-Encoding'] = enc;
+  headers['Content-Length'] = body.length;
+  res.writeHead(200, headers);
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+// Prepare the app's own files before the first visitor asks, so nobody waits for the compressing.
+function warmStatic() {
+  for (const [file, type] of new Map(Object.values(STATIC).map((e) => [e[0], e[1]]))) {
+    try { staticFile(file, type); } catch (e) { console.error('Could not prepare ' + file + ': ' + e.message); }
+  }
 }
 
 // ---------- server ----------
-const server = http.createServer((req, res) => {
+function handle(req, res) {
   let pathname;
   try { pathname = new URL(req.url, 'http://localhost').pathname; }
   catch (e) { res.writeHead(400); return res.end(); }
@@ -3146,20 +3196,33 @@ const server = http.createServer((req, res) => {
     console.error(e);
     send(res, 500, { error: 'Something broke on our side.' });
   });
+}
+// Tests only: a file holding a moment (milliseconds since 1970) until which the server is "asleep": requests wait until
+// then, as Render holds them while a free service wakes up. Or "down": the API answers "not ready". Never set live.
+const TEST_DELAY_FILE = process.env.TEST_DELAY_FILE || '';
+const server = http.createServer((req, res) => {
+  if (TEST_DELAY_FILE && req.url !== '/healthz') {
+    let v = '';
+    try { v = fs.readFileSync(TEST_DELAY_FILE, 'utf8').trim(); } catch (e) { /* no file: awake */ }
+    if (v === 'down' && req.url.startsWith('/api/')) { res.writeHead(503, { 'Content-Type': 'text/plain' }); return res.end('Waking up'); }
+    if (Number(v) > Date.now()) return setTimeout(() => handle(req, res), Number(v) - Date.now());
+  }
+  handle(req, res);
 });
 
 // ---------- keep-awake ----------
 // Render's free plan puts the app to sleep after ~15 minutes with no visitors, and waking takes 30-60 seconds.
 // Visiting our own public address every 10 minutes counts as a visitor, so it stays awake. Render sets
 // RENDER_EXTERNAL_URL automatically; set KEEP_AWAKE=off on the host to stop. It only touches /healthz (no database).
-// Waking hours only (default 07:00-24:00 India time): overnight the pings stop, so the app sleeps as the free plan
-// intends and uses roughly 520 of Render's 750 free hours a month instead of ~740. A sleeping app cannot wake itself,
-// so the first visitor after the night wakes it; pings carry on from there. KEEP_AWAKE_HOURS=all keeps it on 24/7.
+// Waking hours only (default 05:00-03:00 India time, 22 hours): about 680 of Render's 750 free hours a month, leaving
+// room to spare. 24/7 would use up to 744, too close: running out suspends the app until the next month. Between 3 and
+// 5 am the pings stop and the app sleeps. A sleeping app cannot wake itself, so .github/workflows/wake.yml visits it
+// just after 5 am, and pings carry on from there. KEEP_AWAKE_HOURS=all keeps it on 24/7; e.g. 7-24 shortens the day.
 const istHour = () => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
 function awakeWindow(spec) {
   if (spec === 'all') return () => true;
-  const m = /^(\d{1,2})-(\d{1,2})$/.exec(spec || '7-24');
-  const from = m ? Number(m[1]) : 7, to = m ? Number(m[2]) : 24;
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(spec || '5-3');
+  const from = m ? Number(m[1]) : 5, to = m ? Number(m[2]) : 3;
   return (h) => (from <= to ? h >= from && h < to : h >= from || h < to); // also handles windows across midnight, e.g. 20-6
 }
 function startKeepAwake() {
@@ -3167,7 +3230,7 @@ function startKeepAwake() {
   if (!target || process.env.KEEP_AWAKE === 'off') return;
   if (!/^(https:\/\/|http:\/\/127\.0\.0\.1[:/])/.test(target)) { console.error('Keep-awake skipped: the address must use https.'); return; }
   const minutes = Math.max(Number(process.env.KEEP_AWAKE_MINUTES) || 10, 0.01);
-  const hours = (process.env.KEEP_AWAKE_HOURS || '7-24').trim();
+  const hours = (process.env.KEEP_AWAKE_HOURS || '5-3').trim();
   const inWindow = awakeWindow(hours);
   const ping = () => {
     if (!inWindow(istHour())) return; // night time: let the app sleep
@@ -3183,6 +3246,7 @@ function startKeepAwake() {
 initDb().then(loadSiteKey).then(loadReceiptsStart).then(() => q.addSetting.run('usage_from', usageDay())).then(() => {
   server.listen(PORT, HOST, () => {
     console.log('The Bench is running at http://' + (HOST === '0.0.0.0' ? 'localhost' : HOST) + ':' + PORT + (TURSO_URL ? ' (hosted database)' : ' (local database)'));
+    warmStatic();
     ensureJobs(); // warm the job listings so the first visitor does not wait
     startKeepAwake();
     startPushTimer();

@@ -1227,7 +1227,9 @@
     return tail.length === 3 && tail.every(function (v) { return v <= 1; });
   }
   function moodChart() {
-    var days = lastDays(30), W = 620, H = 176, left = 44, right = 12, top = 16, bottom = 34;
+    // Drawn at the screen's own width, so on a phone it is not a shrunken desktop chart.
+    var narrow = !wideScreen(), W = narrow ? Math.round(Math.min(620, Math.max(280, window.innerWidth - 72))) : 620, H = narrow ? 190 : 176;
+    var days = lastDays(30), left = narrow ? 36 : 44, right = 12, top = 16, bottom = 34;
     var x = function (i) { return left + i * (W - left - right) / (days.length - 1); };
     var y = function (v) { return top + (4 - v) * (H - top - bottom) / 4; };
     var grid = [0, 1, 2, 3, 4].map(function (v) {
@@ -1247,7 +1249,8 @@
         esc(fmtDay(k) + ': ' + MOOD_WORDS[v]) + '</title></circle>';
     }).join('');
     var labels = days.map(function (k, i) {
-      return i % 7 === 2 || i === days.length - 1 ? '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) + '" text-anchor="' + (i === days.length - 1 ? 'end' : 'middle') + '" class="mlabel">' +
+      var last = i === days.length - 1, room = narrow ? 9 : 0; // on a phone, no date label right next to "Today"
+      return (i % 7 === 2 && i < days.length - 1 - room) || last ? '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) + '" text-anchor="' + (i === days.length - 1 ? 'end' : 'middle') + '" class="mlabel">' +
         (i === days.length - 1 ? 'Today' : esc(dayDate(k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))) + '</text>' : '';
     }).join('');
     return '<svg class="mood-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Your mood over the last 30 days">' + grid +
@@ -1782,8 +1785,9 @@
       (e.details ? '<p class="ivx-text ev-details">' + esc(e.details) + '</p>' : '') +
       '<div class="row between job-foot"><span class="muted small">Shared by <a class="plain-link" href="#/u/' + esc(e.username) + '"><b>' + esc(e.name) + '</b></a> · ' + ago(e.t) + '</span>' +
       '<div class="row"><button class="btn tiny' + (e.mine ? ' primary' : '') + '" data-act="ev-going" data-id="' + id + '" aria-pressed="' + e.mine + '">' + (e.mine ? ico('check') + 'Going' : 'I’m going') + (e.going ? ' · ' + e.going : '') + '</button>' +
-      '<a class="btn tiny ghost" href="' + esc(evGoogleUrl(e)) + '" target="_blank" rel="noopener noreferrer">Google Calendar</a>' +
-      '<button type="button" class="btn tiny ghost" data-act="ev-ics" data-id="' + id + '" title="Downloads a calendar file for Outlook, Apple or any other calendar">Other calendar</button>' +
+      '<details class="msg-menu cal-menu"><summary class="btn tiny ghost">' + ico('calendar') + 'Add to calendar</summary><div class="menu">' +
+      '<a href="' + esc(evGoogleUrl(e)) + '" target="_blank" rel="noopener noreferrer">Google Calendar</a>' +
+      '<button type="button" data-act="ev-ics" data-id="' + id + '">Other calendar (Outlook, Apple…)</button></div></details>' +
       (e.url ? '<a class="btn tiny ghost" href="' + esc(e.url) + '" target="_blank" rel="noopener nofollow ugc">Details ↗</a>' : '') + '</div></div></div></article>';
   }
   function evCities() {
@@ -2085,7 +2089,7 @@
     tracker: function () {
       var cols = STAGES.map(function (s, i) {
         var items = S.apps.filter(function (a) { return a.stage === s; });
-        return '<section class="col"><h3><span>' + s + '</span><span class="muted">' + items.length + '</span></h3>' +
+        return '<section class="col' + (items.length ? '' : ' empty') + '"><h3><span>' + s + '</span><span class="muted">' + items.length + '</span></h3>' +
           items.map(function (a) {
             var id = esc(a.id);
             var title = typeof a.url === 'string' && /^https?:\/\//.test(a.url)
@@ -5607,7 +5611,13 @@
     var d = e.target;
     if (!d.classList || !d.classList.contains('msg-menu') || !d.open) return;
     var menu = d.querySelector('.menu'), list = d.closest('.msgs');
-    if (!menu || !list) return;
+    if (!menu) return;
+    // never off the side of the screen: open towards whichever side has room
+    menu.style.left = ''; menu.style.right = '';
+    var mr = menu.getBoundingClientRect();
+    if (mr.left < 8) { menu.style.left = '0'; menu.style.right = 'auto'; }
+    else if (mr.right > window.innerWidth - 8) { menu.style.right = '0'; menu.style.left = 'auto'; }
+    if (!list) return;
     menu.classList.remove('up');
     var s = d.getBoundingClientRect(), l = list.getBoundingClientRect(), h = menu.offsetHeight;
     if (s.bottom + h + 8 > l.bottom && s.top - l.top >= h + 8) menu.classList.add('up');
